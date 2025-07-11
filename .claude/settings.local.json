@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go get:*)",
+      "Bash(go:*)",
+      "Bash(./sample_generator)",
+      "Bash(ls:*)",
+      "Bash(rm:*)",
+      "Bash(./debug_read)",
+      "Bash(./debug_parser)",
+      "Bash(./debug_where)",
+      "Bash(./debug_filter)",
+      "Bash(./debug_filter2)",
+      "Bash(./debug_where2)"
+    ],
+    "deny": []
+  }
+}
