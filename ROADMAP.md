@@ -1,0 +1,207 @@
+# ByteDB Roadmap
+
+## Current Status ✅
+- [x] Basic SELECT queries with WHERE, LIMIT
+- [x] Parquet file reading for employees/products schemas  
+- [x] Comparison operators: =, !=, <, <=, >, >=, LIKE
+- [x] Type coercion (int/float/string)
+- [x] JSON output format
+- [x] Interactive CLI
+- [x] Comprehensive test suite
+- [x] ORDER BY clause with multi-column and ASC/DESC support
+- [x] Aggregate functions (COUNT, SUM, AVG, MIN, MAX)
+- [x] GROUP BY clause with aggregate functions
+
+## Phase 1: Enhanced SQL Support (Priority: High)
+
+### ✅ ORDER BY Clause - COMPLETED
+```sql
+SELECT * FROM employees ORDER BY salary DESC, name ASC
+```
+**Status**: ✅ Implemented  
+**Features**: Single/multi-column sorting, ASC/DESC directions, NULL handling
+
+### ✅ Aggregate Functions - COMPLETED
+```sql
+SELECT COUNT(*), AVG(salary), MAX(age) FROM employees
+SELECT department, COUNT(*) FROM employees GROUP BY department  
+```
+**Status**: ✅ Implemented  
+**Features**: All standard aggregates (COUNT, SUM, AVG, MIN, MAX), GROUP BY support, mixed with WHERE/ORDER BY
+
+### IN Operator
+```sql
+SELECT * FROM employees WHERE department IN ('Engineering', 'Sales')
+```
+**Effort**: 1-2 days  
+**Impact**: Medium - Common filtering pattern
+
+### Enhanced LIKE Pattern Matching
+```sql
+SELECT * FROM products WHERE name LIKE '%laptop%'
+SELECT * FROM employees WHERE name LIKE 'J%'
+```
+**Effort**: 1 day  
+**Impact**: Medium - Better text search
+
+## Phase 2: Performance Optimizations (Priority: High)
+
+### Column Pruning
+- Only read requested columns from Parquet files
+- Reduce memory usage and I/O
+**Effort**: 3-4 days  
+**Impact**: High - Significant performance improvement
+
+### Query Result Caching
+- Cache results for repeated queries
+- Configurable TTL and memory limits
+**Effort**: 2-3 days  
+**Impact**: Medium - Faster repeated queries
+
+### Parallel Processing
+- Process row groups concurrently
+- Configurable worker pool size
+**Effort**: 1 week  
+**Impact**: High - Better utilization of multi-core systems
+
+## Phase 3: Advanced SQL Features (Priority: Medium)
+
+### Generic Schema Detection
+- Support any Parquet schema automatically
+- Remove hardcoded Employee/Product structs
+**Effort**: 1-2 weeks  
+**Impact**: High - Makes engine truly generic
+
+### JOIN Support
+```sql
+SELECT e.name, d.name as dept_name 
+FROM employees e 
+JOIN departments d ON e.department = d.name
+```
+**Effort**: 2-3 weeks  
+**Impact**: High - Essential for relational queries
+
+### Subqueries
+```sql
+SELECT * FROM employees 
+WHERE salary > (SELECT AVG(salary) FROM employees)
+```
+**Effort**: 2-3 weeks  
+**Impact**: Medium - Advanced analytics
+
+## Phase 4: Production Features (Priority: Medium)
+
+### HTTP API Server
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM employees LIMIT 10", "format": "json"}'
+```
+**Effort**: 1 week  
+**Impact**: High - Enables web applications
+
+### Configuration Management
+```yaml
+# config.yaml
+server:
+  port: 8080
+  max_connections: 100
+cache:
+  size: 100MB
+  ttl: 300s
+data:
+  path: "./data"
+  max_file_size: 1GB
+```
+**Effort**: 2-3 days  
+**Impact**: Medium - Production deployment
+
+### Monitoring & Metrics
+- Query execution metrics
+- Performance monitoring
+- Health checks
+**Effort**: 1 week  
+**Impact**: Medium - Operational visibility
+
+## Phase 5: Advanced Features (Priority: Low)
+
+### Multi-File & Partitioned Datasets
+```
+./data/
+├── year=2023/month=01/sales.parquet
+├── year=2023/month=02/sales.parquet
+└── year=2024/month=01/sales.parquet
+```
+**Effort**: 3-4 weeks  
+**Impact**: High - Handle big data scenarios
+
+### Query Optimization Engine
+- Cost-based query planning
+- Index recommendations
+- Query rewriting
+**Effort**: 6-8 weeks  
+**Impact**: High - Enterprise-grade performance
+
+### Streaming Queries
+```sql
+-- Continuous queries on streaming data
+SELECT * FROM events 
+WHERE event_type = 'error' 
+EMIT CHANGES EVERY 5 SECONDS
+```
+**Effort**: 4-6 weeks  
+**Impact**: Medium - Real-time analytics
+
+## Quick Wins (Can implement immediately)
+
+1. **Better Error Messages** (1 day)
+   - Column existence validation
+   - Type mismatch warnings
+   - Suggestion system
+
+2. **Query History** (1 day)
+   - Save recent queries in CLI
+   - Up/down arrow navigation
+
+3. **Export Formats** (2 days)
+   - CSV output: `\csv SELECT * FROM employees`
+   - TSV output: `\tsv SELECT * FROM employees`
+
+4. **Batch Query Mode** (1 day)
+   - Read queries from file: `bytedb --file queries.sql`
+   - Non-interactive execution
+
+5. **Basic Statistics** (1 day)
+   - Show query execution time
+   - Display row count and data size
+   - Memory usage information
+
+## Implementation Strategy
+
+### Week 1-2: ORDER BY + Aggregates
+Focus on ORDER BY and basic aggregates (COUNT, SUM, AVG) as these provide immediate high value.
+
+### Week 3-4: Performance  
+Column pruning and result caching will significantly improve user experience.
+
+### Week 5-8: Generic Schema
+Remove hardcoded schemas to make the engine truly general-purpose.
+
+### Week 9-12: Production Ready
+HTTP API and monitoring for production deployment.
+
+## Success Metrics
+
+- **Performance**: Query response time < 100ms for small datasets (< 1M rows)
+- **Functionality**: Support 80% of common SQL patterns  
+- **Usability**: Can query any Parquet file without code changes
+- **Reliability**: 99.9% uptime with proper error handling
+- **Adoption**: Easy to integrate into existing data pipelines
+
+## Community & Ecosystem
+
+1. **Documentation**: Comprehensive docs with examples
+2. **Tutorials**: Step-by-step guides for common use cases  
+3. **Integrations**: Connectors for popular tools (Grafana, Jupyter, etc.)
+4. **Benchmarks**: Performance comparisons with DuckDB, ClickHouse
+5. **Ecosystem**: Plugin architecture for custom functions

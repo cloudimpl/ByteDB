@@ -212,17 +212,17 @@ func (pr *ParquetReader) matchesCondition(row Row, condition WhereCondition) boo
 
 	switch condition.Operator {
 	case "=":
-		return pr.compareValues(value, condition.Value) == 0
+		return pr.CompareValues(value, condition.Value) == 0
 	case "!=", "<>":
-		return pr.compareValues(value, condition.Value) != 0
+		return pr.CompareValues(value, condition.Value) != 0
 	case "<":
-		return pr.compareValues(value, condition.Value) < 0
+		return pr.CompareValues(value, condition.Value) < 0
 	case "<=":
-		return pr.compareValues(value, condition.Value) <= 0
+		return pr.CompareValues(value, condition.Value) <= 0
 	case ">":
-		return pr.compareValues(value, condition.Value) > 0
+		return pr.CompareValues(value, condition.Value) > 0
 	case ">=":
-		return pr.compareValues(value, condition.Value) >= 0
+		return pr.CompareValues(value, condition.Value) >= 0
 	case "LIKE":
 		return pr.matchesLike(value, condition.Value)
 	default:
@@ -230,7 +230,7 @@ func (pr *ParquetReader) matchesCondition(row Row, condition WhereCondition) boo
 	}
 }
 
-func (pr *ParquetReader) compareValues(a, b interface{}) int {
+func (pr *ParquetReader) CompareValues(a, b interface{}) int {
 	if a == nil && b == nil {
 		return 0
 	}

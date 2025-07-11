@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 )
@@ -27,14 +28,28 @@ type WhereCondition struct {
 	Value    interface{}
 }
 
+type OrderByColumn struct {
+	Column    string
+	Direction string // "ASC" or "DESC"
+}
+
+type AggregateFunction struct {
+	Function string // "COUNT", "SUM", "AVG", "MIN", "MAX"
+	Column   string // "*" for COUNT(*), or specific column name
+	Alias    string // Optional alias for the result
+}
+
 type ParsedQuery struct {
-	Type       QueryType
-	TableName  string
-	Columns    []Column
-	Where      []WhereCondition
-	OrderBy    []string
-	Limit      int
-	RawSQL     string
+	Type        QueryType
+	TableName   string
+	Columns     []Column
+	Aggregates  []AggregateFunction
+	GroupBy     []string
+	Where       []WhereCondition
+	OrderBy     []OrderByColumn
+	Limit       int
+	RawSQL      string
+	IsAggregate bool // True if query contains aggregate functions
 }
 
 type SQLParser struct{}
@@ -77,6 +92,17 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 	if stmt.TargetList != nil {
 		for _, target := range stmt.TargetList {
 			if resTarget := target.GetResTarget(); resTarget != nil {
+				// Check if this is an aggregate function call
+				if funcCall := resTarget.Val.GetFuncCall(); funcCall != nil {
+					agg := p.parseAggregateFunction(funcCall, resTarget.Name)
+					if agg != nil {
+						query.Aggregates = append(query.Aggregates, *agg)
+						query.IsAggregate = true
+						continue
+					}
+				}
+				
+				// Regular column parsing
 				col := Column{}
 				
 				if resTarget.Name != "" {
@@ -106,6 +132,14 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 
 	if stmt.WhereClause != nil {
 		p.parseWhere(stmt.WhereClause, query)
+	}
+
+	if stmt.GroupClause != nil {
+		p.parseGroupBy(stmt.GroupClause, query)
+	}
+
+	if stmt.SortClause != nil {
+		p.parseOrderBy(stmt.SortClause, query)
 	}
 
 	if stmt.LimitCount != nil {
@@ -155,12 +189,124 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 	}
 }
 
+func (p *SQLParser) parseAggregateFunction(funcCall *pg_query.FuncCall, alias string) *AggregateFunction {
+	if len(funcCall.Funcname) == 0 {
+		return nil
+	}
+	
+	funcName := ""
+	if str := funcCall.Funcname[0].GetString_(); str != nil {
+		funcName = strings.ToUpper(str.Sval)
+	}
+	
+	// Check if it's a supported aggregate function
+	supportedFuncs := map[string]bool{
+		"COUNT": true,
+		"SUM":   true,
+		"AVG":   true,
+		"MIN":   true,
+		"MAX":   true,
+	}
+	
+	if !supportedFuncs[funcName] {
+		return nil
+	}
+	
+	agg := &AggregateFunction{
+		Function: funcName,
+		Alias:    alias,
+	}
+	
+	// Parse function arguments
+	if len(funcCall.Args) == 0 {
+		// Functions like COUNT() without arguments
+		agg.Column = "*"
+	} else {
+		arg := funcCall.Args[0]
+		if columnRef := arg.GetColumnRef(); columnRef != nil {
+			if len(columnRef.Fields) > 0 {
+				if str := columnRef.Fields[0].GetString_(); str != nil {
+					agg.Column = str.Sval
+				} else if columnRef.Fields[0].GetAStar() != nil {
+					agg.Column = "*"
+				}
+			}
+		} else if arg.GetAStar() != nil {
+			agg.Column = "*"
+		}
+	}
+	
+	// If no alias provided, generate one
+	if agg.Alias == "" {
+		if agg.Column == "*" {
+			agg.Alias = strings.ToLower(funcName)
+		} else {
+			agg.Alias = strings.ToLower(funcName) + "_" + agg.Column
+		}
+	}
+	
+	return agg
+}
+
+func (p *SQLParser) parseGroupBy(groupClause []*pg_query.Node, query *ParsedQuery) {
+	for _, groupNode := range groupClause {
+		if columnRef := groupNode.GetColumnRef(); columnRef != nil {
+			if len(columnRef.Fields) > 0 {
+				if str := columnRef.Fields[0].GetString_(); str != nil {
+					query.GroupBy = append(query.GroupBy, str.Sval)
+				}
+			}
+		}
+	}
+}
+
+func (p *SQLParser) parseOrderBy(sortClause []*pg_query.Node, query *ParsedQuery) {
+	for _, sortNode := range sortClause {
+		if sortBy := sortNode.GetSortBy(); sortBy != nil {
+			orderCol := OrderByColumn{
+				Direction: "ASC", // Default direction
+			}
+			
+			// Get column name
+			if sortBy.Node != nil {
+				if columnRef := sortBy.Node.GetColumnRef(); columnRef != nil {
+					if len(columnRef.Fields) > 0 {
+						if str := columnRef.Fields[0].GetString_(); str != nil {
+							orderCol.Column = str.Sval
+						}
+					}
+				}
+			}
+			
+			// Get sort direction
+			if sortBy.SortbyDir == pg_query.SortByDir_SORTBY_DESC {
+				orderCol.Direction = "DESC"
+			}
+			
+			if orderCol.Column != "" {
+				query.OrderBy = append(query.OrderBy, orderCol)
+			}
+		}
+	}
+}
+
 func (q *ParsedQuery) String() string {
 	result := fmt.Sprintf("Query Type: %v\n", q.Type)
 	result += fmt.Sprintf("Table: %s\n", q.TableName)
-	result += fmt.Sprintf("Columns: %v\n", q.Columns)
+	if len(q.Columns) > 0 {
+		result += fmt.Sprintf("Columns: %v\n", q.Columns)
+	}
+	if len(q.Aggregates) > 0 {
+		result += fmt.Sprintf("Aggregates: %v\n", q.Aggregates)
+	}
+	if len(q.GroupBy) > 0 {
+		result += fmt.Sprintf("Group By: %v\n", q.GroupBy)
+	}
 	if len(q.Where) > 0 {
 		result += fmt.Sprintf("Where: %v\n", q.Where)
+	}
+	if len(q.OrderBy) > 0 {
+		result += fmt.Sprintf("Order By: %v\n", q.OrderBy)
 	}
 	if q.Limit > 0 {
 		result += fmt.Sprintf("Limit: %d\n", q.Limit)

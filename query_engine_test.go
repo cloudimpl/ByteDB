@@ -503,9 +503,9 @@ func TestNumericTypeComparison(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := reader.compareValues(tt.a, tt.b)
+			result := reader.CompareValues(tt.a, tt.b)
 			if result != tt.expected {
-				t.Errorf("compareValues(%v, %v) = %d, want %d", tt.a, tt.b, result, tt.expected)
+				t.Errorf("CompareValues(%v, %v) = %d, want %d", tt.a, tt.b, result, tt.expected)
 			}
 		})
 	}

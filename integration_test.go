@@ -83,6 +83,30 @@ func TestEndToEndQueries(t *testing.T) {
 			sql:         "SELECT * FROM invalid_table;",
 			shouldError: true,
 		},
+		{
+			name:         "ORDER BY salary DESC",
+			sql:          "SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 3;",
+			expectedRows: 3,
+			shouldError:  false,
+		},
+		{
+			name:         "ORDER BY salary ASC",
+			sql:          "SELECT name, salary FROM employees ORDER BY salary ASC LIMIT 3;",
+			expectedRows: 3,
+			shouldError:  false,
+		},
+		{
+			name:         "Multi-column ORDER BY",
+			sql:          "SELECT name, department, salary FROM employees ORDER BY department ASC, salary DESC;",
+			expectedRows: 10, // All employees
+			shouldError:  false,
+		},
+		{
+			name:         "ORDER BY with WHERE",
+			sql:          "SELECT name, salary FROM employees WHERE department = 'Engineering' ORDER BY salary DESC;",
+			expectedRows: 4,
+			shouldError:  false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -198,5 +222,346 @@ func TestQueryResultAccuracy(t *testing.T) {
 		if price <= 100 {
 			t.Errorf("Product %s should have price > 100, got %.2f", name, price)
 		}
+	}
+}
+
+// Test that verifies ORDER BY results are correctly sorted
+func TestOrderByFunctionality(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Test ORDER BY salary DESC
+	result, err := engine.Execute("SELECT name, salary FROM employees ORDER BY salary DESC;")
+	if err != nil {
+		t.Fatalf("Failed to execute ORDER BY query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	if len(result.Rows) == 0 {
+		t.Fatal("No results returned")
+	}
+
+	// Verify descending order
+	for i := 1; i < len(result.Rows); i++ {
+		prevSalary := result.Rows[i-1]["salary"].(float64)
+		currSalary := result.Rows[i]["salary"].(float64)
+		
+		if prevSalary < currSalary {
+			t.Errorf("ORDER BY DESC failed: salary[%d]=%.2f should be >= salary[%d]=%.2f", 
+				i-1, prevSalary, i, currSalary)
+		}
+	}
+
+	// Test ORDER BY salary ASC
+	result, err = engine.Execute("SELECT name, salary FROM employees ORDER BY salary ASC;")
+	if err != nil {
+		t.Fatalf("Failed to execute ORDER BY ASC query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Verify ascending order
+	for i := 1; i < len(result.Rows); i++ {
+		prevSalary := result.Rows[i-1]["salary"].(float64)
+		currSalary := result.Rows[i]["salary"].(float64)
+		
+		if prevSalary > currSalary {
+			t.Errorf("ORDER BY ASC failed: salary[%d]=%.2f should be <= salary[%d]=%.2f", 
+				i-1, prevSalary, i, currSalary)
+		}
+	}
+
+	// Test multi-column ORDER BY: department ASC, salary DESC
+	result, err = engine.Execute("SELECT name, department, salary FROM employees ORDER BY department ASC, salary DESC;")
+	if err != nil {
+		t.Fatalf("Failed to execute multi-column ORDER BY query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Verify multi-column ordering
+	for i := 1; i < len(result.Rows); i++ {
+		prevDept := result.Rows[i-1]["department"].(string)
+		currDept := result.Rows[i]["department"].(string)
+		prevSalary := result.Rows[i-1]["salary"].(float64)
+		currSalary := result.Rows[i]["salary"].(float64)
+		
+		if prevDept < currDept {
+			// Previous department comes first alphabetically - correct
+			continue
+		} else if prevDept == currDept {
+			// Same department - salary should be in DESC order
+			if prevSalary < currSalary {
+				t.Errorf("Multi-column ORDER BY failed: in dept '%s', salary[%d]=%.2f should be >= salary[%d]=%.2f", 
+					currDept, i-1, prevSalary, i, currSalary)
+			}
+		} else {
+			// Previous department comes after current - this is wrong
+			t.Errorf("Multi-column ORDER BY failed: department '%s' should come before '%s'", 
+				currDept, prevDept)
+		}
+	}
+
+	// Test ORDER BY with WHERE clause
+	result, err = engine.Execute("SELECT name, salary FROM employees WHERE department = 'Engineering' ORDER BY salary DESC;")
+	if err != nil {
+		t.Fatalf("Failed to execute ORDER BY with WHERE query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Verify all results are from Engineering and sorted by salary DESC
+	for i, row := range result.Rows {
+		// Can't check department since it's not in SELECT, but we can verify salary ordering
+		if i > 0 {
+			prevSalary := result.Rows[i-1]["salary"].(float64)
+			currSalary := row["salary"].(float64)
+			
+			if prevSalary < currSalary {
+				t.Errorf("ORDER BY with WHERE failed: salary[%d]=%.2f should be >= salary[%d]=%.2f", 
+					i-1, prevSalary, i, currSalary)
+			}
+		}
+	}
+
+	// Expected 4 engineering employees
+	if len(result.Rows) != 4 {
+		t.Errorf("Expected 4 engineering employees, got %d", len(result.Rows))
+	}
+}
+
+// Test aggregate functions (COUNT, SUM, AVG, MIN, MAX)
+func TestAggregateFunctions(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Test simple COUNT(*)
+	result, err := engine.Execute("SELECT COUNT(*) FROM employees;")
+	if err != nil {
+		t.Fatalf("Failed to execute COUNT(*) query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	if len(result.Rows) != 1 {
+		t.Fatalf("Expected 1 result row for COUNT(*), got %d", len(result.Rows))
+	}
+
+	count := result.Rows[0]["count"].(float64)
+	if count != 10 {
+		t.Errorf("Expected COUNT(*) = 10, got %.0f", count)
+	}
+
+	// Test multiple aggregates
+	result, err = engine.Execute("SELECT COUNT(*), AVG(salary), MAX(salary), MIN(salary), SUM(salary) FROM employees;")
+	if err != nil {
+		t.Fatalf("Failed to execute multiple aggregates query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	if len(result.Rows) != 1 {
+		t.Fatalf("Expected 1 result row for aggregates, got %d", len(result.Rows))
+	}
+
+	row := result.Rows[0]
+	
+	// Verify results
+	expectedCount := 10.0
+	expectedSum := 710000.0 // Sum of all salaries
+	expectedAvg := expectedSum / expectedCount
+	expectedMax := 85000.0 // Lisa Davis
+	expectedMin := 55000.0 // Sarah Wilson
+
+	if row["count"].(float64) != expectedCount {
+		t.Errorf("Expected COUNT(*) = %.0f, got %.0f", expectedCount, row["count"].(float64))
+	}
+
+	if row["sum_salary"].(float64) != expectedSum {
+		t.Errorf("Expected SUM(salary) = %.0f, got %.0f", expectedSum, row["sum_salary"].(float64))
+	}
+
+	avgSalary := row["avg_salary"].(float64)
+	if avgSalary != expectedAvg {
+		t.Errorf("Expected AVG(salary) = %.0f, got %.0f", expectedAvg, avgSalary)
+	}
+
+	if row["max_salary"].(float64) != expectedMax {
+		t.Errorf("Expected MAX(salary) = %.0f, got %.0f", expectedMax, row["max_salary"].(float64))
+	}
+
+	if row["min_salary"].(float64) != expectedMin {
+		t.Errorf("Expected MIN(salary) = %.0f, got %.0f", expectedMin, row["min_salary"].(float64))
+	}
+}
+
+// Test GROUP BY functionality
+func TestGroupByFunctionality(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Test GROUP BY with COUNT
+	result, err := engine.Execute("SELECT department, COUNT(*) FROM employees GROUP BY department;")
+	if err != nil {
+		t.Fatalf("Failed to execute GROUP BY query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should have 5 departments: Engineering, Marketing, HR, Sales, Finance
+	if len(result.Rows) != 5 {
+		t.Fatalf("Expected 5 departments, got %d", len(result.Rows))
+	}
+
+	// Build a map to check department counts
+	deptCounts := make(map[string]float64)
+	for _, row := range result.Rows {
+		dept := row["department"].(string)
+		count := row["count"].(float64)
+		deptCounts[dept] = count
+	}
+
+	// Expected department counts based on sample data
+	expected := map[string]float64{
+		"Engineering": 4,
+		"Marketing":   2,
+		"HR":          1,
+		"Sales":       2,
+		"Finance":     1,
+	}
+
+	for dept, expectedCount := range expected {
+		if actualCount, exists := deptCounts[dept]; !exists {
+			t.Errorf("Department %s missing from results", dept)
+		} else if actualCount != expectedCount {
+			t.Errorf("Department %s: expected count %.0f, got %.0f", dept, expectedCount, actualCount)
+		}
+	}
+
+	// Test GROUP BY with multiple aggregates
+	result, err = engine.Execute("SELECT department, COUNT(*), AVG(salary), MAX(salary) FROM employees GROUP BY department ORDER BY department;")
+	if err != nil {
+		t.Fatalf("Failed to execute GROUP BY with multiple aggregates: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	if len(result.Rows) != 5 {
+		t.Fatalf("Expected 5 departments, got %d", len(result.Rows))
+	}
+
+	// Verify Engineering department stats (should be first after ORDER BY)
+	found := false
+	for _, row := range result.Rows {
+		if row["department"].(string) == "Engineering" {
+			found = true
+			if row["count"].(float64) != 4 {
+				t.Errorf("Engineering count: expected 4, got %.0f", row["count"].(float64))
+			}
+			// Engineering average: (75000 + 80000 + 85000 + 78000) / 4 = 79500
+			avgSalary := row["avg_salary"].(float64)
+			if avgSalary != 79500 {
+				t.Errorf("Engineering avg salary: expected 79500, got %.0f", avgSalary)
+			}
+			if row["max_salary"].(float64) != 85000 {
+				t.Errorf("Engineering max salary: expected 85000, got %.0f", row["max_salary"].(float64))
+			}
+			break
+		}
+	}
+	
+	if !found {
+		t.Error("Engineering department not found in GROUP BY results")
+	}
+}
+
+// Test aggregate functions with WHERE clause
+func TestAggregatesWithWhere(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Test COUNT with WHERE
+	result, err := engine.Execute("SELECT COUNT(*) FROM employees WHERE salary > 70000;")
+	if err != nil {
+		t.Fatalf("Failed to execute COUNT with WHERE: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Employees with salary > 70000: John Doe (75000), Mike Johnson (80000), 
+	// Lisa Davis (85000), Chris Anderson (78000), Maria Rodriguez (72000) = 5 employees
+	count := result.Rows[0]["count"].(float64)
+	if count != 5 {
+		t.Errorf("Expected COUNT(*) with WHERE salary > 70000 = 5, got %.0f", count)
+	}
+
+	// Test GROUP BY with WHERE
+	result, err = engine.Execute("SELECT department, COUNT(*) FROM employees WHERE salary > 60000 GROUP BY department ORDER BY department;")
+	if err != nil {
+		t.Fatalf("Failed to execute GROUP BY with WHERE: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should exclude employees with salary <= 60000 (Sarah Wilson: 55000, Tom Miller: 62000 should be excluded)
+	// Actually Tom Miller (62000) should be included since 62000 > 60000
+	// So we exclude only Sarah Wilson (55000)
+	
+	deptCounts := make(map[string]float64)
+	for _, row := range result.Rows {
+		dept := row["department"].(string)
+		count := row["count"].(float64)
+		deptCounts[dept] = count
+	}
+
+	// Expected counts for employees with salary > 60000
+	expected := map[string]float64{
+		"Engineering": 4, // All engineering employees have > 60000
+		"Marketing":   2, // Jane Smith (65000), Tom Miller (62000)
+		"Sales":       2, // David Brown (70000), Maria Rodriguez (72000)
+		"Finance":     1, // Anna Garcia (68000)
+		// HR should be missing since Sarah Wilson (55000) <= 60000
+	}
+
+	for dept, expectedCount := range expected {
+		if actualCount, exists := deptCounts[dept]; !exists {
+			t.Errorf("Department %s missing from filtered results", dept)
+		} else if actualCount != expectedCount {
+			t.Errorf("Department %s with salary > 60000: expected count %.0f, got %.0f", dept, expectedCount, actualCount)
+		}
+	}
+
+	// HR should not be in the results
+	if _, exists := deptCounts["HR"]; exists {
+		t.Error("HR department should not be in results (no employees with salary > 60000)")
 	}
 }
