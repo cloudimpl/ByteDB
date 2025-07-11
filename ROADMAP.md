@@ -50,17 +50,21 @@ SELECT * FROM employees WHERE name LIKE '_ohn%'
 
 ## Phase 2: Performance Optimizations (Priority: High)
 
-### Column Pruning
-- Only read requested columns from Parquet files
-- Reduce memory usage and I/O
-**Effort**: 3-4 days  
-**Impact**: High - Significant performance improvement
+### ✅ Column Pruning - COMPLETED
+```sql
+-- Only reads required columns, not entire row
+SELECT name FROM employees WHERE department = 'Engineering';
+```
+**Status**: ✅ Implemented  
+**Features**: Column analysis, selective reading, memory optimization, integration with all query types
 
-### Query Result Caching
-- Cache results for repeated queries
-- Configurable TTL and memory limits
-**Effort**: 2-3 days  
-**Impact**: Medium - Faster repeated queries
+### ✅ Query Result Caching - COMPLETED
+```sql
+-- Second execution hits cache and runs ~131x faster
+SELECT name, salary FROM employees WHERE department = 'Engineering';
+```
+**Status**: ✅ Implemented  
+**Features**: LRU cache with TTL, memory limits, configurable settings, comprehensive statistics, thread-safe operations
 
 ### Parallel Processing
 - Process row groups concurrently

@@ -7,12 +7,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type QueryEngine struct {
 	parser      *SQLParser
 	dataPath    string
 	openReaders map[string]*ParquetReader
+	cache       *QueryCache
 }
 
 type QueryResult struct {
@@ -24,10 +26,18 @@ type QueryResult struct {
 }
 
 func NewQueryEngine(dataPath string) *QueryEngine {
+	// Default cache configuration
+	cacheConfig := CacheConfig{
+		MaxMemoryMB: 100,                  // 100MB default cache size
+		DefaultTTL:  5 * time.Minute,     // 5 minute default TTL
+		Enabled:     true,                 // Enable caching by default
+	}
+	
 	return &QueryEngine{
 		parser:      NewSQLParser(),
 		dataPath:    dataPath,
 		openReaders: make(map[string]*ParquetReader),
+		cache:       NewQueryCache(cacheConfig),
 	}
 }
 
@@ -38,6 +48,11 @@ func (qe *QueryEngine) Close() {
 }
 
 func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
+	// Check cache first
+	if cachedResult, found := qe.cache.Get(sql); found {
+		return cachedResult, nil
+	}
+	
 	parsedQuery, err := qe.parser.Parse(sql)
 	if err != nil {
 		return &QueryResult{
@@ -46,15 +61,23 @@ func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
 		}, nil
 	}
 
+	var result *QueryResult
 	switch parsedQuery.Type {
 	case SELECT:
-		return qe.executeSelect(parsedQuery)
+		result, err = qe.executeSelect(parsedQuery)
 	default:
-		return &QueryResult{
+		result = &QueryResult{
 			Query: sql,
 			Error: "unsupported query type",
-		}, nil
+		}
 	}
+	
+	// Cache successful results (not errors)
+	if result != nil && result.Error == "" {
+		qe.cache.Put(sql, result)
+	}
+	
+	return result, err
 }
 
 func (qe *QueryEngine) executeSelect(query *ParsedQuery) (*QueryResult, error) {
@@ -66,9 +89,17 @@ func (qe *QueryEngine) executeSelect(query *ParsedQuery) (*QueryResult, error) {
 		}, nil
 	}
 
-	// Always read all data first, then apply LIMIT after filtering and sorting
+	// Determine which columns are required for this query
+	requiredColumns := query.GetRequiredColumns()
+	
+	// Read data with column pruning optimization
 	var rows []Row
-	rows, err = reader.ReadAll()
+	if len(requiredColumns) > 0 {
+		rows, err = reader.ReadAllWithColumns(requiredColumns)
+	} else {
+		// SELECT * or aggregates that need all columns
+		rows, err = reader.ReadAll()
+	}
 	
 	if err != nil {
 		return &QueryResult{
@@ -506,4 +537,29 @@ func (qe *QueryEngine) GetTableInfo(tableName string) (string, error) {
 
 func (qe *QueryEngine) ListTables() ([]string, error) {
 	return []string{}, fmt.Errorf("table listing not implemented yet")
+}
+
+// NewQueryEngineWithCache creates a QueryEngine with custom cache configuration
+func NewQueryEngineWithCache(dataPath string, cacheConfig CacheConfig) *QueryEngine {
+	return &QueryEngine{
+		parser:      NewSQLParser(),
+		dataPath:    dataPath,
+		openReaders: make(map[string]*ParquetReader),
+		cache:       NewQueryCache(cacheConfig),
+	}
+}
+
+// GetCacheStats returns current cache statistics
+func (qe *QueryEngine) GetCacheStats() CacheStats {
+	return qe.cache.GetStats()
+}
+
+// ClearCache removes all cached entries
+func (qe *QueryEngine) ClearCache() {
+	qe.cache.Clear()
+}
+
+// SetCacheEnabled enables or disables query result caching
+func (qe *QueryEngine) SetCacheEnabled(enabled bool) {
+	qe.cache.config.Enabled = enabled
 }

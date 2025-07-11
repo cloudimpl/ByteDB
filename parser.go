@@ -341,6 +341,50 @@ func (p *SQLParser) parseOrderBy(sortClause []*pg_query.Node, query *ParsedQuery
 	}
 }
 
+// GetRequiredColumns analyzes the query and returns all columns that need to be read
+func (q *ParsedQuery) GetRequiredColumns() []string {
+	requiredCols := make(map[string]bool)
+	
+	// Add columns from SELECT clause
+	for _, col := range q.Columns {
+		if col.Name == "*" {
+			// If SELECT *, we need all columns - return empty slice to indicate this
+			return []string{}
+		}
+		requiredCols[col.Name] = true
+	}
+	
+	// Add columns from aggregate functions
+	for _, agg := range q.Aggregates {
+		if agg.Column != "*" {
+			requiredCols[agg.Column] = true
+		}
+	}
+	
+	// Add columns from WHERE clause
+	for _, where := range q.Where {
+		requiredCols[where.Column] = true
+	}
+	
+	// Add columns from GROUP BY clause
+	for _, groupCol := range q.GroupBy {
+		requiredCols[groupCol] = true
+	}
+	
+	// Add columns from ORDER BY clause
+	for _, orderCol := range q.OrderBy {
+		requiredCols[orderCol.Column] = true
+	}
+	
+	// Convert map to slice
+	var result []string
+	for col := range requiredCols {
+		result = append(result, col)
+	}
+	
+	return result
+}
+
 func (q *ParsedQuery) String() string {
 	result := fmt.Sprintf("Query Type: %v\n", q.Type)
 	result += fmt.Sprintf("Table: %s\n", q.TableName)

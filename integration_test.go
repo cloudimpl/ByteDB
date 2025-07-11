@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 // Integration tests that verify the entire system works end-to-end
@@ -998,5 +999,534 @@ func TestLikeWithOtherClauses(t *testing.T) {
 		if count <= 0 {
 			t.Errorf("Expected positive count for departments, got %.0f", count)
 		}
+	}
+}
+
+// Test column pruning functionality
+func TestColumnPruning(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Test selecting specific columns
+	result, err := engine.Execute("SELECT name, salary FROM employees LIMIT 3;")
+	if err != nil {
+		t.Fatalf("Failed to execute column pruning query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return 3 rows with only name and salary columns
+	if len(result.Rows) != 3 {
+		t.Errorf("Expected 3 rows, got %d", len(result.Rows))
+	}
+
+	// Verify only the requested columns are present
+	expectedColumns := map[string]bool{"name": true, "salary": true}
+	for _, row := range result.Rows {
+		for col := range row {
+			if !expectedColumns[col] {
+				t.Errorf("Unexpected column in result: %s", col)
+			}
+		}
+		
+		// Verify expected columns are present
+		if _, exists := row["name"]; !exists {
+			t.Error("Missing 'name' column in result")
+		}
+		if _, exists := row["salary"]; !exists {
+			t.Error("Missing 'salary' column in result")
+		}
+	}
+
+	// Test single column selection
+	result, err = engine.Execute("SELECT name FROM employees WHERE department = 'Engineering';")
+	if err != nil {
+		t.Fatalf("Failed to execute single column query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return 4 engineering employees with only name column
+	if len(result.Rows) != 4 {
+		t.Errorf("Expected 4 engineering employees, got %d", len(result.Rows))
+	}
+
+	for _, row := range result.Rows {
+		if len(row) != 1 {
+			t.Errorf("Expected 1 column in result, got %d", len(row))
+		}
+		if _, exists := row["name"]; !exists {
+			t.Error("Missing 'name' column in single column result")
+		}
+	}
+
+	// Test that SELECT * still returns all columns
+	result, err = engine.Execute("SELECT * FROM employees LIMIT 1;")
+	if err != nil {
+		t.Fatalf("Failed to execute SELECT * query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	if len(result.Rows) != 1 {
+		t.Errorf("Expected 1 row, got %d", len(result.Rows))
+	}
+
+	// Should have all employee columns
+	expectedAllColumns := []string{"id", "name", "department", "salary", "age", "hire_date"}
+	if len(result.Rows) > 0 {
+		row := result.Rows[0]
+		if len(row) != len(expectedAllColumns) {
+			t.Errorf("Expected %d columns for SELECT *, got %d", len(expectedAllColumns), len(row))
+		}
+		
+		for _, col := range expectedAllColumns {
+			if _, exists := row[col]; !exists {
+				t.Errorf("Missing column '%s' in SELECT * result", col)
+			}
+		}
+	}
+
+	// Test column pruning with WHERE clause
+	result, err = engine.Execute("SELECT salary FROM employees WHERE name LIKE 'John%';")
+	if err != nil {
+		t.Fatalf("Failed to execute column pruning with WHERE: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return John Doe with only salary column
+	if len(result.Rows) != 1 {
+		t.Errorf("Expected 1 John, got %d", len(result.Rows))
+	}
+
+	if len(result.Rows) > 0 {
+		row := result.Rows[0]
+		if len(row) != 1 {
+			t.Errorf("Expected 1 column (salary), got %d", len(row))
+		}
+		if _, exists := row["salary"]; !exists {
+			t.Error("Missing 'salary' column")
+		}
+	}
+}
+
+// Test column pruning with aggregates and GROUP BY
+func TestColumnPruningWithAggregates(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Test aggregate with specific column
+	result, err := engine.Execute("SELECT COUNT(*), AVG(salary) FROM employees WHERE department = 'Engineering';")
+	if err != nil {
+		t.Fatalf("Failed to execute aggregate query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return 1 row with aggregates
+	if len(result.Rows) != 1 {
+		t.Errorf("Expected 1 aggregate row, got %d", len(result.Rows))
+	}
+
+	if len(result.Rows) > 0 {
+		row := result.Rows[0]
+		if _, exists := row["count"]; !exists {
+			t.Error("Missing 'count' column in aggregate result")
+		}
+		if _, exists := row["avg_salary"]; !exists {
+			t.Error("Missing 'avg_salary' column in aggregate result")
+		}
+	}
+
+	// Test GROUP BY with column pruning
+	result, err = engine.Execute("SELECT department, COUNT(*) FROM employees GROUP BY department ORDER BY department;")
+	if err != nil {
+		t.Fatalf("Failed to execute GROUP BY query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return 5 departments
+	if len(result.Rows) != 5 {
+		t.Errorf("Expected 5 departments, got %d", len(result.Rows))
+	}
+
+	// Verify each row has department and count columns
+	for _, row := range result.Rows {
+		if len(row) != 2 {
+			t.Errorf("Expected 2 columns (department, count), got %d", len(row))
+		}
+		if _, exists := row["department"]; !exists {
+			t.Error("Missing 'department' column in GROUP BY result")
+		}
+		if _, exists := row["count"]; !exists {
+			t.Error("Missing 'count' column in GROUP BY result")
+		}
+	}
+
+	// Test ORDER BY with column pruning
+	result, err = engine.Execute("SELECT name FROM employees ORDER BY salary DESC LIMIT 3;")
+	if err != nil {
+		t.Fatalf("Failed to execute ORDER BY query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return 3 employees with only name column, ordered by salary (which was needed for sorting)
+	if len(result.Rows) != 3 {
+		t.Errorf("Expected 3 employees, got %d", len(result.Rows))
+	}
+
+	for _, row := range result.Rows {
+		if len(row) != 1 {
+			t.Errorf("Expected 1 column (name), got %d", len(row))
+		}
+		if _, exists := row["name"]; !exists {
+			t.Error("Missing 'name' column in ORDER BY result")
+		}
+	}
+}
+
+// Test query result caching functionality
+func TestQueryCaching(t *testing.T) {
+	generateSampleData()
+	
+	// Create engine with custom cache configuration
+	cacheConfig := CacheConfig{
+		MaxMemoryMB: 10,                  // Small cache for testing
+		DefaultTTL:  1 * time.Minute,    // 1 minute TTL for testing
+		Enabled:     true,
+	}
+	engine := NewQueryEngineWithCache("./data", cacheConfig)
+	defer engine.Close()
+
+	// Test basic caching
+	query := "SELECT name, salary FROM employees WHERE department = 'Engineering' ORDER BY salary DESC;"
+	
+	// First execution should miss cache and execute query
+	result1, err := engine.Execute(query)
+	if err != nil {
+		t.Fatalf("Failed to execute first query: %v", err)
+	}
+	
+	if result1.Error != "" {
+		t.Fatalf("First query returned error: %s", result1.Error)
+	}
+
+	// Check cache stats after first query
+	stats := engine.GetCacheStats()
+	if stats.TotalQueries != 1 {
+		t.Errorf("Expected 1 total query, got %d", stats.TotalQueries)
+	}
+	if stats.Misses != 1 {
+		t.Errorf("Expected 1 cache miss, got %d", stats.Misses)
+	}
+	if stats.Hits != 0 {
+		t.Errorf("Expected 0 cache hits, got %d", stats.Hits)
+	}
+
+	// Second execution should hit cache
+	result2, err := engine.Execute(query)
+	if err != nil {
+		t.Fatalf("Failed to execute second query: %v", err)
+	}
+	
+	if result2.Error != "" {
+		t.Fatalf("Second query returned error: %s", result2.Error)
+	}
+
+	// Results should be identical
+	if len(result1.Rows) != len(result2.Rows) {
+		t.Errorf("Cached result has different row count: %d vs %d", len(result1.Rows), len(result2.Rows))
+	}
+
+	// Check cache stats after second query
+	stats = engine.GetCacheStats()
+	if stats.TotalQueries != 2 {
+		t.Errorf("Expected 2 total queries, got %d", stats.TotalQueries)
+	}
+	if stats.Misses != 1 {
+		t.Errorf("Expected 1 cache miss, got %d", stats.Misses)
+	}
+	if stats.Hits != 1 {
+		t.Errorf("Expected 1 cache hit, got %d", stats.Hits)
+	}
+
+	// Verify hit rate calculation
+	expectedHitRate := 50.0 // 1 hit out of 2 queries
+	if stats.GetHitRate() != expectedHitRate {
+		t.Errorf("Expected hit rate %.1f%%, got %.1f%%", expectedHitRate, stats.GetHitRate())
+	}
+}
+
+// Test cache with different queries
+func TestCacheWithDifferentQueries(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	queries := []string{
+		"SELECT * FROM employees LIMIT 3;",
+		"SELECT COUNT(*) FROM employees;",
+		"SELECT name FROM employees WHERE department = 'HR';",
+		"SELECT AVG(salary) FROM employees GROUP BY department;",
+	}
+
+	// Execute each query twice
+	for _, query := range queries {
+		// First execution - cache miss
+		result1, err := engine.Execute(query)
+		if err != nil {
+			t.Fatalf("Failed to execute query '%s': %v", query, err)
+		}
+		if result1.Error != "" {
+			t.Fatalf("Query '%s' returned error: %s", query, result1.Error)
+		}
+
+		// Second execution - cache hit
+		result2, err := engine.Execute(query)
+		if err != nil {
+			t.Fatalf("Failed to execute cached query '%s': %v", query, err)
+		}
+		if result2.Error != "" {
+			t.Fatalf("Cached query '%s' returned error: %s", query, result2.Error)
+		}
+
+		// Results should be identical
+		if len(result1.Rows) != len(result2.Rows) {
+			t.Errorf("Query '%s': cached result has different row count: %d vs %d", 
+				query, len(result1.Rows), len(result2.Rows))
+		}
+	}
+
+	// Check final cache stats
+	stats := engine.GetCacheStats()
+	expectedTotal := int64(len(queries) * 2) // Each query executed twice
+	expectedHits := int64(len(queries))      // Second execution of each query should hit cache
+	expectedMisses := int64(len(queries))    // First execution of each query should miss cache
+
+	if stats.TotalQueries != expectedTotal {
+		t.Errorf("Expected %d total queries, got %d", expectedTotal, stats.TotalQueries)
+	}
+	if stats.Hits != expectedHits {
+		t.Errorf("Expected %d cache hits, got %d", expectedHits, stats.Hits)
+	}
+	if stats.Misses != expectedMisses {
+		t.Errorf("Expected %d cache misses, got %d", expectedMisses, stats.Misses)
+	}
+}
+
+// Test cache TTL expiration
+func TestCacheTTLExpiration(t *testing.T) {
+	generateSampleData()
+	
+	// Create engine with very short TTL
+	cacheConfig := CacheConfig{
+		MaxMemoryMB: 10,
+		DefaultTTL:  50 * time.Millisecond, // Very short TTL for testing
+		Enabled:     true,
+	}
+	engine := NewQueryEngineWithCache("./data", cacheConfig)
+	defer engine.Close()
+
+	query := "SELECT COUNT(*) FROM employees;"
+	
+	// First execution
+	result1, err := engine.Execute(query)
+	if err != nil {
+		t.Fatalf("Failed to execute first query: %v", err)
+	}
+	if result1.Error != "" {
+		t.Fatalf("First query returned error: %s", result1.Error)
+	}
+
+	// Wait for TTL to expire
+	time.Sleep(100 * time.Millisecond)
+
+	// Second execution after TTL expiration should miss cache
+	result2, err := engine.Execute(query)
+	if err != nil {
+		t.Fatalf("Failed to execute second query: %v", err)
+	}
+	if result2.Error != "" {
+		t.Fatalf("Second query returned error: %s", result2.Error)
+	}
+
+	// Check cache stats - should have 2 misses, 0 hits
+	stats := engine.GetCacheStats()
+	if stats.TotalQueries != 2 {
+		t.Errorf("Expected 2 total queries, got %d", stats.TotalQueries)
+	}
+	if stats.Misses != 2 {
+		t.Errorf("Expected 2 cache misses due to TTL expiration, got %d", stats.Misses)
+	}
+	if stats.Hits != 0 {
+		t.Errorf("Expected 0 cache hits due to TTL expiration, got %d", stats.Hits)
+	}
+}
+
+// Test cache enable/disable functionality
+func TestCacheEnableDisable(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	query := "SELECT name FROM employees LIMIT 2;"
+	
+	// Execute with cache enabled (default)
+	result1, err := engine.Execute(query)
+	if err != nil {
+		t.Fatalf("Failed to execute query with cache enabled: %v", err)
+	}
+	if result1.Error != "" {
+		t.Fatalf("Query with cache enabled returned error: %s", result1.Error)
+	}
+
+	// Execute again - should hit cache
+	_, err = engine.Execute(query)
+	if err != nil {
+		t.Fatalf("Failed to execute cached query: %v", err)
+	}
+
+	// Check that we got a cache hit
+	stats := engine.GetCacheStats()
+	if stats.Hits != 1 {
+		t.Errorf("Expected 1 cache hit with cache enabled, got %d", stats.Hits)
+	}
+
+	// Disable cache
+	engine.SetCacheEnabled(false)
+
+	// Execute query again - should not use cache
+	result3, err := engine.Execute(query)
+	if err != nil {
+		t.Fatalf("Failed to execute query with cache disabled: %v", err)
+	}
+	if result3.Error != "" {
+		t.Fatalf("Query with cache disabled returned error: %s", result3.Error)
+	}
+
+	// Cache stats should not have changed (no new hits)
+	newStats := engine.GetCacheStats()
+	if newStats.Hits != stats.Hits {
+		t.Errorf("Cache hits should not increase when cache is disabled")
+	}
+}
+
+// Test cache memory management
+func TestCacheMemoryManagement(t *testing.T) {
+	generateSampleData()
+	
+	// Create engine with very small cache to test eviction
+	cacheConfig := CacheConfig{
+		MaxMemoryMB: 1, // Very small cache
+		DefaultTTL:  5 * time.Minute,
+		Enabled:     true,
+	}
+	engine := NewQueryEngineWithCache("./data", cacheConfig)
+	defer engine.Close()
+
+	// Execute several different queries to fill up cache
+	queries := []string{
+		"SELECT * FROM employees;",
+		"SELECT * FROM products;",
+		"SELECT name, salary FROM employees ORDER BY salary DESC;",
+		"SELECT COUNT(*) FROM employees GROUP BY department;",
+		"SELECT price FROM products WHERE category = 'Electronics';",
+	}
+
+	for _, query := range queries {
+		result, err := engine.Execute(query)
+		if err != nil {
+			t.Fatalf("Failed to execute query '%s': %v", query, err)
+		}
+		if result.Error != "" {
+			t.Fatalf("Query '%s' returned error: %s", query, result.Error)
+		}
+	}
+
+	// Check that evictions occurred due to memory pressure
+	stats := engine.GetCacheStats()
+	if stats.Evictions == 0 {
+		t.Log("Note: No evictions occurred, cache might be larger than expected or queries smaller")
+	}
+
+	// Memory usage should be within limits
+	maxMemoryBytes := float64(cacheConfig.MaxMemoryMB)
+	if stats.GetMemoryUsageMB() > maxMemoryBytes*1.1 { // Allow 10% tolerance
+		t.Errorf("Cache memory usage (%.2f MB) exceeds limit (%.2f MB)", 
+			stats.GetMemoryUsageMB(), maxMemoryBytes)
+	}
+}
+
+// Test cache clearing
+func TestCacheClear(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Execute some queries to populate cache
+	queries := []string{
+		"SELECT COUNT(*) FROM employees;",
+		"SELECT COUNT(*) FROM products;",
+	}
+
+	for _, query := range queries {
+		_, err := engine.Execute(query)
+		if err != nil {
+			t.Fatalf("Failed to execute query: %v", err)
+		}
+	}
+
+	// Verify cache has entries
+	stats := engine.GetCacheStats()
+	if stats.TotalQueries == 0 {
+		t.Fatal("No queries executed before cache clear test")
+	}
+
+	// Clear cache
+	engine.ClearCache()
+
+	// Verify cache is empty
+	newStats := engine.GetCacheStats()
+	if newStats.CurrentSize != 0 {
+		t.Errorf("Cache size should be 0 after clear, got %d", newStats.CurrentSize)
+	}
+
+	// Execute query again - should miss cache
+	result, err := engine.Execute(queries[0])
+	if err != nil {
+		t.Fatalf("Failed to execute query after cache clear: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("Query after cache clear returned error: %s", result.Error)
+	}
+
+	// Should be a cache miss
+	finalStats := engine.GetCacheStats()
+	if finalStats.Hits > newStats.Hits {
+		t.Error("Should not get cache hit after cache clear")
 	}
 }

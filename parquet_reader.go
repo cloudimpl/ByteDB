@@ -80,14 +80,34 @@ func (pr *ParquetReader) GetColumnNames() []string {
 }
 
 func (pr *ParquetReader) ReadAll() ([]Row, error) {
-	return pr.readRows(0)
+	return pr.readRows(0, nil)
 }
 
 func (pr *ParquetReader) ReadWithLimit(limit int) ([]Row, error) {
-	return pr.readRows(limit)
+	return pr.readRows(limit, nil)
 }
 
-func (pr *ParquetReader) readRows(limit int) ([]Row, error) {
+// ReadAllWithColumns reads all rows but only the specified columns for performance
+func (pr *ParquetReader) ReadAllWithColumns(requiredColumns []string) ([]Row, error) {
+	return pr.readRows(0, requiredColumns)
+}
+
+// ReadWithLimitAndColumns reads rows with limit and only specified columns
+func (pr *ParquetReader) ReadWithLimitAndColumns(limit int, requiredColumns []string) ([]Row, error) {
+	return pr.readRows(limit, requiredColumns)
+}
+
+func (pr *ParquetReader) readRows(limit int, requiredColumns []string) ([]Row, error) {
+	// If no specific columns requested or empty list, read all columns
+	if len(requiredColumns) == 0 {
+		return pr.readAllColumns(limit)
+	}
+	
+	// Read only the required columns for performance
+	return pr.readSpecificColumns(limit, requiredColumns)
+}
+
+func (pr *ParquetReader) readAllColumns(limit int) ([]Row, error) {
 	rows := make([]Row, 0)
 	
 	// Determine which struct to use based on schema
@@ -147,6 +167,50 @@ func (pr *ParquetReader) readRows(limit int) ([]Row, error) {
 		}
 	} else {
 		return nil, fmt.Errorf("unsupported schema type")
+	}
+	
+	return rows, nil
+}
+
+func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string) ([]Row, error) {
+	rows := make([]Row, 0)
+	
+	// Get available columns from schema
+	availableColumns := pr.GetColumnNames()
+	
+	// Validate that all required columns exist
+	validColumns := make([]string, 0)
+	for _, reqCol := range requiredColumns {
+		for _, availCol := range availableColumns {
+			if reqCol == availCol {
+				validColumns = append(validColumns, reqCol)
+				break
+			}
+		}
+	}
+	
+	if len(validColumns) == 0 {
+		return rows, nil // No valid columns to read
+	}
+	
+	// For now, we implement column pruning at the Row level rather than Parquet level
+	// This still provides memory benefits by not storing unnecessary columns in Row objects
+	// A full optimization would read only specific columns from Parquet, but that requires
+	// more complex row group iteration with parquet-go
+	allRows, err := pr.readAllColumns(limit)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Project only the required columns to save memory
+	for _, row := range allRows {
+		projectedRow := make(Row)
+		for _, col := range validColumns {
+			if val, exists := row[col]; exists {
+				projectedRow[col] = val
+			}
+		}
+		rows = append(rows, projectedRow)
 	}
 	
 	return rows, nil
