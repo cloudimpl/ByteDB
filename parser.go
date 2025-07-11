@@ -211,6 +211,8 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 						condition.Value = sval.Sval
 					} else if fval := aConst.GetFval(); fval != nil {
 						condition.Value = fval.Fval
+					} else if bval := aConst.GetBoolval(); bval != nil {
+						condition.Value = bval.Boolval
 					}
 				}
 			}
@@ -235,6 +237,8 @@ func (p *SQLParser) parseValueList(items []*pg_query.Node, condition *WhereCondi
 				condition.ValueList = append(condition.ValueList, sval.Sval)
 			} else if fval := aConst.GetFval(); fval != nil {
 				condition.ValueList = append(condition.ValueList, fval.Fval)
+			} else if bval := aConst.GetBoolval(); bval != nil {
+				condition.ValueList = append(condition.ValueList, bval.Boolval)
 			}
 		}
 	}

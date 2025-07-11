@@ -79,6 +79,26 @@ func (pr *ParquetReader) GetColumnNames() []string {
 	return names
 }
 
+// GetSchemaInfo returns detailed information about the schema
+func (pr *ParquetReader) GetSchemaInfo() map[string]interface{} {
+	fields := pr.schema.Fields()
+	schemaInfo := map[string]interface{}{
+		"field_count": len(fields),
+		"fields":      make([]map[string]interface{}, len(fields)),
+	}
+	
+	fieldInfos := schemaInfo["fields"].([]map[string]interface{})
+	for i, field := range fields {
+		fieldInfos[i] = map[string]interface{}{
+			"name":     field.Name(),
+			"type":     field.Type().String(),
+			"optional": field.Optional(),
+		}
+	}
+	
+	return schemaInfo
+}
+
 func (pr *ParquetReader) ReadAll() ([]Row, error) {
 	return pr.readRows(0, nil)
 }
@@ -110,67 +130,33 @@ func (pr *ParquetReader) readRows(limit int, requiredColumns []string) ([]Row, e
 func (pr *ParquetReader) readAllColumns(limit int) ([]Row, error) {
 	rows := make([]Row, 0)
 	
-	// Determine which struct to use based on schema
-	if pr.isEmployeeSchema() {
-		reader := parquet.NewReader(pr.reader, parquet.SchemaOf(Employee{}))
-		defer reader.Close()
-		
-		count := 0
-		for {
-			if limit > 0 && count >= limit {
-				break
-			}
-			
-			var emp Employee
-			err := reader.Read(&emp)
-			if err != nil {
-				break
-			}
-			
-			row := Row{
-				"id":         emp.ID,
-				"name":       emp.Name,
-				"department": emp.Department,
-				"salary":     emp.Salary,
-				"age":        emp.Age,
-				"hire_date":  emp.HireDate,
-			}
-			rows = append(rows, row)
-			count++
+	// Use generic reading with map interface
+	reader := parquet.NewReader(pr.reader)
+	defer reader.Close()
+	
+	count := 0
+	for {
+		if limit > 0 && count >= limit {
+			break
 		}
-	} else if pr.isProductSchema() {
-		reader := parquet.NewReader(pr.reader, parquet.SchemaOf(Product{}))
-		defer reader.Close()
 		
-		count := 0
-		for {
-			if limit > 0 && count >= limit {
-				break
-			}
-			
-			var prod Product
-			err := reader.Read(&prod)
-			if err != nil {
-				break
-			}
-			
-			row := Row{
-				"id":          prod.ID,
-				"name":        prod.Name,
-				"category":    prod.Category,
-				"price":       prod.Price,
-				"in_stock":    prod.InStock,
-				"description": prod.Description,
-			}
-			rows = append(rows, row)
-			count++
+		// Read into a generic map
+		rowData := make(map[string]interface{})
+		err := reader.Read(&rowData)
+		if err != nil {
+			break // End of file or error
 		}
-	} else {
-		return nil, fmt.Errorf("unsupported schema type")
+		
+		// Convert map to our Row type
+		row := Row(rowData)
+		rows = append(rows, row)
+		count++
 	}
 	
 	return rows, nil
 }
+
+// Generic reading approach - parquet-go handles the conversion automatically
 
 func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string) ([]Row, error) {
 	rows := make([]Row, 0)
@@ -216,35 +202,7 @@ func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string
 	return rows, nil
 }
 
-func (pr *ParquetReader) isEmployeeSchema() bool {
-	fields := pr.schema.Fields()
-	if len(fields) != 6 {
-		return false
-	}
-	
-	expectedFields := []string{"id", "name", "department", "salary", "age", "hire_date"}
-	for i, field := range fields {
-		if field.Name() != expectedFields[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func (pr *ParquetReader) isProductSchema() bool {
-	fields := pr.schema.Fields()
-	if len(fields) != 6 {
-		return false
-	}
-	
-	expectedFields := []string{"id", "name", "category", "price", "in_stock", "description"}
-	for i, field := range fields {
-		if field.Name() != expectedFields[i] {
-			return false
-		}
-	}
-	return true
-}
+// Schema detection methods removed - now supports any schema generically
 
 func (pr *ParquetReader) FilterRows(rows []Row, conditions []WhereCondition) []Row {
 	if len(conditions) == 0 {
