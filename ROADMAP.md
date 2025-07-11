@@ -11,6 +11,7 @@
 - [x] ORDER BY clause with multi-column and ASC/DESC support
 - [x] Aggregate functions (COUNT, SUM, AVG, MIN, MAX)
 - [x] GROUP BY clause with aggregate functions
+- [x] IN operator for value list filtering
 
 ## Phase 1: Enhanced SQL Support (Priority: High)
 
@@ -29,12 +30,13 @@ SELECT department, COUNT(*) FROM employees GROUP BY department
 **Status**: ✅ Implemented  
 **Features**: All standard aggregates (COUNT, SUM, AVG, MIN, MAX), GROUP BY support, mixed with WHERE/ORDER BY
 
-### IN Operator
+### ✅ IN Operator - COMPLETED  
 ```sql
 SELECT * FROM employees WHERE department IN ('Engineering', 'Sales')
+SELECT * FROM products WHERE price IN (99.99, 199.99, 299.99)
 ```
-**Effort**: 1-2 days  
-**Impact**: Medium - Common filtering pattern
+**Status**: ✅ Implemented  
+**Features**: String/numeric value lists, type coercion, integration with ORDER BY/GROUP BY/aggregates
 
 ### Enhanced LIKE Pattern Matching
 ```sql

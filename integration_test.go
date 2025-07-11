@@ -565,3 +565,219 @@ func TestAggregatesWithWhere(t *testing.T) {
 		t.Error("HR department should not be in results (no employees with salary > 60000)")
 	}
 }
+
+// Test IN operator functionality
+func TestInOperator(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Test IN operator with string values
+	result, err := engine.Execute("SELECT name, department FROM employees WHERE department IN ('Engineering', 'Sales');")
+	if err != nil {
+		t.Fatalf("Failed to execute IN query with strings: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return Engineering (4) + Sales (2) = 6 employees
+	if len(result.Rows) != 6 {
+		t.Errorf("Expected 6 employees from Engineering and Sales, got %d", len(result.Rows))
+	}
+
+	// Verify all returned employees are from the specified departments
+	validDepts := map[string]bool{"Engineering": true, "Sales": true}
+	for _, row := range result.Rows {
+		dept := row["department"].(string)
+		if !validDepts[dept] {
+			t.Errorf("Found employee from unexpected department: %s", dept)
+		}
+	}
+
+	// Test IN operator with numeric values
+	result, err = engine.Execute("SELECT name, salary FROM employees WHERE salary IN (75000, 80000, 85000);")
+	if err != nil {
+		t.Fatalf("Failed to execute IN query with numbers: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return John Doe (75000), Mike Johnson (80000), Lisa Davis (85000)
+	if len(result.Rows) != 3 {
+		t.Errorf("Expected 3 employees with specified salaries, got %d", len(result.Rows))
+	}
+
+	expectedSalaries := map[float64]bool{75000: true, 80000: true, 85000: true}
+	for _, row := range result.Rows {
+		salary := row["salary"].(float64)
+		if !expectedSalaries[salary] {
+			t.Errorf("Found employee with unexpected salary: %.0f", salary)
+		}
+	}
+
+	// Test IN operator with float values (products table)
+	result, err = engine.Execute("SELECT name, price FROM products WHERE price IN (29.99, 199.99, 999.99);")
+	if err != nil {
+		t.Fatalf("Failed to execute IN query with floats: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return Mouse (29.99), Desk Chair (199.99), Laptop (999.99)
+	if len(result.Rows) != 3 {
+		t.Errorf("Expected 3 products with specified prices, got %d", len(result.Rows))
+	}
+
+	expectedPrices := map[float64]bool{29.99: true, 199.99: true, 999.99: true}
+	for _, row := range result.Rows {
+		price := row["price"].(float64)
+		if !expectedPrices[price] {
+			t.Errorf("Found product with unexpected price: %.2f", price)
+		}
+	}
+
+	// Test IN operator with single value
+	result, err = engine.Execute("SELECT name FROM employees WHERE department IN ('HR');")
+	if err != nil {
+		t.Fatalf("Failed to execute IN query with single value: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return only Sarah Wilson from HR
+	if len(result.Rows) != 1 {
+		t.Errorf("Expected 1 HR employee, got %d", len(result.Rows))
+	}
+
+	if len(result.Rows) > 0 {
+		name := result.Rows[0]["name"].(string)
+		if name != "Sarah Wilson" {
+			t.Errorf("Expected Sarah Wilson from HR, got %s", name)
+		}
+	}
+
+	// Test IN operator with no matches
+	result, err = engine.Execute("SELECT name FROM employees WHERE department IN ('NonExistent', 'AlsoNonExistent');")
+	if err != nil {
+		t.Fatalf("Failed to execute IN query with no matches: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return no results
+	if len(result.Rows) != 0 {
+		t.Errorf("Expected 0 employees for non-existent departments, got %d", len(result.Rows))
+	}
+}
+
+// Test IN operator with ORDER BY and other clauses
+func TestInOperatorWithOtherClauses(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Test IN with ORDER BY
+	result, err := engine.Execute("SELECT name, department, salary FROM employees WHERE department IN ('Engineering', 'Marketing') ORDER BY salary DESC;")
+	if err != nil {
+		t.Fatalf("Failed to execute IN with ORDER BY: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return Engineering (4) + Marketing (2) = 6 employees, ordered by salary DESC
+	if len(result.Rows) != 6 {
+		t.Errorf("Expected 6 employees from Engineering and Marketing, got %d", len(result.Rows))
+	}
+
+	// Verify ordering (salaries should be in descending order)
+	for i := 1; i < len(result.Rows); i++ {
+		prevSalary := result.Rows[i-1]["salary"].(float64)
+		currSalary := result.Rows[i]["salary"].(float64)
+		
+		if prevSalary < currSalary {
+			t.Errorf("ORDER BY DESC failed with IN: salary[%d]=%.0f should be >= salary[%d]=%.0f", 
+				i-1, prevSalary, i, currSalary)
+		}
+	}
+
+	// Test IN with LIMIT
+	result, err = engine.Execute("SELECT name, department FROM employees WHERE department IN ('Engineering', 'Sales', 'Marketing') ORDER BY name LIMIT 3;")
+	if err != nil {
+		t.Fatalf("Failed to execute IN with LIMIT: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return exactly 3 results due to LIMIT
+	if len(result.Rows) != 3 {
+		t.Errorf("Expected 3 employees due to LIMIT, got %d", len(result.Rows))
+	}
+
+	// Test IN with COUNT aggregate
+	result, err = engine.Execute("SELECT COUNT(*) FROM employees WHERE department IN ('Engineering', 'Sales');")
+	if err != nil {
+		t.Fatalf("Failed to execute COUNT with IN: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	count := result.Rows[0]["count"].(float64)
+	if count != 6 {
+		t.Errorf("Expected COUNT(*) with IN = 6, got %.0f", count)
+	}
+
+	// Test IN with GROUP BY
+	result, err = engine.Execute("SELECT department, COUNT(*) FROM employees WHERE department IN ('Engineering', 'Sales', 'Marketing') GROUP BY department ORDER BY department;")
+	if err != nil {
+		t.Fatalf("Failed to execute GROUP BY with IN: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return 3 departments: Engineering, Marketing, Sales
+	if len(result.Rows) != 3 {
+		t.Errorf("Expected 3 departments in GROUP BY with IN, got %d", len(result.Rows))
+	}
+
+	// Build counts map to verify
+	deptCounts := make(map[string]float64)
+	for _, row := range result.Rows {
+		dept := row["department"].(string)
+		count := row["count"].(float64)
+		deptCounts[dept] = count
+	}
+
+	expected := map[string]float64{
+		"Engineering": 4,
+		"Marketing":   2,
+		"Sales":       2,
+	}
+
+	for dept, expectedCount := range expected {
+		if actualCount, exists := deptCounts[dept]; !exists {
+			t.Errorf("Department %s missing from GROUP BY with IN results", dept)
+		} else if actualCount != expectedCount {
+			t.Errorf("Department %s: expected count %.0f, got %.0f", dept, expectedCount, actualCount)
+		}
+	}
+}

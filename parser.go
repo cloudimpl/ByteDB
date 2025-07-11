@@ -23,9 +23,10 @@ type Column struct {
 }
 
 type WhereCondition struct {
-	Column   string
-	Operator string
-	Value    interface{}
+	Column    string
+	Operator  string
+	Value     interface{}   // Single value for =, !=, <, <=, >, >=, LIKE
+	ValueList []interface{} // List of values for IN operator
 }
 
 type OrderByColumn struct {
@@ -157,35 +158,79 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 	if aExpr := node.GetAExpr(); aExpr != nil {
 		condition := WhereCondition{}
 		
-		if len(aExpr.Name) > 0 {
-			if str := aExpr.Name[0].GetString_(); str != nil {
-				condition.Operator = str.Sval
+		// Check if this is an IN expression
+		if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_IN {
+			condition.Operator = "IN"
+			
+			// Get column name from left expression
+			if lexpr := aExpr.Lexpr; lexpr != nil {
+				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
+					if len(columnRef.Fields) > 0 {
+						if str := columnRef.Fields[0].GetString_(); str != nil {
+							condition.Column = str.Sval
+						}
+					}
+				}
 			}
-		}
-		
-		if lexpr := aExpr.Lexpr; lexpr != nil {
-			if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-				if len(columnRef.Fields) > 0 {
-					if str := columnRef.Fields[0].GetString_(); str != nil {
-						condition.Column = str.Sval
+			
+			// Get list of values from right expression
+			if rexpr := aExpr.Rexpr; rexpr != nil {
+				if aList := rexpr.GetList(); aList != nil {
+					p.parseValueList(aList.Items, &condition)
+				}
+			}
+		} else {
+			// Regular operators (=, !=, <, <=, >, >=, LIKE)
+			if len(aExpr.Name) > 0 {
+				if str := aExpr.Name[0].GetString_(); str != nil {
+					condition.Operator = str.Sval
+				}
+			}
+			
+			if lexpr := aExpr.Lexpr; lexpr != nil {
+				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
+					if len(columnRef.Fields) > 0 {
+						if str := columnRef.Fields[0].GetString_(); str != nil {
+							condition.Column = str.Sval
+						}
+					}
+				}
+			}
+			
+			if rexpr := aExpr.Rexpr; rexpr != nil {
+				if aConst := rexpr.GetAConst(); aConst != nil {
+					if ival := aConst.GetIval(); ival != nil {
+						condition.Value = ival.Ival
+					} else if sval := aConst.GetSval(); sval != nil {
+						condition.Value = sval.Sval
+					} else if fval := aConst.GetFval(); fval != nil {
+						condition.Value = fval.Fval
 					}
 				}
 			}
 		}
 		
-		if rexpr := aExpr.Rexpr; rexpr != nil {
-			if aConst := rexpr.GetAConst(); aConst != nil {
-				if ival := aConst.GetIval(); ival != nil {
-					condition.Value = ival.Ival
-				} else if sval := aConst.GetSval(); sval != nil {
-					condition.Value = sval.Sval
-				} else if fval := aConst.GetFval(); fval != nil {
-					condition.Value = fval.Fval
-				}
+		query.Where = append(query.Where, condition)
+	}
+}
+
+func (p *SQLParser) parseInValues(node *pg_query.Node, condition *WhereCondition) {
+	if aList := node.GetList(); aList != nil {
+		p.parseValueList(aList.Items, condition)
+	}
+}
+
+func (p *SQLParser) parseValueList(items []*pg_query.Node, condition *WhereCondition) {
+	for _, item := range items {
+		if aConst := item.GetAConst(); aConst != nil {
+			if ival := aConst.GetIval(); ival != nil {
+				condition.ValueList = append(condition.ValueList, ival.Ival)
+			} else if sval := aConst.GetSval(); sval != nil {
+				condition.ValueList = append(condition.ValueList, sval.Sval)
+			} else if fval := aConst.GetFval(); fval != nil {
+				condition.ValueList = append(condition.ValueList, fval.Fval)
 			}
 		}
-		
-		query.Where = append(query.Where, condition)
 	}
 }
 

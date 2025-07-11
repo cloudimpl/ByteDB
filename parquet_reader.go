@@ -225,6 +225,8 @@ func (pr *ParquetReader) matchesCondition(row Row, condition WhereCondition) boo
 		return pr.CompareValues(value, condition.Value) >= 0
 	case "LIKE":
 		return pr.matchesLike(value, condition.Value)
+	case "IN":
+		return pr.matchesIn(value, condition.ValueList)
 	default:
 		return false
 	}
@@ -362,6 +364,19 @@ func (pr *ParquetReader) matchesLike(value, pattern interface{}) bool {
 	patternStr = strings.ReplaceAll(patternStr, "_", ".")
 	
 	return strings.Contains(valueStr, strings.TrimSuffix(strings.TrimPrefix(patternStr, ".*"), ".*"))
+}
+
+func (pr *ParquetReader) matchesIn(value interface{}, valueList []interface{}) bool {
+	if len(valueList) == 0 {
+		return false // Empty IN list matches nothing
+	}
+	
+	for _, listValue := range valueList {
+		if pr.CompareValues(value, listValue) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (pr *ParquetReader) SelectColumns(rows []Row, columns []Column) []Row {
