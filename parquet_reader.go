@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -357,13 +358,68 @@ func (pr *ParquetReader) compareSameTypes(aVal, bVal reflect.Value) int {
 }
 
 func (pr *ParquetReader) matchesLike(value, pattern interface{}) bool {
+	if value == nil || pattern == nil {
+		return false
+	}
+	
 	valueStr := fmt.Sprintf("%v", value)
 	patternStr := fmt.Sprintf("%v", pattern)
 	
-	patternStr = strings.ReplaceAll(patternStr, "%", ".*")
-	patternStr = strings.ReplaceAll(patternStr, "_", ".")
+	// Convert SQL LIKE pattern to regex pattern
+	regexPattern := pr.convertLikeToRegex(patternStr)
 	
-	return strings.Contains(valueStr, strings.TrimSuffix(strings.TrimPrefix(patternStr, ".*"), ".*"))
+	// Compile and match the regex
+	matched, err := regexp.MatchString(regexPattern, valueStr)
+	if err != nil {
+		// If regex compilation fails, fall back to simple string comparison
+		return valueStr == patternStr
+	}
+	
+	return matched
+}
+
+// Case-insensitive LIKE matching (for future ILIKE support)
+func (pr *ParquetReader) matchesILike(value, pattern interface{}) bool {
+	if value == nil || pattern == nil {
+		return false
+	}
+	
+	valueStr := strings.ToLower(fmt.Sprintf("%v", value))
+	patternStr := strings.ToLower(fmt.Sprintf("%v", pattern))
+	
+	// Convert SQL LIKE pattern to regex pattern
+	regexPattern := pr.convertLikeToRegex(patternStr)
+	
+	// Compile and match the regex
+	matched, err := regexp.MatchString(regexPattern, valueStr)
+	if err != nil {
+		// If regex compilation fails, fall back to simple string comparison
+		return valueStr == patternStr
+	}
+	
+	return matched
+}
+
+func (pr *ParquetReader) convertLikeToRegex(pattern string) string {
+	// Handle escaped wildcards first (\\% and \\_)
+	pattern = strings.ReplaceAll(pattern, "\\%", "\x00ESCAPED_PERCENT\x00")
+	pattern = strings.ReplaceAll(pattern, "\\_", "\x00ESCAPED_UNDERSCORE\x00")
+	
+	// Replace SQL wildcards with placeholders to avoid conflicts
+	pattern = strings.ReplaceAll(pattern, "%", "\x00PERCENT\x00")
+	pattern = strings.ReplaceAll(pattern, "_", "\x00UNDERSCORE\x00")
+	
+	// Escape special regex characters
+	pattern = regexp.QuoteMeta(pattern)
+	
+	// Now replace the placeholders with appropriate equivalents
+	pattern = strings.ReplaceAll(pattern, "\x00PERCENT\x00", ".*")    // % matches any sequence of characters
+	pattern = strings.ReplaceAll(pattern, "\x00UNDERSCORE\x00", ".")  // _ matches any single character
+	pattern = strings.ReplaceAll(pattern, "\x00ESCAPED_PERCENT\x00", "%")     // \% becomes literal %
+	pattern = strings.ReplaceAll(pattern, "\x00ESCAPED_UNDERSCORE\x00", "_")  // \_ becomes literal _
+	
+	// Anchor the pattern to match the entire string
+	return "^" + pattern + "$"
 }
 
 func (pr *ParquetReader) matchesIn(value interface{}, valueList []interface{}) bool {

@@ -66,13 +66,9 @@ func (qe *QueryEngine) executeSelect(query *ParsedQuery) (*QueryResult, error) {
 		}, nil
 	}
 
+	// Always read all data first, then apply LIMIT after filtering and sorting
 	var rows []Row
-	if query.Limit > 0 && !query.IsAggregate {
-		// For aggregate queries, we need all data first to calculate aggregates
-		rows, err = reader.ReadWithLimit(query.Limit)
-	} else {
-		rows, err = reader.ReadAll()
-	}
+	rows, err = reader.ReadAll()
 	
 	if err != nil {
 		return &QueryResult{
@@ -93,7 +89,7 @@ func (qe *QueryEngine) executeSelect(query *ParsedQuery) (*QueryResult, error) {
 	rows = reader.SelectColumns(rows, query.Columns)
 	rows = qe.sortRows(rows, query.OrderBy, reader)
 
-	// Apply LIMIT after sorting for non-aggregate queries
+	// Apply LIMIT after filtering and sorting
 	if query.Limit > 0 && len(rows) > query.Limit {
 		rows = rows[:query.Limit]
 	}

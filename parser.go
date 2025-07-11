@@ -183,7 +183,13 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 			// Regular operators (=, !=, <, <=, >, >=, LIKE)
 			if len(aExpr.Name) > 0 {
 				if str := aExpr.Name[0].GetString_(); str != nil {
-					condition.Operator = str.Sval
+					operator := str.Sval
+					// PostgreSQL represents LIKE as "~~" operator
+					if operator == "~~" {
+						condition.Operator = "LIKE"
+					} else {
+						condition.Operator = operator
+					}
 				}
 			}
 			

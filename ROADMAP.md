@@ -12,6 +12,7 @@
 - [x] Aggregate functions (COUNT, SUM, AVG, MIN, MAX)
 - [x] GROUP BY clause with aggregate functions
 - [x] IN operator for value list filtering
+- [x] Enhanced LIKE pattern matching with % and _ wildcards
 
 ## Phase 1: Enhanced SQL Support (Priority: High)
 
@@ -38,13 +39,14 @@ SELECT * FROM products WHERE price IN (99.99, 199.99, 299.99)
 **Status**: ✅ Implemented  
 **Features**: String/numeric value lists, type coercion, integration with ORDER BY/GROUP BY/aggregates
 
-### Enhanced LIKE Pattern Matching
+### ✅ Enhanced LIKE Pattern Matching - COMPLETED
 ```sql
 SELECT * FROM products WHERE name LIKE '%laptop%'
 SELECT * FROM employees WHERE name LIKE 'J%'
+SELECT * FROM employees WHERE name LIKE '_ohn%'
 ```
-**Effort**: 1 day  
-**Impact**: Medium - Better text search
+**Status**: ✅ Implemented  
+**Features**: Proper regex-based matching, % and _ wildcards, escaped characters, NULL handling, integration with all clauses
 
 ## Phase 2: Performance Optimizations (Priority: High)
 

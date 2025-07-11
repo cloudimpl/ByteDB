@@ -781,3 +781,222 @@ func TestInOperatorWithOtherClauses(t *testing.T) {
 		}
 	}
 }
+
+// Test enhanced LIKE pattern matching
+func TestLikePatterns(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Test prefix matching
+	result, err := engine.Execute("SELECT name FROM employees WHERE name LIKE 'J%';")
+	if err != nil {
+		t.Fatalf("Failed to execute LIKE prefix query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return John Doe and Jane Smith
+	if len(result.Rows) != 2 {
+		t.Errorf("Expected 2 employees starting with 'J', got %d", len(result.Rows))
+	}
+
+	expectedNames := map[string]bool{"John Doe": true, "Jane Smith": true}
+	for _, row := range result.Rows {
+		name := row["name"].(string)
+		if !expectedNames[name] {
+			t.Errorf("Unexpected employee name: %s", name)
+		}
+	}
+
+	// Test substring matching
+	result, err = engine.Execute("SELECT name FROM employees WHERE name LIKE '%John%';")
+	if err != nil {
+		t.Fatalf("Failed to execute LIKE substring query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return John Doe and Mike Johnson
+	if len(result.Rows) != 2 {
+		t.Errorf("Expected 2 employees containing 'John', got %d", len(result.Rows))
+	}
+
+	expectedJohns := map[string]bool{"John Doe": true, "Mike Johnson": true}
+	for _, row := range result.Rows {
+		name := row["name"].(string)
+		if !expectedJohns[name] {
+			t.Errorf("Unexpected employee name for John pattern: %s", name)
+		}
+	}
+
+	// Test single character wildcard
+	result, err = engine.Execute("SELECT name FROM employees WHERE name LIKE '_ohn%';")
+	if err != nil {
+		t.Fatalf("Failed to execute LIKE single char query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return only John Doe (first char matches, then "ohn")
+	if len(result.Rows) != 1 {
+		t.Errorf("Expected 1 employee matching '_ohn%%', got %d", len(result.Rows))
+	}
+
+	if len(result.Rows) > 0 {
+		name := result.Rows[0]["name"].(string)
+		if name != "John Doe" {
+			t.Errorf("Expected John Doe for '_ohn%%' pattern, got %s", name)
+		}
+	}
+
+	// Test exact match
+	result, err = engine.Execute("SELECT name FROM employees WHERE name LIKE 'John Doe';")
+	if err != nil {
+		t.Fatalf("Failed to execute LIKE exact match query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	if len(result.Rows) != 1 {
+		t.Errorf("Expected 1 employee for exact match, got %d", len(result.Rows))
+	}
+
+	// Test no matches
+	result, err = engine.Execute("SELECT name FROM employees WHERE name LIKE 'Z%';")
+	if err != nil {
+		t.Fatalf("Failed to execute LIKE no match query: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	if len(result.Rows) != 0 {
+		t.Errorf("Expected 0 employees starting with 'Z', got %d", len(result.Rows))
+	}
+
+	// Test with products table
+	result, err = engine.Execute("SELECT name, price FROM products WHERE name LIKE '%top%';")
+	if err != nil {
+		t.Fatalf("Failed to execute LIKE on products: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return Laptop
+	if len(result.Rows) != 1 {
+		t.Errorf("Expected 1 product containing 'top', got %d", len(result.Rows))
+	}
+
+	if len(result.Rows) > 0 {
+		name := result.Rows[0]["name"].(string)
+		if name != "Laptop" {
+			t.Errorf("Expected Laptop for '%%top%%' pattern, got %s", name)
+		}
+	}
+}
+
+// Test LIKE with other SQL clauses
+func TestLikeWithOtherClauses(t *testing.T) {
+	generateSampleData()
+	
+	engine := NewQueryEngine("./data")
+	defer engine.Close()
+
+	// Test LIKE with ORDER BY
+	result, err := engine.Execute("SELECT name, salary FROM employees WHERE name LIKE '%a%' ORDER BY salary DESC;")
+	if err != nil {
+		t.Fatalf("Failed to execute LIKE with ORDER BY: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return employees with 'a' in name, ordered by salary DESC
+	if len(result.Rows) == 0 {
+		t.Error("Expected some employees with 'a' in name")
+	}
+
+	// Verify ordering (salaries should be in descending order)
+	for i := 1; i < len(result.Rows); i++ {
+		prevSalary := result.Rows[i-1]["salary"].(float64)
+		currSalary := result.Rows[i]["salary"].(float64)
+		
+		if prevSalary < currSalary {
+			t.Errorf("ORDER BY DESC failed with LIKE: salary[%d]=%.0f should be >= salary[%d]=%.0f", 
+				i-1, prevSalary, i, currSalary)
+		}
+	}
+
+	// Test LIKE with COUNT aggregate
+	result, err = engine.Execute("SELECT COUNT(*) FROM employees WHERE name LIKE '%e%';")
+	if err != nil {
+		t.Fatalf("Failed to execute COUNT with LIKE: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	count := result.Rows[0]["count"].(float64)
+	// Names with 'e': John Doe, Jane Smith, Mike Johnson, Anna Garcia, Chris Anderson, Maria Rodriguez
+	// That's at least 6 employees
+	if count < 6 {
+		t.Errorf("Expected at least 6 employees with 'e' in name, got %.0f", count)
+	}
+
+	// Test LIKE with LIMIT
+	result, err = engine.Execute("SELECT name FROM employees WHERE name LIKE '%o%' ORDER BY name LIMIT 2;")
+	if err != nil {
+		t.Fatalf("Failed to execute LIKE with LIMIT: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should return exactly 2 results due to LIMIT
+	if len(result.Rows) != 2 {
+		t.Errorf("Expected 2 employees due to LIMIT, got %d", len(result.Rows))
+		// Debug: show what we actually got
+		for _, row := range result.Rows {
+			t.Logf("Got employee: %s", row["name"].(string))
+		}
+	}
+
+	// Test LIKE with GROUP BY
+	result, err = engine.Execute("SELECT department, COUNT(*) FROM employees WHERE name LIKE '%a%' GROUP BY department ORDER BY department;")
+	if err != nil {
+		t.Fatalf("Failed to execute LIKE with GROUP BY: %v", err)
+	}
+	
+	if result.Error != "" {
+		t.Fatalf("Query returned error: %s", result.Error)
+	}
+
+	// Should have some departments with employees having 'a' in their names
+	if len(result.Rows) == 0 {
+		t.Error("Expected some departments with employees having 'a' in names")
+	}
+
+	// Verify all counts are positive
+	for _, row := range result.Rows {
+		count := row["count"].(float64)
+		if count <= 0 {
+			t.Errorf("Expected positive count for departments, got %.0f", count)
+		}
+	}
+}
