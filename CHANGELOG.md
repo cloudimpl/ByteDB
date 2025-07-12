@@ -1,0 +1,61 @@
+# Changelog
+
+All notable changes to ByteDB will be documented in this file.
+
+## [Unreleased] - 2024-01-12
+
+### Fixed
+- **WHERE Clause Operators**
+  - Fixed AND/OR logical operators not filtering correctly
+  - Fixed BETWEEN and NOT BETWEEN operators returning all rows
+  - Fixed predicate pushdown using wrong field name (`FilterConditions` → `Filter`)
+  - Fixed filter application in optimized execution path
+
+- **SQL String Functions**
+  - Fixed CONCAT, UPPER, LOWER, LENGTH functions returning nil
+  - Added `evaluateQueryColumns` method to properly evaluate functions
+  - Fixed function evaluation in both regular and optimized execution paths
+  - Fixed missing function registry initialization in `NewQueryEngineWithCache`
+
+- **Aggregate Functions**
+  - Fixed GROUP BY with COUNT(*) returning nil values
+  - Fixed aggregate queries incorrectly applying function evaluation
+  - Added check to skip function evaluation for aggregate queries in optimized path
+
+- **CASE Expressions**
+  - Fixed CASE expressions returning nil in SELECT clause
+  - Added CASE expression handling in `evaluateQueryColumns`
+  - Added proper alias handling for CASE expressions
+
+- **Subqueries**
+  - Fixed EXISTS subqueries returning 0 rows
+  - Fixed IN subqueries in WHERE clause
+  - Added support for scalar subqueries in SELECT clause
+  - Fixed subquery execution in optimized path by marking them as subqueries
+  - Added `IsSubquery` field to prevent recursive optimization
+
+- **Query Optimization**
+  - Fixed column pruning rule to properly handle SELECT * with wildcards
+  - Fixed join order optimization to correctly place smaller tables on build side
+  - Updated optimization rules to work with current query planner structure
+
+### Added
+- Support for subqueries in SELECT clause evaluation
+- `IsSubquery` field to `ParsedQuery` struct to control optimization
+- Comprehensive troubleshooting guide in README
+- Query optimization documentation with examples
+- Working examples for all fixed features
+
+### Known Issues
+- Multiple subqueries in SELECT clause may intermittently fail
+- Complex JOIN queries may return unexpected results with certain data
+- SELECT * may not return all columns in some optimized execution scenarios
+
+## [Previous Versions]
+
+### Features
+- SQL query engine for Parquet files
+- Support for JOINs, subqueries, aggregates, window functions
+- Query result caching
+- Interactive CLI interface
+- PostgreSQL-compatible SQL parsing

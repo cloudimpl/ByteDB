@@ -4,6 +4,28 @@ A powerful SQL query engine built in Go that allows you to execute complex SQL q
 
 Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL parsing and [parquet-go](https://github.com/parquet-go/parquet-go) for Parquet file handling.
 
+## 📚 Documentation
+
+- 📋 [Feature Status Matrix](FEATURE_STATUS.md) - Comprehensive feature support overview
+- 📝 [Changelog](CHANGELOG.md) - Detailed list of changes and fixes
+- 🧪 [Test Data Migration Guide](TEST_DATA_MIGRATION.md) - Guide for test data system
+
+## 🎉 Recent Updates
+
+### Bug Fixes (Latest)
+- ✅ Fixed WHERE clause operators (AND, OR, BETWEEN, NOT BETWEEN)
+- ✅ Fixed SQL string functions (CONCAT, UPPER, LOWER, LENGTH) 
+- ✅ Fixed GROUP BY with aggregate functions
+- ✅ Fixed CASE expression evaluation
+- ✅ Fixed EXISTS and IN subqueries
+- ✅ Fixed query optimization rules (column pruning, join ordering)
+- ✅ Added support for subqueries in SELECT clause
+
+### Known Issues
+- Multiple subqueries in SELECT may intermittently fail
+- Some complex JOIN queries may return unexpected results
+- SELECT * may not return all columns in optimized execution path
+
 ## 🚀 Features
 
 ### Core SQL Support
@@ -54,8 +76,75 @@ This creates sample Parquet files in `./data/` directory with employee and depar
 
 ### Example Queries
 
+## 💡 Working Examples (Recently Fixed)
+
+### Complex WHERE Clauses
 ```sql
--- Basic queries
+-- AND/OR operators work correctly
+SELECT name, salary, department 
+FROM employees 
+WHERE (department = 'Engineering' AND salary > 70000) 
+   OR (department = 'Sales' AND salary > 60000);
+
+-- BETWEEN and NOT BETWEEN
+SELECT name, salary FROM employees WHERE salary BETWEEN 60000 AND 80000;
+SELECT name, salary FROM employees WHERE salary NOT BETWEEN 50000 AND 70000;
+
+-- IN operator with multiple values
+SELECT name FROM employees WHERE department IN ('Engineering', 'Sales', 'Marketing');
+```
+
+### String Functions
+```sql
+-- CONCAT function
+SELECT CONCAT(name, ' - ', department) as employee_info FROM employees;
+
+-- UPPER/LOWER functions  
+SELECT UPPER(name) as name_upper, LOWER(department) as dept_lower FROM employees;
+
+-- LENGTH function
+SELECT name FROM employees WHERE LENGTH(name) > 10;
+```
+
+### Aggregate Functions with GROUP BY
+```sql
+-- COUNT with GROUP BY works correctly
+SELECT department, COUNT(*) as count FROM employees GROUP BY department;
+
+-- Multiple aggregates
+SELECT department, COUNT(*) as cnt, AVG(salary) as avg_sal, MAX(salary) as max_sal
+FROM employees GROUP BY department;
+```
+
+### CASE Expressions
+```sql
+-- Simple CASE
+SELECT name, salary,
+       CASE 
+           WHEN salary > 80000 THEN 'High'
+           WHEN salary > 60000 THEN 'Medium'
+           ELSE 'Low'
+       END as salary_grade
+FROM employees;
+```
+
+### Subqueries
+```sql
+-- EXISTS subquery
+SELECT name FROM departments d 
+WHERE EXISTS (SELECT 1 FROM employees e WHERE e.department = d.name);
+
+-- IN subquery
+SELECT name FROM employees 
+WHERE department IN (SELECT name FROM departments WHERE budget > 200000);
+
+-- Scalar subquery in SELECT  
+SELECT name, (SELECT COUNT(*) FROM employees) as total_count FROM employees LIMIT 5;
+```
+
+### Basic Queries
+```sql
+-- Simple queries
 SELECT * FROM employees;
 SELECT name, department, salary FROM employees WHERE salary > 70000;
 
@@ -227,12 +316,85 @@ bytedb/
     └── departments.parquet
 ```
 
+## 🔧 Troubleshooting Guide
+
+### Common Issues and Solutions
+
+#### Query Returns Unexpected Results
+1. **Check WHERE clause parentheses**: Complex conditions need proper grouping
+   ```sql
+   -- Wrong: ambiguous precedence
+   WHERE dept = 'Sales' OR dept = 'Marketing' AND salary > 70000
+   
+   -- Correct: explicit grouping  
+   WHERE (dept = 'Sales' OR dept = 'Marketing') AND salary > 70000
+   ```
+
+2. **Verify column names**: Column names are case-sensitive
+   ```sql
+   -- May fail if column is 'Department' not 'department'
+   SELECT department FROM employees;
+   ```
+
+3. **Check data types in comparisons**: Ensure compatible types
+   ```sql
+   -- String vs numeric comparison
+   WHERE salary > '70000'  -- May not work as expected
+   WHERE salary > 70000    -- Correct numeric comparison
+   ```
+
+#### Performance Issues
+1. **Enable query optimization**: Optimization is enabled by default but verify it's working
+2. **Use column selection**: Avoid `SELECT *` when possible
+3. **Check query cache**: Use `\cache` to see if caching is helping
+
+#### Subquery Issues
+1. **Correlated subqueries**: Ensure outer table aliases are properly referenced
+2. **EXISTS vs IN**: Use EXISTS for better performance with large datasets
+3. **Scalar subqueries**: Must return exactly one row and one column
+
+## 🚀 Query Optimization Features
+
+ByteDB includes an advanced query optimizer that automatically improves query performance:
+
+### Optimization Rules
+
+1. **Predicate Pushdown**: Filters are pushed down to table scans to reduce data read
+   ```sql
+   -- Filter applied during scan, not after
+   SELECT * FROM employees WHERE department = 'Engineering';
+   ```
+
+2. **Column Pruning**: Only required columns are read from Parquet files
+   ```sql
+   -- Only reads 'name' and 'salary' columns from disk
+   SELECT name, salary FROM employees;
+   ```
+
+3. **Join Order Optimization**: Smaller tables are used as build side in hash joins
+   ```sql
+   -- Automatically reorders to put smaller table on right
+   SELECT * FROM large_table JOIN small_table ON condition;
+   ```
+
+### Viewing Optimization Stats
+
+```go
+// In code
+stats, err := engine.GetOptimizationStats(sql)
+
+// Stats include:
+// - Original vs optimized query plan
+// - Estimated cost reduction
+// - Applied optimization rules
+```
+
 ## 🎮 Meta Commands
 
-- `\\d table_name` - Describe table schema
-- `\\l` - List all tables
-- `\\json <sql>` - Return results as JSON
-- `\\cache` - Show cache statistics
+- `\d table_name` - Describe table schema
+- `\l` - List all tables
+- `\json <sql>` - Return results as JSON
+- `\cache` - Show cache statistics
 - `help` - Show available commands
 - `exit` or `quit` - Exit the program
 
