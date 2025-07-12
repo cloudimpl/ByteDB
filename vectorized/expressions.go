@@ -292,22 +292,13 @@ func (eval *VectorizedExpressionEvaluator) performAddition(left, right, result *
 		rightData := eval.convertToInt64(right)
 		resultData := result.Data.([]int64)
 		
-		// Use SIMD-optimized addition when possible
-		if left.Length >= DefaultSIMDConfig.MinBatchSize {
-			SIMDAddInt64(leftData, rightData, resultData)
-			// Handle nulls separately
-			for i := 0; i < result.Length; i++ {
-				if left.IsNull(i) || right.IsNull(i) {
-					result.SetNull(i)
-				}
-			}
-		} else {
-			for i := 0; i < result.Length; i++ {
-				if left.IsNull(i) || right.IsNull(i) {
-					result.SetNull(i)
-				} else {
-					resultData[i] = leftData[i] + rightData[i]
-				}
+		// TODO: Use SIMD-optimized addition when available
+		// For now, use scalar addition
+		for i := 0; i < result.Length; i++ {
+			if left.IsNull(i) || right.IsNull(i) {
+				result.SetNull(i)
+			} else {
+				resultData[i] = leftData[i] + rightData[i]
 			}
 		}
 		
@@ -316,22 +307,13 @@ func (eval *VectorizedExpressionEvaluator) performAddition(left, right, result *
 		rightData := eval.convertToFloat64(right)
 		resultData := result.Data.([]float64)
 		
-		// Use SIMD-optimized addition when possible
-		if left.Length >= DefaultSIMDConfig.MinBatchSize {
-			SIMDAddFloat64(leftData, rightData, resultData)
-			// Handle nulls separately
-			for i := 0; i < result.Length; i++ {
-				if left.IsNull(i) || right.IsNull(i) {
-					result.SetNull(i)
-				}
-			}
-		} else {
-			for i := 0; i < result.Length; i++ {
-				if left.IsNull(i) || right.IsNull(i) {
-					result.SetNull(i)
-				} else {
-					resultData[i] = leftData[i] + rightData[i]
-				}
+		// TODO: Use SIMD-optimized addition when available
+		// For now, use scalar addition
+		for i := 0; i < result.Length; i++ {
+			if left.IsNull(i) || right.IsNull(i) {
+				result.SetNull(i)
+			} else {
+				resultData[i] = leftData[i] + rightData[i]
 			}
 		}
 		
@@ -349,8 +331,9 @@ func (eval *VectorizedExpressionEvaluator) performSubtraction(left, right, resul
 		rightData := eval.convertToFloat64(right)
 		resultData := result.Data.([]float64)
 		
-		if left.Length >= DefaultSIMDConfig.MinBatchSize {
-			SIMDSubtractFloat64(leftData, rightData, resultData)
+		// TODO: Add SIMD optimization here
+		if false { // Disabled for now
+			// SIMDSubtractFloat64(leftData, rightData, resultData)
 			for i := 0; i < result.Length; i++ {
 				if left.IsNull(i) || right.IsNull(i) {
 					result.SetNull(i)
@@ -381,8 +364,9 @@ func (eval *VectorizedExpressionEvaluator) performMultiplication(left, right, re
 		rightData := eval.convertToFloat64(right)
 		resultData := result.Data.([]float64)
 		
-		if left.Length >= DefaultSIMDConfig.MinBatchSize {
-			SIMDMultiplyFloat64(leftData, rightData, resultData)
+		// TODO: Add SIMD optimization here
+		if false { // Disabled for now
+			// SIMDMultiplyFloat64(leftData, rightData, resultData)
 			for i := 0; i < result.Length; i++ {
 				if left.IsNull(i) || right.IsNull(i) {
 					result.SetNull(i)
@@ -412,8 +396,9 @@ func (eval *VectorizedExpressionEvaluator) performDivision(left, right, result *
 		rightData := eval.convertToFloat64(right)
 		resultData := result.Data.([]float64)
 		
-		if left.Length >= DefaultSIMDConfig.MinBatchSize {
-			SIMDDivideFloat64(leftData, rightData, resultData)
+		// TODO: Add SIMD optimization here
+		if false { // Disabled for now
+			// SIMDDivideFloat64(leftData, rightData, resultData)
 			for i := 0; i < result.Length; i++ {
 				if left.IsNull(i) || right.IsNull(i) {
 					result.SetNull(i)
@@ -496,8 +481,9 @@ func (eval *VectorizedExpressionEvaluator) performEquality(left, right, result *
 		leftData := eval.convertToInt64(left)
 		rightData := eval.convertToInt64(right)
 		
-		if left.Length >= DefaultSIMDConfig.MinBatchSize {
-			SIMDCompareEqualInt64(leftData, rightData, resultData)
+		// TODO: Add SIMD optimization here
+		if false { // Disabled for now
+			// SIMDCompareEqualInt64(leftData, rightData, resultData)
 			for i := 0; i < result.Length; i++ {
 				if left.IsNull(i) || right.IsNull(i) {
 					result.SetNull(i)
@@ -560,8 +546,9 @@ func (eval *VectorizedExpressionEvaluator) performLessThan(left, right, result *
 		leftData := eval.convertToInt64(left)
 		rightData := eval.convertToInt64(right)
 		
-		if left.Length >= DefaultSIMDConfig.MinBatchSize {
-			SIMDCompareLessInt64(leftData, rightData, resultData)
+		// TODO: Add SIMD optimization here
+		if false { // Disabled for now
+			// SIMDCompareLessInt64(leftData, rightData, resultData)
 			for i := 0; i < result.Length; i++ {
 				if left.IsNull(i) || right.IsNull(i) {
 					result.SetNull(i)
@@ -609,8 +596,9 @@ func (eval *VectorizedExpressionEvaluator) performGreaterThan(left, right, resul
 		leftData := eval.convertToFloat64(left)
 		rightData := eval.convertToFloat64(right)
 		
-		if left.Length >= DefaultSIMDConfig.MinBatchSize {
-			SIMDCompareGreaterFloat64(leftData, rightData, resultData)
+		// TODO: Add SIMD optimization here
+		if false { // Disabled for now
+			// SIMDCompareGreaterFloat64(leftData, rightData, resultData)
 			for i := 0; i < result.Length; i++ {
 				if left.IsNull(i) || right.IsNull(i) {
 					result.SetNull(i)
