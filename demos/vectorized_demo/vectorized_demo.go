@@ -637,7 +637,7 @@ func benchmarkFiltering(size int) {
 
 	// Scalar filtering
 	start = time.Now()
-	count := 0
+	count = 0
 	for i := 0; i < size; i++ {
 		if data[i] == 500 {
 			count++

@@ -54,7 +54,12 @@ func (do *DistributedOptimizer) OptimizePlan(plan *DistributedPlan, context *Pla
 	appliedOptimizations := []OptimizationApplied{}
 	
 	// Calculate initial cost
-	initialStats, _ := do.costEstimator.EstimatePlan(optimizedPlan, context)
+	initialStats, err := do.costEstimator.EstimatePlan(optimizedPlan, context)
+	if err != nil {
+		// Return original plan if we can't estimate cost
+		return plan, appliedOptimizations
+	}
+	optimizedPlan.Statistics = initialStats
 	initialCost := initialStats.TotalCost
 	
 	// Apply rules in order of estimated benefit
@@ -76,7 +81,10 @@ func (do *DistributedOptimizer) OptimizePlan(plan *DistributedPlan, context *Pla
 				continue // Skip if cost estimation fails
 			}
 			
-			costReduction := optimizedPlan.Statistics.TotalCost - newStats.TotalCost
+			costReduction := 0.0
+			if optimizedPlan.Statistics != nil {
+				costReduction = optimizedPlan.Statistics.TotalCost - newStats.TotalCost
+			}
 			
 			// Accept the optimization if it improves the plan
 			if costReduction > 0 || newStats.TotalCost < optimizedPlan.Statistics.TotalCost {
@@ -184,7 +192,7 @@ func (r *PredicatePushdownRule) Apply(plan *DistributedPlan, context *PlanningCo
 
 func (r *PredicatePushdownRule) EstimateBenefit(plan *DistributedPlan, context *PlanningContext) float64 {
 	// High benefit for plans with WHERE conditions and multiple stages
-	if len(plan.ParsedQuery.Where) > 0 && len(plan.Stages) > 1 {
+	if plan != nil && plan.ParsedQuery != nil && len(plan.ParsedQuery.Where) > 0 && len(plan.Stages) > 1 {
 		return 100.0
 	}
 	return 0.0
@@ -226,11 +234,27 @@ func (r *ProjectionPushdownRule) Apply(plan *DistributedPlan, context *PlanningC
 }
 
 func (r *ProjectionPushdownRule) EstimateBenefit(plan *DistributedPlan, context *PlanningContext) float64 {
-	// Benefit based on potential data reduction
-	if len(plan.ParsedQuery.Columns) > 0 && len(plan.ParsedQuery.Columns) < 10 {
-		return 80.0
+	if plan == nil {
+		return 0.0
 	}
-	return 0.0
+	
+	// Benefit based on potential data reduction
+	// Check if any scan stages have more columns than necessary
+	for _, stage := range plan.Stages {
+		if stage.Type == StageScan {
+			for _, fragment := range stage.Fragments {
+				if fragment.Fragment != nil && len(fragment.Fragment.Columns) > 5 {
+					// Assume 10% benefit per column reduced
+					return float64(len(fragment.Fragment.Columns)-5) * 10.0
+				}
+			}
+		}
+	}
+	// If query has specific columns selected, estimate benefit
+	if plan.ParsedQuery != nil && len(plan.ParsedQuery.Columns) > 0 && len(plan.ParsedQuery.Columns) < 10 {
+		return 50.0
+	}
+	return 10.0 // Default small benefit for projection pushdown
 }
 
 func (r *ProjectionPushdownRule) analyzeRequiredColumns(query *core.ParsedQuery) []string {

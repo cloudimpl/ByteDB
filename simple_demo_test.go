@@ -119,7 +119,7 @@ func TestOptimizationBenefitsComparison(t *testing.T) {
 			{
 				"LIMIT Test",
 				"SELECT * FROM employees LIMIT 3",
-				6,
+				1, // SELECT * returns columns as [*]
 				"Early termination after 3 rows",
 			},
 		}

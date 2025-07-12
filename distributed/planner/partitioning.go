@@ -38,6 +38,17 @@ func (pm *PartitionManager) CreatePartitioningStrategy(query *core.ParsedQuery, 
 	// Calculate optimal number of partitions
 	numPartitions := pm.calculateOptimalPartitions(analysis, context)
 	
+	// For broadcast partitioning, always use the number of workers
+	if partitionType == PartitionBroadcast {
+		numPartitions = len(pm.workers)
+		if numPartitions == 0 && context != nil {
+			numPartitions = len(context.Workers)
+		}
+		if numPartitions == 0 {
+			numPartitions = 1 // Fallback
+		}
+	}
+	
 	strategy := &PartitioningStrategy{
 		Type:          partitionType,
 		Keys:          keys,
