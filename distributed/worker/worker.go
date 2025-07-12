@@ -30,6 +30,16 @@ func NewWorker(id, dataPath string) *Worker {
 	// Create query engine for this worker's data
 	engine := core.NewQueryEngine(dataPath)
 	
+	// Check if there's a worker-specific table mapping configuration
+	workerConfigPath := fmt.Sprintf("%s/table_mappings.json", dataPath)
+	if _, err := os.Stat(workerConfigPath); err == nil {
+		if err := engine.LoadTableMappings(workerConfigPath); err != nil {
+			log.Printf("Worker %s: Failed to load table mappings: %v", id, err)
+		} else {
+			log.Printf("Worker %s: Loaded table mappings from %s", id, workerConfigPath)
+		}
+	}
+	
 	w := &Worker{
 		id:           id,
 		dataPath:     dataPath,
@@ -298,4 +308,19 @@ func (w *Worker) GetID() string {
 // GetDataPath returns the worker's data path
 func (w *Worker) GetDataPath() string {
 	return w.dataPath
+}
+
+// RegisterTable registers a table mapping for this worker
+func (w *Worker) RegisterTable(tableName string, filePath string) error {
+	return w.engine.RegisterTable(tableName, filePath)
+}
+
+// LoadTableMappings loads table mappings from a configuration file
+func (w *Worker) LoadTableMappings(configPath string) error {
+	return w.engine.LoadTableMappings(configPath)
+}
+
+// GetTableRegistry returns the worker's table registry
+func (w *Worker) GetTableRegistry() *core.TableRegistry {
+	return w.engine.GetTableRegistry()
 }

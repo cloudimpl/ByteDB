@@ -1,0 +1,54 @@
+{
+  "tables": [
+    {
+      "table_name": "users",
+      "file_path": "data/user_data_2024.parquet",
+      "schema": {
+        "columns": [
+          {"name": "user_id", "type": "int64", "nullable": false},
+          {"name": "username", "type": "string", "nullable": false},
+          {"name": "email", "type": "string", "nullable": false},
+          {"name": "created_at", "type": "timestamp", "nullable": false}
+        ]
+      },
+      "properties": {
+        "description": "User account information",
+        "owner": "user_team"
+      }
+    },
+    {
+      "table_name": "events",
+      "file_path": "data/events/events_latest.parquet",
+      "schema": {
+        "columns": [
+          {"name": "event_id", "type": "string", "nullable": false},
+          {"name": "user_id", "type": "int64", "nullable": false},
+          {"name": "event_type", "type": "string", "nullable": false},
+          {"name": "timestamp", "type": "timestamp", "nullable": false},
+          {"name": "properties", "type": "json", "nullable": true}
+        ]
+      }
+    },
+    {
+      "table_name": "sales_partitioned",
+      "partitions": [
+        "data/sales/year=2024/month=01/sales.parquet",
+        "data/sales/year=2024/month=02/sales.parquet",
+        "data/sales/year=2024/month=03/sales.parquet"
+      ],
+      "schema": {
+        "columns": [
+          {"name": "sale_id", "type": "int64", "nullable": false},
+          {"name": "product_id", "type": "int64", "nullable": false},
+          {"name": "amount", "type": "decimal", "nullable": false},
+          {"name": "sale_date", "type": "date", "nullable": false}
+        ]
+      },
+      "properties": {
+        "partition_columns": ["year", "month"],
+        "format": "parquet",
+        "compression": "snappy"
+      }
+    }
+  ]
+}

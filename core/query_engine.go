@@ -13,15 +13,16 @@ import (
 )
 
 type QueryEngine struct {
-	parser      *SQLParser
-	dataPath    string
-	httpTables  map[string]string // Map table names to HTTP URLs
-	openReaders map[string]*ParquetReader
-	readersMu   sync.RWMutex
-	cache       *QueryCache
-	planner     *QueryPlanner
-	optimizer   *QueryOptimizer
-	functions   *FunctionRegistry
+	parser        *SQLParser
+	dataPath      string
+	httpTables    map[string]string // Map table names to HTTP URLs
+	openReaders   map[string]*ParquetReader
+	readersMu     sync.RWMutex
+	cache         *QueryCache
+	planner       *QueryPlanner
+	optimizer     *QueryOptimizer
+	functions     *FunctionRegistry
+	tableRegistry *TableRegistry // New: manages table name to file mappings
 }
 
 type QueryResult struct {
@@ -46,14 +47,15 @@ func NewQueryEngine(dataPath string) *QueryEngine {
 	optimizer := NewQueryOptimizer(planner)
 
 	return &QueryEngine{
-		parser:      NewSQLParser(),
-		dataPath:    dataPath,
-		httpTables:  make(map[string]string),
-		openReaders: make(map[string]*ParquetReader),
-		cache:       NewQueryCache(cacheConfig),
-		planner:     planner,
-		optimizer:   optimizer,
-		functions:   NewFunctionRegistry(),
+		parser:        NewSQLParser(),
+		dataPath:      dataPath,
+		httpTables:    make(map[string]string),
+		openReaders:   make(map[string]*ParquetReader),
+		cache:         NewQueryCache(cacheConfig),
+		planner:       planner,
+		optimizer:     optimizer,
+		functions:     NewFunctionRegistry(),
+		tableRegistry: NewTableRegistry(dataPath),
 	}
 }
 
@@ -64,6 +66,36 @@ func (qe *QueryEngine) Close() {
 	for _, reader := range qe.openReaders {
 		reader.Close()
 	}
+}
+
+// RegisterTable registers a table with a specific file path
+func (qe *QueryEngine) RegisterTable(tableName string, filePath string) error {
+	return qe.tableRegistry.RegisterTable(tableName, filePath)
+}
+
+// RegisterTableWithSchema registers a table with schema information
+func (qe *QueryEngine) RegisterTableWithSchema(mapping *TableMapping) error {
+	return qe.tableRegistry.RegisterTableWithSchema(mapping)
+}
+
+// RegisterPartitionedTable registers a table with multiple partition files
+func (qe *QueryEngine) RegisterPartitionedTable(tableName string, partitionPaths []string) error {
+	return qe.tableRegistry.RegisterPartitionedTable(tableName, partitionPaths)
+}
+
+// LoadTableMappings loads table mappings from a JSON configuration file
+func (qe *QueryEngine) LoadTableMappings(configPath string) error {
+	return qe.tableRegistry.LoadFromFile(configPath)
+}
+
+// SaveTableMappings saves current table mappings to a JSON configuration file
+func (qe *QueryEngine) SaveTableMappings(configPath string) error {
+	return qe.tableRegistry.SaveToFile(configPath)
+}
+
+// GetTableRegistry returns the table registry for direct access
+func (qe *QueryEngine) GetTableRegistry() *TableRegistry {
+	return qe.tableRegistry
 }
 
 // EvaluateFunction implements the SubqueryExecutor interface
@@ -977,7 +1009,14 @@ func (qe *QueryEngine) getReader(tableName string) (*ParquetReader, error) {
 	if httpURL, exists := qe.httpTables[tableName]; exists {
 		filePath = httpURL
 	} else {
-		filePath = filepath.Join(qe.dataPath, tableName+".parquet")
+		// Use table registry to get the file path
+		registeredPath, err := qe.tableRegistry.GetTablePath(tableName)
+		if err != nil {
+			// Fallback to default behavior for backward compatibility
+			filePath = filepath.Join(qe.dataPath, tableName+".parquet")
+		} else {
+			filePath = registeredPath
+		}
 	}
 
 	reader, err := NewParquetReader(filePath)
@@ -1472,14 +1511,15 @@ func NewQueryEngineWithCache(dataPath string, cacheConfig CacheConfig) *QueryEng
 	optimizer := NewQueryOptimizer(planner)
 
 	return &QueryEngine{
-		parser:      NewSQLParser(),
-		dataPath:    dataPath,
-		httpTables:  make(map[string]string),
-		openReaders: make(map[string]*ParquetReader),
-		cache:       NewQueryCache(cacheConfig),
-		planner:     planner,
-		optimizer:   optimizer,
-		functions:   NewFunctionRegistry(),
+		parser:        NewSQLParser(),
+		dataPath:      dataPath,
+		httpTables:    make(map[string]string),
+		openReaders:   make(map[string]*ParquetReader),
+		cache:         NewQueryCache(cacheConfig),
+		planner:       planner,
+		optimizer:     optimizer,
+		functions:     NewFunctionRegistry(),
+		tableRegistry: NewTableRegistry(dataPath),
 	}
 }
 
