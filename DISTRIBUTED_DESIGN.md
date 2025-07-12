@@ -19,6 +19,10 @@ ByteDB Distributed extends the single-node query engine to support distributed q
 
 5. **Proper SQL Generation**: Fixed WHERE clause value formatting to correctly handle string literals and other data types.
 
+6. **🆕 Comprehensive Monitoring System**: Implemented full observability stack with real-time metrics collection, query performance tracking, worker health monitoring, and web-based dashboard with live streaming updates.
+
+7. **🆕 Metrics Export Integration**: Added Prometheus-compatible metrics export and JSON format support for integration with external monitoring systems like Grafana, Elasticsearch, and custom analytics platforms.
+
 ## Architecture
 
 ### Components
@@ -79,6 +83,72 @@ ByteDB Distributed extends the single-node query engine to support distributed q
    - Intelligent partitioning strategies (Hash/Range/Round-Robin)
    - Multi-stage execution planning
    - Adaptive optimization based on data statistics
+
+5. **🆕 Monitoring & Observability System**
+   - Real-time metrics collection across all components
+   - Query performance tracking and optimization analysis
+   - Worker health monitoring and resource utilization
+   - Cluster-wide coordination metrics and load balancing
+   - Web-based dashboard with live streaming updates
+   - Prometheus-compatible metrics export for external systems
+
+### Monitoring Architecture
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Dashboard     │◄───┤ CoordinatorMonitor├───►│  QueryMonitor   │
+│  (Web UI)       │    │  (Cluster Health) │    │ (Performance)   │
+│ http://localhost│    │                  │    │                 │
+│      :8091      │    │ • System Metrics │    │ • Query Tracking│
+└─────────────────┘    │ • Load Balancing │    │ • Optimization  │
+         ▲              │ • Worker Health  │    │ • Cost Analysis │
+         │              └──────────────────┘    └─────────────────┘
+         │                       ▲                       ▲
+         │              ┌────────┴────────┐              │
+         │              │                 │              │
+         └──────────────┼─────────────────┼──────────────┘
+                        ▼                 ▼
+              ┌─────────────────┐ ┌─────────────────┐
+              │ WorkerMonitor-1 │ │ WorkerMonitor-N │
+              │ • CPU/Memory    │ │ • CPU/Memory    │
+              │ • Query Stats   │ │ • Query Stats   │
+              │ • Cache Perf.   │ │ • Cache Perf.   │
+              │ • Health Alerts │ │ • Health Alerts │
+              └─────────────────┘ └─────────────────┘
+```
+
+#### Monitoring Components
+
+**Query Monitor**: Tracks end-to-end query execution
+- Planning, execution, and aggregation phase timing
+- Optimization effectiveness measurement (cost reduction %)
+- Row/byte processing metrics and cache hit rates
+- Query type analysis and performance profiling
+
+**Worker Monitor**: Individual worker health and performance
+- Real-time CPU and memory utilization tracking
+- Query success/failure rates and response times
+- Cache effectiveness and network activity monitoring
+- Automated performance alerting with configurable thresholds
+
+**Coordinator Monitor**: Cluster-wide system monitoring
+- Aggregated performance metrics across all workers
+- Load balancing effectiveness and worker distribution
+- Query coordination overhead and optimization rates
+- Cluster health assessment and issue detection
+
+**Dashboard**: Real-time web interface
+- Interactive monitoring at http://localhost:8091
+- Live metrics streaming via Server-Sent Events
+- Multiple API endpoints for different data views
+- Performance recommendations and alerting integration
+
+#### Metrics Export Integration
+
+- **Prometheus Format**: Compatible with Prometheus/Grafana monitoring stack
+- **JSON Export**: Structured data for custom analytics and log aggregation
+- **Real-time Streaming**: Server-Sent Events for live dashboard updates
+- **External Integration**: REST API endpoints for third-party monitoring tools
 
 ## Query Execution Flow
 

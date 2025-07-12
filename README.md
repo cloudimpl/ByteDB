@@ -10,6 +10,7 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 - 📝 [Changelog](CHANGELOG.md) - Detailed list of changes and fixes
 - 🧪 [Test Data Migration Guide](TEST_DATA_MIGRATION.md) - Guide for test data system
 - 🌐 [Distributed Query Design](DISTRIBUTED_DESIGN.md) - Architecture and implementation of distributed query execution
+- 📊 [Monitoring & Observability Guide](MONITORING.md) - Comprehensive monitoring system documentation
 
 ## 🎉 Recent Updates
 
@@ -37,17 +38,25 @@ ByteDB now supports distributed query execution across multiple worker nodes, en
 - **Cost-Based Query Planning**: Intelligent optimization based on data statistics and cluster resources
 - **Pluggable Transport Layer**: Supports in-memory (testing), gRPC, and HTTP transports
 - **Multi-Stage Execution**: Optimized execution plans with parallel processing
+- **🆕 Comprehensive Monitoring**: Real-time performance metrics, query tracking, and system health monitoring
+- **🆕 Real-time Dashboard**: Web-based monitoring interface with live metrics streaming
+- **🆕 Metrics Export**: Prometheus-compatible metrics export for external monitoring systems
 
 ### Quick Demo
 ```bash
 # Run the distributed demo
 go test -run TestDistributedDemo -v
 
-# The demo will:
+# Run the comprehensive metrics demo
+go run metrics_demo.go
+
+# The demos will:
 # 1. Start a coordinator and 3 worker nodes
 # 2. Distribute sample data across workers
 # 3. Execute various distributed queries
 # 4. Show performance comparisons
+# 5. Display real-time monitoring metrics
+# 6. Launch web dashboard at http://localhost:8091
 ```
 
 ### Example: Distributed Aggregation
@@ -82,6 +91,15 @@ GROUP BY department
 - **Flexible Deployment**: Pluggable transport layer (Memory/gRPC/HTTP)
 - **Fault Tolerance**: Worker health monitoring and failure handling
 
+### Monitoring & Observability
+- **Real-time Metrics Collection**: Comprehensive performance tracking with zero overhead
+- **Query Performance Analysis**: End-to-end query lifecycle monitoring and optimization tracking
+- **Worker Health Monitoring**: Resource utilization, performance alerts, and status tracking
+- **Cluster-wide Coordination**: System performance aggregation and load balancing metrics
+- **Live Dashboard**: Web interface with real-time streaming at http://localhost:8091
+- **Metrics Export**: Prometheus-compatible export for Grafana and external monitoring
+- **Performance Profiling**: Detailed execution analysis and bottleneck identification
+
 ### Data Operations
 - **Parquet File Reading**: Efficient reading and querying of Parquet files
 - **Schema Inspection**: View table schemas and column information
@@ -92,7 +110,8 @@ GROUP BY department
 - **Interactive CLI**: Rich command-line interface with help system
 - **Multiple Output Formats**: Table format and JSON output
 - **Automated Testing**: Comprehensive test suite with Go testing framework
-- **Performance Monitoring**: Built-in query performance tracking
+- **Real-time Monitoring Dashboard**: Web-based interface with live metrics streaming
+- **Metrics Integration**: Prometheus-compatible export for external monitoring systems
 
 ## 📦 Installation
 
@@ -392,6 +411,114 @@ func TestExample(t *testing.T) {
 
 See `test_data.go` for available test data constants and `TEST_DATA_MIGRATION.md` for migration guide.
 
+## 📊 Monitoring & Observability
+
+ByteDB includes a comprehensive monitoring system that provides real-time visibility into distributed query execution performance.
+
+### Metrics Dashboard
+
+Launch the interactive monitoring dashboard:
+```bash
+# Run the metrics demonstration
+go run metrics_demo.go
+
+# This will:
+# 1. Start real-time dashboard at http://localhost:8091
+# 2. Generate sample metrics across all system components
+# 3. Show query performance tracking
+# 4. Display worker health monitoring
+# 5. Demonstrate metrics export capabilities
+```
+
+### Key Monitoring Features
+
+#### 📈 Query Performance Tracking
+- **End-to-end Query Lifecycle**: Planning → Execution → Aggregation timing
+- **Optimization Effectiveness**: Cost reduction measurement (33-50% reductions shown)
+- **Query Type Analysis**: Different performance profiles for SELECT, AGGREGATE, JOIN queries
+- **Cache Performance**: Hit rates and cache effectiveness tracking
+
+#### 🖥️ Worker Health Monitoring
+- **Resource Utilization**: Real-time CPU and memory usage per worker
+- **Query Load**: Active queries and success/failure rates per worker
+- **Performance Alerts**: Automated alerts for high resource usage or low performance
+- **Network Activity**: Data transfer tracking between coordinator and workers
+
+#### 🏥 Cluster-wide Coordination
+- **System Performance**: Aggregated QPS, response times, and throughput
+- **Load Balancing**: Worker load distribution and balance scoring
+- **Coordination Overhead**: Query planning and result aggregation timing
+- **Optimization Metrics**: Cluster-wide optimization rates and cost reductions
+
+#### 🌐 Real-time Dashboard
+- **Live Streaming**: Server-Sent Events for real-time metric updates
+- **Interactive Web Interface**: Rich HTML dashboard with auto-refresh
+- **Multiple Views**: Overview, cluster health, worker details, query analytics
+- **Performance Recommendations**: Automated suggestions based on metrics
+
+### Metrics Export & Integration
+
+#### Prometheus Integration
+```bash
+# Access Prometheus metrics endpoint
+curl http://localhost:8091/api/metrics
+
+# Sample Prometheus format:
+bytedb_queries_total 1500 1234567890123
+bytedb_query_duration_ms_count 8 1234567890123
+bytedb_query_duration_ms_sum 1615.0 1234567890123
+bytedb_worker_cpu_usage_percent{worker_id="worker-1"} 78.5 1234567890123
+```
+
+#### JSON Export
+```bash
+# Get structured metrics data
+curl http://localhost:8091/api/overview
+
+# Returns:
+{
+  "cluster_status": "healthy",
+  "total_workers": 3,
+  "healthy_workers": 3,
+  "total_queries": 150,
+  "optimization_rate": 75.5,
+  "average_response_time": 145.2
+}
+```
+
+### Performance Profiling
+
+The monitoring system includes detailed performance profiling:
+```go
+// In code - create performance profile
+profiler := monitoring.NewPerformanceProfiler()
+profileID := "query-analysis"
+profiler.StartProfile(profileID)
+
+// Execute queries...
+
+profile := profiler.StopProfile(profileID)
+// Analyze: duration, throughput, resource usage
+```
+
+### Monitoring Architecture
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Dashboard     │◄───┤ CoordinatorMonitor├───►│  QueryMonitor   │
+│  (Web UI)       │    │  (Cluster Health) │    │ (Performance)   │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+         ▲                       ▲                       ▲
+         │              ┌────────┴────────┐              │
+         │              │                 │              │
+         └──────────────┼─────────────────┼──────────────┘
+                        ▼                 ▼
+              ┌─────────────────┐ ┌─────────────────┐
+              │ WorkerMonitor-1 │ │ WorkerMonitor-N │
+              │  (Resources)    │ │  (Resources)    │
+              └─────────────────┘ └─────────────────┘
+```
+
 ## 🌐 Running Distributed Queries
 
 ### Quick Start with Demo
@@ -437,9 +564,16 @@ bytedb/
 │   │   ├── distributed_planner.go
 │   │   ├── aggregate_optimizer.go  # 99.99% optimization
 │   │   └── cost_estimator.go
+│   ├── monitoring/             # 🆕 Comprehensive monitoring system
+│   │   ├── metrics.go          # Core metrics framework (Counter, Gauge, Histogram, Timer)
+│   │   ├── query_monitor.go    # Query performance and lifecycle tracking
+│   │   ├── worker_monitor.go   # Worker health and resource monitoring
+│   │   ├── coordinator_monitor.go # Cluster-wide system monitoring
+│   │   └── dashboard.go        # Real-time web dashboard with live streaming
 │   └── communication/          # Inter-node communication protocol
 ├── gen_data.go                 # Sample data generation utility
 ├── distributed_demo.go         # Distributed execution demo
+├── metrics_demo.go             # 🆕 Comprehensive metrics demonstration
 ├── *_test.go                   # Comprehensive test suite
 ├── Makefile                    # Build and test automation
 ├── go.mod                      # Go module definition
@@ -626,6 +760,13 @@ Goodbye!
 
 ## 🚀 Future Distributed Enhancements
 
+### Recently Completed ✅
+- **✅ Comprehensive Monitoring**: Real-time cluster and query performance metrics
+- **✅ Performance Dashboard**: Web-based monitoring interface with live streaming
+- **✅ Metrics Export**: Prometheus-compatible metrics for external monitoring
+- **✅ Worker Health Monitoring**: Resource utilization and performance alerting
+- **✅ Query Optimization Tracking**: Cost reduction measurement and effectiveness analysis
+
 ### Coming Soon
 - **gRPC Transport**: Production-ready network communication
 - **Dynamic Worker Discovery**: Automatic worker registration and discovery
@@ -634,7 +775,7 @@ Goodbye!
 - **Query Result Streaming**: Stream large results without buffering
 - **Distributed Caching**: Coordinated cache across worker nodes
 - **Advanced Join Strategies**: Broadcast joins and distributed hash joins
-- **Monitoring Dashboard**: Real-time cluster and query performance metrics
+- **Enhanced Monitoring**: Historical trend analysis and predictive alerting
 
 ### Performance Roadmap
 - Sub-linear scaling for analytical queries
