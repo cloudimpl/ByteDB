@@ -3,6 +3,7 @@ package coordinator
 import (
 	"bytedb/core"
 	"bytedb/distributed/communication"
+	"bytedb/distributed/monitoring"
 	"bytedb/distributed/planner"
 	"context"
 	"fmt"
@@ -24,6 +25,8 @@ type Coordinator struct {
 	mutex              sync.RWMutex
 	queryID            int64
 	queryIDMux         sync.Mutex
+	monitor            *monitoring.CoordinatorMonitor
+	queryMonitor       *monitoring.QueryMonitor
 }
 
 // WorkerConnection represents a connection to a worker
@@ -37,11 +40,13 @@ type WorkerConnection struct {
 // NewCoordinator creates a new coordinator instance
 func NewCoordinator(transport communication.Transport) *Coordinator {
 	return &Coordinator{
-		workers:   make(map[string]*WorkerConnection),
-		parser:    core.NewSQLParser(),
-		planner:   core.NewQueryPlanner(),
-		optimizer: core.NewQueryOptimizer(core.NewQueryPlanner()),
-		transport: transport,
+		workers:      make(map[string]*WorkerConnection),
+		parser:       core.NewSQLParser(),
+		planner:      core.NewQueryPlanner(),
+		optimizer:    core.NewQueryOptimizer(core.NewQueryPlanner()),
+		transport:    transport,
+		monitor:      monitoring.NewCoordinatorMonitor(),
+		queryMonitor: monitoring.NewQueryMonitor(),
 		// Will initialize distributed planner when workers are registered
 		distributedPlanner: nil,
 	}
@@ -51,11 +56,17 @@ func NewCoordinator(transport communication.Transport) *Coordinator {
 func (c *Coordinator) ExecuteQuery(ctx context.Context, req *communication.DistributedQueryRequest) (*communication.DistributedQueryResponse, error) {
 	startTime := time.Now()
 	
+	// Start query monitoring
+	queryExecution := c.queryMonitor.StartQueryMonitoring(req.RequestID, req.SQL)
+	
 	log.Printf("Coordinator: Executing distributed query: %s", req.SQL)
 	
 	// Parse the query
+	queryExecution.StartPlanning()
 	parsedQuery, err := c.parser.Parse(req.SQL)
 	if err != nil {
+		queryExecution.SetError(err)
+		queryExecution.Finish()
 		return &communication.DistributedQueryResponse{
 			RequestID: req.RequestID,
 			Error:     fmt.Sprintf("Parse error: %v", err),
@@ -63,9 +74,23 @@ func (c *Coordinator) ExecuteQuery(ctx context.Context, req *communication.Distr
 		}, nil
 	}
 	
+	// Set query type for monitoring
+	queryType := string(parsedQuery.Type)
+	if parsedQuery.IsAggregate {
+		queryType += "_AGGREGATE"
+	}
+	if len(parsedQuery.GroupBy) > 0 {
+		queryType += "_GROUPBY"
+	}
+	queryExecution.SetQueryType(queryType)
+	
 	// Create distributed execution plan
 	plan, err := c.createDistributedPlan(parsedQuery)
+	queryExecution.EndPlanning()
+	
 	if err != nil {
+		queryExecution.SetError(err)
+		queryExecution.Finish()
 		return &communication.DistributedQueryResponse{
 			RequestID: req.RequestID,
 			Error:     fmt.Sprintf("Planning error: %v", err),
@@ -73,9 +98,22 @@ func (c *Coordinator) ExecuteQuery(ctx context.Context, req *communication.Distr
 		}, nil
 	}
 	
+	// Record planning metrics
+	c.monitor.RecordPlanningTime(queryExecution.GetMetrics().PlanningDuration)
+	
+	// Record query coordination start
+	c.monitor.RecordQueryStart(req.RequestID, len(plan.Fragments), len(plan.Workers))
+	queryExecution.SetWorkerInfo(len(plan.Workers), len(plan.Fragments))
+	
 	// Execute the plan
+	queryExecution.StartExecution()
 	result, stats, err := c.executePlan(ctx, plan)
+	queryExecution.EndExecution()
+	
 	if err != nil {
+		queryExecution.SetError(err)
+		c.monitor.RecordQueryEnd(req.RequestID, false, stats)
+		queryExecution.Finish()
 		return &communication.DistributedQueryResponse{
 			RequestID: req.RequestID,
 			Error:     fmt.Sprintf("Execution error: %v", err),
@@ -87,7 +125,26 @@ func (c *Coordinator) ExecuteQuery(ctx context.Context, req *communication.Distr
 	stats.TotalTime = duration
 	stats.CoordinatorTime = duration // Will be adjusted when we track worker time separately
 	
-	log.Printf("Coordinator: Query completed in %v, processed %d rows", duration, result.Count)
+	// Record execution metrics
+	queryExecution.SetDataInfo(result.Count, c.estimateDataTransferred(result))
+	if plan.OptimizationApplied {
+		queryExecution.SetOptimizationInfo(true, plan.OriginalCost, plan.OptimizedCost)
+		c.monitor.RecordOptimization(true, plan.OriginalCost, plan.OptimizedCost)
+	}
+	
+	// Calculate cache hit rate from worker stats
+	cacheHitRate := c.calculateCacheHitRate(stats)
+	queryExecution.SetCacheInfo(cacheHitRate)
+	
+	// Record coordination metrics
+	c.monitor.RecordAggregationTime(queryExecution.GetMetrics().AggregationDuration)
+	c.monitor.RecordQueryEnd(req.RequestID, true, stats)
+	
+	// Finish query monitoring
+	queryMetrics := queryExecution.Finish()
+	
+	log.Printf("Coordinator: Query completed in %v, processed %d rows, cost reduction: %.1f%%", 
+		duration, result.Count, queryMetrics.CostReduction)
 	
 	return &communication.DistributedQueryResponse{
 		RequestID: req.RequestID,
@@ -389,6 +446,19 @@ func (c *Coordinator) convertDistributedPlan(plannerPlan *planner.DistributedPla
 		Query:     query,
 		Fragments: make([]*communication.QueryFragment, 0),
 		Workers:   availableWorkers,
+	}
+	
+	// Populate optimization tracking fields
+	plan.OptimizationApplied = len(plannerPlan.Optimizations) > 0
+	if plannerPlan.Statistics != nil {
+		plan.OptimizedCost = plannerPlan.Statistics.TotalCost
+		
+		// Calculate original cost by adding back optimization benefits
+		originalCost := plan.OptimizedCost
+		for _, opt := range plannerPlan.Optimizations {
+			originalCost += opt.Benefit
+		}
+		plan.OriginalCost = originalCost
 	}
 	
 	// Convert each stage to fragments
@@ -1031,6 +1101,47 @@ func (c *Coordinator) formatWhereCondition(where core.WhereCondition) string {
 	return ""
 }
 
+// estimateDataTransferred estimates the amount of data transferred for monitoring
+func (c *Coordinator) estimateDataTransferred(result *core.QueryResult) int64 {
+	// Rough estimate: assume average 100 bytes per row
+	return int64(result.Count) * 100
+}
+
+// calculateCacheHitRate calculates the overall cache hit rate from worker stats
+func (c *Coordinator) calculateCacheHitRate(stats *communication.ClusterStats) float64 {
+	if stats == nil || len(stats.WorkerStats) == 0 {
+		return 0.0
+	}
+	
+	totalHits := int64(0)
+	totalRequests := int64(0)
+	
+	for _, workerStats := range stats.WorkerStats {
+		totalHits += int64(workerStats.CacheHits)
+		totalRequests += int64(workerStats.CacheHits + workerStats.CacheMisses)
+	}
+	
+	if totalRequests > 0 {
+		return (float64(totalHits) / float64(totalRequests)) * 100
+	}
+	return 0.0
+}
+
+// GetMonitoringDashboard returns the monitoring dashboard instance
+func (c *Coordinator) GetMonitoringDashboard() *monitoring.Dashboard {
+	return monitoring.NewDashboard(c.monitor, c.queryMonitor)
+}
+
+// GetCoordinatorStats returns current coordinator statistics for monitoring
+func (c *Coordinator) GetCoordinatorStats() monitoring.CoordinatorStats {
+	return c.monitor.GetCoordinatorStats()
+}
+
+// GetQueryStats returns current query statistics for monitoring
+func (c *Coordinator) GetQueryStats() monitoring.QueryStats {
+	return c.queryMonitor.GetQueryStats()
+}
+
 // Helper functions
 func (c *Coordinator) generateFragmentID() string {
 	c.queryIDMux.Lock()
@@ -1254,9 +1365,12 @@ func convertAggregates(aggregates []core.AggregateFunction) []core.Column {
 
 // DistributedPlan represents a distributed query execution plan
 type DistributedPlan struct {
-	Query     *core.ParsedQuery
-	Fragments []*communication.QueryFragment
-	Workers   []*WorkerConnection
+	Query              *core.ParsedQuery
+	Fragments          []*communication.QueryFragment
+	Workers            []*WorkerConnection
+	OptimizationApplied bool
+	OriginalCost       float64
+	OptimizedCost      float64
 }
 
 // aggregateGroup represents a group in aggregation
