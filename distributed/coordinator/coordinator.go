@@ -3,6 +3,7 @@ package coordinator
 import (
 	"bytedb/core"
 	"bytedb/distributed/communication"
+	"bytedb/distributed/planner"
 	"context"
 	"fmt"
 	"log"
@@ -13,14 +14,15 @@ import (
 
 // Coordinator manages distributed query execution
 type Coordinator struct {
-	workers     map[string]*WorkerConnection
-	parser      *core.SQLParser
-	planner     *core.QueryPlanner
-	optimizer   *core.QueryOptimizer
-	transport   communication.Transport
-	mutex       sync.RWMutex
-	queryID     int64
-	queryIDMux  sync.Mutex
+	workers            map[string]*WorkerConnection
+	parser             *core.SQLParser
+	planner            *core.QueryPlanner
+	distributedPlanner *planner.DistributedQueryPlanner
+	optimizer          *core.QueryOptimizer
+	transport          communication.Transport
+	mutex              sync.RWMutex
+	queryID            int64
+	queryIDMux         sync.Mutex
 }
 
 // WorkerConnection represents a connection to a worker
@@ -39,6 +41,8 @@ func NewCoordinator(transport communication.Transport) *Coordinator {
 		planner:   core.NewQueryPlanner(),
 		optimizer: core.NewQueryOptimizer(core.NewQueryPlanner()),
 		transport: transport,
+		// Will initialize distributed planner when workers are registered
+		distributedPlanner: nil,
 	}
 }
 
@@ -128,6 +132,10 @@ func (c *Coordinator) RegisterWorker(ctx context.Context, info *communication.Wo
 	}
 	
 	log.Printf("Coordinator: Worker %s registered successfully", info.ID)
+	
+	// Initialize or update distributed planner with current workers
+	c.updateDistributedPlanner()
+	
 	return nil
 }
 
@@ -195,8 +203,127 @@ func (c *Coordinator) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// updateDistributedPlanner creates or updates the distributed query planner
+func (c *Coordinator) updateDistributedPlanner() {
+	// Gather worker info
+	workers := make([]planner.WorkerInfo, 0, len(c.workers))
+	for _, worker := range c.workers {
+		if worker.Status.Status == "active" {
+			workers = append(workers, planner.WorkerInfo{
+				ID:          worker.Info.ID,
+				Address:     worker.Info.Address,
+				MemoryMB:    worker.Info.Resources.MemoryMB,
+				CurrentLoad: float64(worker.Status.CPUUsage) / 100.0,
+			})
+		}
+	}
+	
+	// Create table statistics (would be loaded from metadata in production)
+	tableStats := c.createTableStatistics()
+	
+	// Create planning preferences
+	preferences := planner.PlanningPreferences{
+		PreferDataLocality: true,
+		OptimizeFor:        planner.OptimizeThroughput,
+		MaxPlanningTime:    time.Second,
+	}
+	
+	// Create new distributed planner
+	c.distributedPlanner = planner.NewDistributedQueryPlanner(workers, tableStats, preferences)
+	log.Printf("Coordinator: Updated distributed planner with %d workers", len(workers))
+}
+
+// createTableStatistics creates table statistics for the planner
+func (c *Coordinator) createTableStatistics() map[string]*planner.TableStatistics {
+	// In production, this would be loaded from metadata store
+	// For now, return basic statistics
+	return map[string]*planner.TableStatistics{
+		"employees": {
+			TableName: "employees",
+			RowCount:  10000,
+			SizeBytes: 10 * 1024 * 1024, // 10MB
+			ColumnStats: map[string]*planner.ColumnStatistics{
+				"id": {
+					ColumnName:    "id",
+					DataType:      "int",
+					DistinctCount: 10000,
+					MinValue:      1,
+					MaxValue:      10000,
+				},
+				"department": {
+					ColumnName:    "department",
+					DataType:      "varchar",
+					DistinctCount: 5,
+					MinValue:      "Engineering",
+					MaxValue:      "Sales",
+				},
+				"salary": {
+					ColumnName:    "salary",
+					DataType:      "int",
+					DistinctCount: 1000,
+					MinValue:      30000,
+					MaxValue:      200000,
+				},
+			},
+		},
+	}
+}
+
 // createDistributedPlan creates a distributed execution plan
 func (c *Coordinator) createDistributedPlan(query *core.ParsedQuery) (*DistributedPlan, error) {
+	c.mutex.RLock()
+	distributedPlanner := c.distributedPlanner
+	c.mutex.RUnlock()
+	
+	// Use distributed planner if available
+	if distributedPlanner != nil {
+		// Create planning context
+		workers := make([]planner.WorkerInfo, 0)
+		c.mutex.RLock()
+		for _, worker := range c.workers {
+			if worker.Status.Status == "active" {
+				workers = append(workers, planner.WorkerInfo{
+					ID:          worker.Info.ID,
+					Address:     worker.Info.Address,
+					MemoryMB:    worker.Info.Resources.MemoryMB,
+					CurrentLoad: float64(worker.Status.CPUUsage) / 100.0,
+				})
+			}
+		}
+		c.mutex.RUnlock()
+		
+		context := &planner.PlanningContext{
+			Workers: workers,
+			Constraints: planner.PlanningConstraints{
+				MaxMemoryMB:     1024,
+				MaxParallelism:  8,
+				TimeoutDuration: 5 * time.Minute,
+			},
+			Preferences: planner.PlanningPreferences{
+				PreferDataLocality: true,
+				OptimizeFor:        planner.OptimizeThroughput,
+				MaxPlanningTime:    time.Second,
+			},
+		}
+		
+		// Create optimized distributed plan
+		distributedPlan, err := distributedPlanner.CreatePlan(query, context)
+		if err != nil {
+			log.Printf("Coordinator: Failed to create distributed plan: %v", err)
+			// Fall back to simple planning
+			return c.createSimpleDistributedPlan(query)
+		}
+		
+		// Convert to our internal format
+		return c.convertDistributedPlan(distributedPlan, query)
+	}
+	
+	// Fall back to simple planning
+	return c.createSimpleDistributedPlan(query)
+}
+
+// createSimpleDistributedPlan creates a simple distributed plan (fallback)
+func (c *Coordinator) createSimpleDistributedPlan(query *core.ParsedQuery) (*DistributedPlan, error) {
 	c.mutex.RLock()
 	availableWorkers := make([]*WorkerConnection, 0, len(c.workers))
 	for _, worker := range c.workers {
@@ -216,8 +343,7 @@ func (c *Coordinator) createDistributedPlan(query *core.ParsedQuery) (*Distribut
 		Workers:   availableWorkers,
 	}
 	
-	// For now, create simple scan fragments for each worker
-	// This is a basic implementation - more sophisticated planning will be added later
+	// Simple scan fragments for each worker
 	for _, worker := range availableWorkers {
 		fragmentID := c.generateFragmentID()
 		fragment := &communication.QueryFragment{
@@ -239,10 +365,157 @@ func (c *Coordinator) createDistributedPlan(query *core.ParsedQuery) (*Distribut
 		}
 		
 		plan.Fragments = append(plan.Fragments, fragment)
-		log.Printf("Coordinator: Created fragment %s for worker %s", fragmentID, worker.Info.ID)
+		log.Printf("Coordinator: Created simple fragment %s for worker %s", fragmentID, worker.Info.ID)
 	}
 	
 	return plan, nil
+}
+
+// convertDistributedPlan converts from planner format to coordinator format
+func (c *Coordinator) convertDistributedPlan(plannerPlan *planner.DistributedPlan, query *core.ParsedQuery) (*DistributedPlan, error) {
+	c.mutex.RLock()
+	availableWorkers := make([]*WorkerConnection, 0, len(c.workers))
+	workerMap := make(map[string]*WorkerConnection)
+	for _, worker := range c.workers {
+		if worker.Status.Status == "active" {
+			availableWorkers = append(availableWorkers, worker)
+			workerMap[worker.Info.ID] = worker
+		}
+	}
+	c.mutex.RUnlock()
+	
+	plan := &DistributedPlan{
+		Query:     query,
+		Fragments: make([]*communication.QueryFragment, 0),
+		Workers:   availableWorkers,
+	}
+	
+	// Convert each stage to fragments
+	for _, stage := range plannerPlan.Stages {
+		log.Printf("Coordinator: Converting stage %s (type: %s) with %d fragments", 
+			stage.ID, stage.Type, len(stage.Fragments))
+		
+		// For aggregate queries, only execute the final stage fragments
+		if plannerPlan.ParsedQuery.IsAggregate && stage.Type == planner.StageFinal {
+			// This is the final aggregation stage - execute it
+			for _, fragment := range stage.Fragments {
+				if fragment.Fragment != nil {
+					plan.Fragments = append(plan.Fragments, fragment.Fragment)
+					log.Printf("Coordinator: Added final aggregation fragment %s", fragment.Fragment.ID)
+				}
+			}
+		} else if !plannerPlan.ParsedQuery.IsAggregate {
+			// For non-aggregate queries, execute scan fragments
+			if stage.Type == planner.StageScan {
+				for _, fragment := range stage.Fragments {
+					if fragment.Fragment != nil {
+						plan.Fragments = append(plan.Fragments, fragment.Fragment)
+						log.Printf("Coordinator: Added scan fragment %s", fragment.Fragment.ID)
+					}
+				}
+			}
+		}
+	}
+	
+	// If we're dealing with an aggregate query, we need to handle the partial aggregation
+	if plannerPlan.ParsedQuery.IsAggregate && len(plannerPlan.Stages) >= 2 {
+		// Execute scan and partial aggregation stages on workers
+		scanFragments := make([]*communication.QueryFragment, 0)
+		
+		// Find scan stage
+		for _, stage := range plannerPlan.Stages {
+			if stage.Type == planner.StageScan || stage.ID == "optimized_scan" {
+				for _, fragment := range stage.Fragments {
+					if fragment.Fragment != nil {
+						// Clone and modify the fragment to include partial aggregation
+						aggFragment := &communication.QueryFragment{
+							ID:           fragment.Fragment.ID + "_agg",
+							SQL:          c.buildOptimizedAggregateSQL(query, fragment.WorkerID),
+							TablePath:    fragment.Fragment.TablePath,
+							Columns:      fragment.Fragment.Columns,
+							WhereClause:  fragment.Fragment.WhereClause,
+							GroupBy:      query.GroupBy,
+							Aggregates:   convertAggregates(query.Aggregates),
+							FragmentType: communication.FragmentTypeAggregate,
+							IsPartial:    true,
+						}
+						scanFragments = append(scanFragments, aggFragment)
+						log.Printf("Coordinator: Created optimized aggregate fragment %s for worker %s", 
+							aggFragment.ID, fragment.WorkerID)
+					}
+				}
+			}
+		}
+		
+		// Replace fragments with optimized ones
+		if len(scanFragments) > 0 {
+			plan.Fragments = scanFragments
+		}
+	}
+	
+	log.Printf("Coordinator: Converted distributed plan with %d fragments using optimization", 
+		len(plan.Fragments))
+	
+	// Log optimization info
+	if plannerPlan.Statistics != nil {
+		log.Printf("Coordinator: Estimated cost: %.2f, rows: %d, bytes: %d", 
+			plannerPlan.Statistics.TotalCost,
+			plannerPlan.Statistics.EstimatedRows,
+			plannerPlan.Statistics.EstimatedBytes)
+	}
+	
+	if len(plannerPlan.Optimizations) > 0 {
+		log.Printf("Coordinator: Applied optimizations: %v", plannerPlan.Optimizations)
+	}
+	
+	return plan, nil
+}
+
+// buildOptimizedAggregateSQL builds SQL for optimized aggregate queries
+func (c *Coordinator) buildOptimizedAggregateSQL(query *core.ParsedQuery, workerID string) string {
+	selectCols := []string{}
+	
+	// Add GROUP BY columns
+	selectCols = append(selectCols, query.GroupBy...)
+	
+	// Add partial aggregate functions
+	for _, agg := range query.Aggregates {
+		switch strings.ToUpper(agg.Function) {
+		case "COUNT":
+			selectCols = append(selectCols, fmt.Sprintf("COUNT(%s) as %s", agg.Column, agg.Alias))
+		case "SUM":
+			selectCols = append(selectCols, fmt.Sprintf("SUM(%s) as %s", agg.Column, agg.Alias))
+		case "AVG":
+			// For AVG, we need both SUM and COUNT
+			selectCols = append(selectCols, 
+				fmt.Sprintf("SUM(%s) as %s_sum", agg.Column, agg.Alias),
+				fmt.Sprintf("COUNT(%s) as %s_count", agg.Column, agg.Alias))
+		case "MIN":
+			selectCols = append(selectCols, fmt.Sprintf("MIN(%s) as %s", agg.Column, agg.Alias))
+		case "MAX":
+			selectCols = append(selectCols, fmt.Sprintf("MAX(%s) as %s", agg.Column, agg.Alias))
+		default:
+			selectCols = append(selectCols, fmt.Sprintf("%s(%s) as %s", agg.Function, agg.Column, agg.Alias))
+		}
+	}
+	
+	sql := fmt.Sprintf("SELECT %s FROM %s", strings.Join(selectCols, ", "), query.TableName)
+	
+	// Add WHERE conditions
+	if len(query.Where) > 0 {
+		conditions := []string{}
+		for _, where := range query.Where {
+			conditions = append(conditions, fmt.Sprintf("%s %s %v", where.Column, where.Operator, where.Value))
+		}
+		sql += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	
+	// Add GROUP BY
+	if len(query.GroupBy) > 0 {
+		sql += " GROUP BY " + strings.Join(query.GroupBy, ", ")
+	}
+	
+	return sql
 }
 
 // executePlan executes a distributed plan
@@ -360,9 +633,21 @@ func (c *Coordinator) aggregateResults(query *core.ParsedQuery, results []*commu
 
 // performFinalAggregation performs final aggregation on coordinator
 func (c *Coordinator) performFinalAggregation(query *core.ParsedQuery, rows []core.Row, columns []string) ([]core.Row, error) {
-	// This is a simplified aggregation implementation
-	// In a full implementation, this would handle all SQL aggregation functions properly
+	// Check if we're dealing with partial aggregation results
+	hasPartialAggregates := false
+	for _, col := range columns {
+		if strings.HasSuffix(col, "_sum") || strings.HasSuffix(col, "_count") {
+			hasPartialAggregates = true
+			break
+		}
+	}
 	
+	if hasPartialAggregates {
+		// Handle optimized aggregation - combine partial results
+		return c.combinePartialAggregates(query, rows, columns)
+	}
+	
+	// Fall back to regular aggregation
 	aggregates := convertAggregates(query.Aggregates)
 	
 	if len(query.GroupBy) == 0 {
@@ -372,6 +657,148 @@ func (c *Coordinator) performFinalAggregation(query *core.ParsedQuery, rows []co
 	
 	// Group by aggregation
 	return c.aggregateByGroup(query.GroupBy, aggregates, rows, columns)
+}
+
+// combinePartialAggregates combines partial aggregate results from workers
+func (c *Coordinator) combinePartialAggregates(query *core.ParsedQuery, rows []core.Row, columns []string) ([]core.Row, error) {
+	if len(rows) == 0 {
+		return rows, nil
+	}
+	
+	// Group results by GROUP BY columns
+	groups := make(map[string]*aggregateGroup)
+	
+	for _, row := range rows {
+		// Build group key
+		groupKey := ""
+		if len(query.GroupBy) > 0 {
+			keyParts := make([]string, len(query.GroupBy))
+			for i, col := range query.GroupBy {
+				if val, exists := row[col]; exists {
+					keyParts[i] = fmt.Sprintf("%v", val)
+				}
+			}
+			groupKey = strings.Join(keyParts, "|")
+		}
+		
+		// Get or create group
+		group, exists := groups[groupKey]
+		if !exists {
+			group = &aggregateGroup{
+				key:    groupKey,
+				values: make(map[string]interface{}),
+			}
+			groups[groupKey] = group
+			
+			// Copy GROUP BY values
+			for _, col := range query.GroupBy {
+				if val, exists := row[col]; exists {
+					group.values[col] = val
+				}
+			}
+		}
+		
+		// Combine partial aggregates
+		for _, agg := range query.Aggregates {
+			switch strings.ToUpper(agg.Function) {
+			case "COUNT":
+				// Sum up partial counts
+				if val, exists := row[agg.Alias]; exists {
+					current := getFloat64(group.values[agg.Alias])
+					group.values[agg.Alias] = current + getFloat64(val)
+				}
+				
+			case "SUM":
+				// Sum up partial sums
+				if val, exists := row[agg.Alias]; exists {
+					current := getFloat64(group.values[agg.Alias])
+					group.values[agg.Alias] = current + getFloat64(val)
+				}
+				
+			case "AVG":
+				// Combine partial sums and counts
+				sumKey := agg.Alias + "_sum"
+				countKey := agg.Alias + "_count"
+				
+				if sumVal, exists := row[sumKey]; exists {
+					currentSum := getFloat64(group.values[sumKey])
+					group.values[sumKey] = currentSum + getFloat64(sumVal)
+				}
+				
+				if countVal, exists := row[countKey]; exists {
+					currentCount := getFloat64(group.values[countKey])
+					group.values[countKey] = currentCount + getFloat64(countVal)
+				}
+				
+			case "MIN":
+				// Take minimum of minimums
+				if val, exists := row[agg.Alias]; exists {
+					if current, hasVal := group.values[agg.Alias]; !hasVal {
+						group.values[agg.Alias] = val
+					} else {
+						if getFloat64(val) < getFloat64(current) {
+							group.values[agg.Alias] = val
+						}
+					}
+				}
+				
+			case "MAX":
+				// Take maximum of maximums
+				if val, exists := row[agg.Alias]; exists {
+					if current, hasVal := group.values[agg.Alias]; !hasVal {
+						group.values[agg.Alias] = val
+					} else {
+						if getFloat64(val) > getFloat64(current) {
+							group.values[agg.Alias] = val
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	// Convert groups back to rows
+	finalRows := make([]core.Row, 0, len(groups))
+	for _, group := range groups {
+		row := make(core.Row)
+		
+		// Add GROUP BY columns
+		for _, col := range query.GroupBy {
+			if val, exists := group.values[col]; exists {
+				row[col] = val
+			}
+		}
+		
+		// Add final aggregate values
+		for _, agg := range query.Aggregates {
+			switch strings.ToUpper(agg.Function) {
+			case "AVG":
+				// Calculate average from sum and count
+				sumKey := agg.Alias + "_sum"
+				countKey := agg.Alias + "_count"
+				
+				sum := getFloat64(group.values[sumKey])
+				count := getFloat64(group.values[countKey])
+				
+				if count > 0 {
+					row[agg.Alias] = sum / count
+				} else {
+					row[agg.Alias] = 0.0
+				}
+			default:
+				// Direct copy for other aggregates
+				if val, exists := group.values[agg.Alias]; exists {
+					row[agg.Alias] = val
+				}
+			}
+		}
+		
+		finalRows = append(finalRows, row)
+	}
+	
+	log.Printf("Coordinator: Combined %d partial results into %d final groups", len(rows), len(finalRows))
+	
+	return finalRows, nil
 }
 
 // Helper functions
@@ -515,4 +942,35 @@ type DistributedPlan struct {
 	Query     *core.ParsedQuery
 	Fragments []*communication.QueryFragment
 	Workers   []*WorkerConnection
+}
+
+// aggregateGroup represents a group in aggregation
+type aggregateGroup struct {
+	key    string
+	values map[string]interface{}
+}
+
+// getFloat64 safely converts interface{} to float64
+func getFloat64(val interface{}) float64 {
+	if val == nil {
+		return 0
+	}
+	switch v := val.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case int32:
+		return float64(v)
+	case string:
+		var f float64
+		fmt.Sscanf(v, "%f", &f)
+		return f
+	default:
+		return 0
+	}
 }
