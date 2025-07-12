@@ -128,6 +128,13 @@ type ExpressionValue struct {
 	CaseExpr    *CaseExpression // For nested CASE expressions
 }
 
+type CTE struct {
+	Name         string       // CTE name
+	Query        *ParsedQuery // The CTE's query
+	ColumnNames  []string     // Optional column name list
+	IsRecursive  bool         // For RECURSIVE CTEs (future enhancement)
+}
+
 type ParsedQuery struct {
 	Type        QueryType
 	TableName   string
@@ -146,6 +153,7 @@ type ParsedQuery struct {
 	HasWindowFuncs bool // True if query contains window functions
 	IsCorrelated bool // True if subquery references outer query columns
 	CorrelatedColumns []string // List of outer query columns referenced
+	CTEs        []CTE // Common Table Expressions (WITH clauses)
 }
 
 type SQLParser struct{}
@@ -311,8 +319,54 @@ func (p *SQLParser) parseJoinCondition(quals *pg_query.Node, joinClause *JoinCla
 	return fmt.Errorf("unsupported JOIN condition type")
 }
 
+func (p *SQLParser) parseWithClause(withClause *pg_query.WithClause, query *ParsedQuery) error {
+	for _, cteNode := range withClause.Ctes {
+		if commonTableExpr := cteNode.GetCommonTableExpr(); commonTableExpr != nil {
+			cte := CTE{
+				Name:        commonTableExpr.Ctename,
+				IsRecursive: withClause.Recursive,
+			}
+			
+			// Parse optional column names
+			if commonTableExpr.Aliascolnames != nil {
+				for _, colNode := range commonTableExpr.Aliascolnames {
+					if str := colNode.GetString_(); str != nil {
+						cte.ColumnNames = append(cte.ColumnNames, str.Sval)
+					}
+				}
+			}
+			
+			// Parse the CTE query
+			if commonTableExpr.Ctequery != nil {
+				if selectStmt := commonTableExpr.Ctequery.GetSelectStmt(); selectStmt != nil {
+					cteQuery := &ParsedQuery{
+						Type: SELECT,
+					}
+					_, err := p.parseSelect(selectStmt, cteQuery)
+					if err != nil {
+						return fmt.Errorf("failed to parse CTE '%s' query: %w", cte.Name, err)
+					}
+					cte.Query = cteQuery
+				}
+			}
+			
+			query.CTEs = append(query.CTEs, cte)
+		}
+	}
+	
+	return nil
+}
+
 func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (*ParsedQuery, error) {
 	query.Type = SELECT
+
+	// Parse WITH clause (CTEs) if present
+	if stmt.WithClause != nil {
+		err := p.parseWithClause(stmt.WithClause, query)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse WITH clause: %w", err)
+		}
+	}
 
 	if stmt.FromClause != nil && len(stmt.FromClause) > 0 {
 		err := p.parseFromClause(stmt.FromClause, query)

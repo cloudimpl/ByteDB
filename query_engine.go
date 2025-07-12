@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,6 +15,7 @@ type QueryEngine struct {
 	parser      *SQLParser
 	dataPath    string
 	openReaders map[string]*ParquetReader
+	readersMu   sync.RWMutex
 	cache       *QueryCache
 }
 
@@ -42,6 +44,9 @@ func NewQueryEngine(dataPath string) *QueryEngine {
 }
 
 func (qe *QueryEngine) Close() {
+	qe.readersMu.Lock()
+	defer qe.readersMu.Unlock()
+	
 	for _, reader := range qe.openReaders {
 		reader.Close()
 	}
@@ -85,7 +90,206 @@ func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
 	return result, err
 }
 
+func (qe *QueryEngine) executeCTEQuery(query *ParsedQuery, cteRows []Row) (*QueryResult, error) {
+	// The CTE rows are our base data
+	rows := cteRows
+	
+	// Apply WHERE clause filtering if present
+	if len(query.Where) > 0 {
+		var filteredRows []Row
+		for _, row := range rows {
+			// Create a dummy reader for condition evaluation
+			// This is needed because our filter functions expect a ParquetReader
+			if qe.evaluateCTEConditions(query.Where, row) {
+				filteredRows = append(filteredRows, row)
+			}
+		}
+		rows = filteredRows
+	}
+	
+	// Handle aggregation
+	if query.IsAggregate {
+		// For CTE queries, we need to handle aggregation differently
+		// since we don't have a ParquetReader
+		result, err := qe.executeAggregate(query, rows, nil)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+	
+	// Apply ORDER BY
+	if len(query.OrderBy) > 0 {
+		rows = qe.sortRows(rows, query.OrderBy, nil)
+	}
+	
+	// Apply LIMIT
+	if query.Limit > 0 && len(rows) > query.Limit {
+		rows = rows[:query.Limit]
+	}
+	
+	// Select only requested columns
+	// For CTE results, we need to handle column selection manually
+	selectedRows := qe.selectCTEColumns(rows, query.Columns)
+	
+	return &QueryResult{
+		Columns: qe.getResultColumns(selectedRows, query.Columns),
+		Rows:    selectedRows,
+		Count:   len(selectedRows),
+		Query:   query.RawSQL,
+	}, nil
+}
+
+func (qe *QueryEngine) evaluateCTEConditions(conditions []WhereCondition, row Row) bool {
+	// For simplicity, we'll implement basic condition evaluation for CTEs
+	// This is a simplified version that doesn't support all features
+	for _, condition := range conditions {
+		if !qe.evaluateCTECondition(condition, row) {
+			return false
+		}
+	}
+	return true
+}
+
+func (qe *QueryEngine) evaluateCTECondition(condition WhereCondition, row Row) bool {
+	// Handle complex conditions (AND/OR)
+	if condition.IsComplex {
+		switch condition.LogicalOp {
+		case "AND":
+			return qe.evaluateCTECondition(*condition.Left, row) && 
+				   qe.evaluateCTECondition(*condition.Right, row)
+		case "OR":
+			return qe.evaluateCTECondition(*condition.Left, row) || 
+				   qe.evaluateCTECondition(*condition.Right, row)
+		}
+	}
+	
+	// Get column value
+	columnValue, exists := row[condition.Column]
+	if !exists {
+		return false
+	}
+	
+	// Simple comparison operators
+	switch condition.Operator {
+	case "=":
+		return qe.compareValues(columnValue, condition.Value) == 0
+	case "!=", "<>":
+		return qe.compareValues(columnValue, condition.Value) != 0
+	case ">":
+		return qe.compareValues(columnValue, condition.Value) > 0
+	case ">=":
+		return qe.compareValues(columnValue, condition.Value) >= 0
+	case "<":
+		return qe.compareValues(columnValue, condition.Value) < 0
+	case "<=":
+		return qe.compareValues(columnValue, condition.Value) <= 0
+	case "IS NULL":
+		return columnValue == nil
+	case "IS NOT NULL":
+		return columnValue != nil
+	}
+	
+	return true
+}
+
+func (qe *QueryEngine) selectCTEColumns(rows []Row, columns []Column) []Row {
+	// If no specific columns requested or "*", return all columns
+	if len(columns) == 0 || (len(columns) == 1 && columns[0].Name == "*") {
+		return rows
+	}
+	
+	// Select specific columns
+	selectedRows := make([]Row, len(rows))
+	for i, row := range rows {
+		selectedRow := make(Row)
+		for _, col := range columns {
+			if val, exists := row[col.Name]; exists {
+				// Use alias if provided, otherwise use column name
+				key := col.Name
+				if col.Alias != "" {
+					key = col.Alias
+				}
+				selectedRow[key] = val
+			}
+		}
+		selectedRows[i] = selectedRow
+	}
+	
+	return selectedRows
+}
+
+func (qe *QueryEngine) applyCTEColumnAliases(rows []Row, originalColumns []string, aliasNames []string) []Row {
+	// If no aliases or mismatched counts, return as-is
+	if len(aliasNames) == 0 || len(aliasNames) != len(originalColumns) {
+		return rows
+	}
+	
+	// Create mapping from original to alias names
+	columnMapping := make(map[string]string)
+	for i, originalCol := range originalColumns {
+		if i < len(aliasNames) {
+			columnMapping[originalCol] = aliasNames[i]
+		}
+	}
+	
+	// Apply the mapping to all rows
+	aliasedRows := make([]Row, len(rows))
+	for i, row := range rows {
+		aliasedRow := make(Row)
+		for originalCol, value := range row {
+			// Use alias if mapping exists, otherwise keep original
+			newCol := originalCol
+			if alias, exists := columnMapping[originalCol]; exists {
+				newCol = alias
+			}
+			aliasedRow[newCol] = value
+		}
+		aliasedRows[i] = aliasedRow
+	}
+	
+	return aliasedRows
+}
+
 func (qe *QueryEngine) executeSelect(query *ParsedQuery) (*QueryResult, error) {
+	return qe.executeSelectWithCTEs(query, nil)
+}
+
+func (qe *QueryEngine) executeSelectWithCTEs(query *ParsedQuery, parentCTEs map[string][]Row) (*QueryResult, error) {
+	// Initialize CTE results with parent CTEs if provided
+	cteResults := make(map[string][]Row)
+	if parentCTEs != nil {
+		for name, rows := range parentCTEs {
+			cteResults[name] = rows
+		}
+	}
+	
+	// Process CTEs if present
+	if len(query.CTEs) > 0 {
+		for _, cte := range query.CTEs {
+			// Execute each CTE and store the results
+			// Pass existing CTEs so they can reference each other
+			cteResult, err := qe.executeSelectWithCTEs(cte.Query, cteResults)
+			if err != nil {
+				return nil, fmt.Errorf("failed to execute CTE '%s': %w", cte.Name, err)
+			}
+			
+			// If the CTE has column aliases, apply them
+			rows := cteResult.Rows
+			if len(cte.ColumnNames) > 0 {
+				rows = qe.applyCTEColumnAliases(rows, cteResult.Columns, cte.ColumnNames)
+			}
+			
+			// Store the CTE results with aliased columns
+			cteResults[cte.Name] = rows
+		}
+	}
+	
+	// Check if the main query references a CTE
+	if cteRows, isCTE := cteResults[query.TableName]; isCTE {
+		return qe.executeCTEQuery(query, cteRows)
+	}
+	
 	// Check if this is a JOIN query
 	if query.HasJoins {
 		return qe.executeJoinQuery(query)
@@ -644,6 +848,19 @@ func (qe *QueryEngine) getJoinResultColumns(rows []Row, queryColumns []Column) [
 }
 
 func (qe *QueryEngine) getReader(tableName string) (*ParquetReader, error) {
+	// Try to get existing reader with read lock
+	qe.readersMu.RLock()
+	if reader, exists := qe.openReaders[tableName]; exists {
+		qe.readersMu.RUnlock()
+		return reader, nil
+	}
+	qe.readersMu.RUnlock()
+
+	// Need to create new reader - use write lock
+	qe.readersMu.Lock()
+	defer qe.readersMu.Unlock()
+	
+	// Double-check pattern - another goroutine might have created it
 	if reader, exists := qe.openReaders[tableName]; exists {
 		return reader, nil
 	}
