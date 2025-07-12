@@ -1265,8 +1265,8 @@ func (qe *QueryEngine) compareRows(row1, row2 Row, orderBy []OrderByColumn, read
 }
 
 func (qe *QueryEngine) getResultColumns(rows []Row, queryColumns []Column) []string {
-	// If there are query columns specified, use those even if there are no rows
-	if len(rows) == 0 && len(queryColumns) > 0 {
+	// If there are query columns specified, use those to maintain order
+	if len(queryColumns) > 0 {
 		var columns []string
 		for _, col := range queryColumns {
 			if col.Alias != "" {
@@ -1282,15 +1282,21 @@ func (qe *QueryEngine) getResultColumns(rows []Row, queryColumns []Column) []str
 		return []string{}
 	}
 
+	// When no query columns are specified, we need to maintain a consistent order
+	// Sort the keys to ensure deterministic column ordering
 	columnSet := make(map[string]bool)
 	var columns []string
 
+	// First collect all unique columns
 	for key := range rows[0] {
 		if !columnSet[key] {
 			columns = append(columns, key)
 			columnSet[key] = true
 		}
 	}
+
+	// Sort columns to ensure consistent ordering
+	sort.Strings(columns)
 
 	return columns
 }
