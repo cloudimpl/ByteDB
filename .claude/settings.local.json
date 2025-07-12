@@ -11,7 +11,8 @@
       "Bash(./debug_where)",
       "Bash(./debug_filter)",
       "Bash(./debug_filter2)",
-      "Bash(./debug_where2)"
+      "Bash(./debug_where2)",
+      "Bash(make:*)"
     ],
     "deny": []
   }

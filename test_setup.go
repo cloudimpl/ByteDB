@@ -3,14 +3,12 @@ package main
 import (
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
-	"time"
 
 	"github.com/parquet-go/parquet-go"
 )
 
-
+// generateSampleData creates sample Parquet files for testing
 func generateSampleData() {
 	if err := os.MkdirAll("./data", 0755); err != nil {
 		log.Fatal(err)
@@ -54,16 +52,16 @@ func generateEmployees() {
 
 func generateProducts() {
 	products := []Product{
-		{1, "Laptop", "Electronics", 999.99, true, "High-performance laptop"},
-		{2, "Mouse", "Electronics", 29.99, true, "Wireless optical mouse"},
-		{3, "Keyboard", "Electronics", 79.99, true, "Mechanical keyboard"},
-		{4, "Monitor", "Electronics", 299.99, false, "24-inch LED monitor"},
-		{5, "Desk Chair", "Furniture", 199.99, true, "Ergonomic office chair"},
-		{6, "Desk Lamp", "Furniture", 49.99, true, "LED desk lamp"},
-		{7, "Notebook", "Stationery", 12.99, true, "Spiral notebook"},
-		{8, "Pen Set", "Stationery", 24.99, true, "Set of 12 pens"},
-		{9, "Coffee Mug", "Kitchen", 15.99, true, "Ceramic coffee mug"},
-		{10, "Water Bottle", "Kitchen", 19.99, false, "Stainless steel water bottle"},
+		{1, "Laptop", "Electronics", 999.99, true, "TechCorp"},
+		{2, "Mouse", "Electronics", 29.99, true, "TechCorp"},
+		{3, "Keyboard", "Electronics", 89.99, false, "TechCorp"},
+		{4, "Monitor", "Electronics", 299.99, true, "ScreenCorp"},
+		{5, "Webcam", "Electronics", 79.99, true, "CameraCorp"},
+		{6, "Notebook", "Stationery", 5.99, true, "PaperCorp"},
+		{7, "Pen", "Stationery", 1.99, true, "PaperCorp"},
+		{8, "Eraser", "Stationery", 0.99, false, "PaperCorp"},
+		{9, "Calculator", "Electronics", 15.99, true, "MathCorp"},
+		{10, "Phone", "Electronics", 699.99, true, "PhoneCorp"},
 	}
 
 	file, err := os.Create("./data/products.parquet")
@@ -84,12 +82,12 @@ func generateProducts() {
 
 func generateDepartments() {
 	departments := []Department{
-		{"Engineering", "Lisa Davis", 500000.0, "Building A", 4},
-		{"Marketing", "Jane Smith", 200000.0, "Building B", 2},
-		{"HR", "Sarah Wilson", 150000.0, "Building C", 1},
-		{"Sales", "David Brown", 300000.0, "Building B", 2},
-		{"Finance", "Anna Garcia", 250000.0, "Building C", 1},
-		{"Research", "Dr. Smith", 400000.0, "Building D", 0}, // Department with no employees
+		{"Engineering", "Lisa Davis", 1000000.0, "Building A", 4},
+		{"Marketing", "Jane Smith", 500000.0, "Building B", 2},
+		{"HR", "Sarah Wilson", 300000.0, "Building C", 1},
+		{"Sales", "David Brown", 750000.0, "Building B", 2},
+		{"Finance", "Anna Garcia", 600000.0, "Building C", 1},
+		{"Research", "Dr. Smith", 400000.0, "Building D", 0},
 	}
 
 	file, err := os.Create("./data/departments.parquet")
@@ -107,8 +105,3 @@ func generateDepartments() {
 		}
 	}
 }
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
-
