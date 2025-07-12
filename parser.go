@@ -14,6 +14,7 @@ const (
 	INSERT
 	UPDATE
 	DELETE
+	EXPLAIN
 	UNSUPPORTED
 )
 
@@ -154,6 +155,10 @@ type ParsedQuery struct {
 	IsCorrelated bool // True if subquery references outer query columns
 	CorrelatedColumns []string // List of outer query columns referenced
 	CTEs        []CTE // Common Table Expressions (WITH clauses)
+	
+	// EXPLAIN specific fields
+	ExplainOptions *ExplainOptions // Options for EXPLAIN command
+	ExplainQuery   *ParsedQuery    // The query being explained
 }
 
 type SQLParser struct{}
@@ -177,6 +182,10 @@ func (p *SQLParser) Parse(sql string) (*ParsedQuery, error) {
 
 	if selectStmt := stmt.GetSelectStmt(); selectStmt != nil {
 		return p.parseSelect(selectStmt, query)
+	}
+	
+	if explainStmt := stmt.GetExplainStmt(); explainStmt != nil {
+		return p.parseExplain(explainStmt, query)
 	}
 	
 	query.Type = UNSUPPORTED
@@ -406,6 +415,68 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 	// Post-process to detect correlated subqueries
 	p.detectAllCorrelations(query)
 
+	return query, nil
+}
+
+func (p *SQLParser) parseExplain(stmt *pg_query.ExplainStmt, query *ParsedQuery) (*ParsedQuery, error) {
+	query.Type = EXPLAIN
+	query.ExplainOptions = &ExplainOptions{
+		Costs: true, // Default to showing costs
+		Format: ExplainFormatText, // Default format
+	}
+	
+	// Parse EXPLAIN options
+	for _, option := range stmt.Options {
+		if defElem := option.GetDefElem(); defElem != nil {
+			optName := defElem.Defname
+			switch strings.ToLower(optName) {
+			case "analyze":
+				query.ExplainOptions.Analyze = true
+			case "verbose":
+				query.ExplainOptions.Verbose = true
+			case "costs":
+				if defElem.Arg != nil {
+					if boolVal := defElem.Arg.GetBoolean(); boolVal != nil {
+						query.ExplainOptions.Costs = boolVal.Boolval
+					} else if aConst := defElem.Arg.GetAConst(); aConst != nil {
+						// Handle FALSE as a string
+						if str := aConst.GetSval(); str != nil && strings.ToUpper(str.Sval) == "FALSE" {
+							query.ExplainOptions.Costs = false
+						}
+					}
+				}
+			case "buffers":
+				query.ExplainOptions.Buffers = true
+			case "format":
+				if strVal := defElem.Arg.GetString_(); strVal != nil {
+					switch strings.ToUpper(strVal.Sval) {
+					case "JSON":
+						query.ExplainOptions.Format = ExplainFormatJSON
+					case "YAML":
+						query.ExplainOptions.Format = ExplainFormatYAML
+					default:
+						query.ExplainOptions.Format = ExplainFormatText
+					}
+				}
+			}
+		}
+	}
+	
+	// Parse the query being explained
+	if stmt.Query != nil {
+		explainedQuery := &ParsedQuery{}
+		if selectStmt := stmt.Query.GetSelectStmt(); selectStmt != nil {
+			var err error
+			explainedQuery, err = p.parseSelect(selectStmt, explainedQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse explained query: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("only SELECT statements can be explained")
+		}
+		query.ExplainQuery = explainedQuery
+	}
+	
 	return query, nil
 }
 

@@ -17,6 +17,7 @@ type QueryEngine struct {
 	openReaders map[string]*ParquetReader
 	readersMu   sync.RWMutex
 	cache       *QueryCache
+	planner     *QueryPlanner
 }
 
 type QueryResult struct {
@@ -35,11 +36,15 @@ func NewQueryEngine(dataPath string) *QueryEngine {
 		Enabled:     true,                 // Enable caching by default
 	}
 	
+	planner := NewQueryPlanner()
+	planner.statsCollector.Initialize(dataPath)
+	
 	return &QueryEngine{
 		parser:      NewSQLParser(),
 		dataPath:    dataPath,
 		openReaders: make(map[string]*ParquetReader),
 		cache:       NewQueryCache(cacheConfig),
+		planner:     planner,
 	}
 }
 
@@ -75,6 +80,8 @@ func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
 		} else {
 			result, err = qe.executeSelect(parsedQuery)
 		}
+	case EXPLAIN:
+		result, err = qe.executeExplain(parsedQuery)
 	default:
 		result = &QueryResult{
 			Query: sql,
@@ -1976,4 +1983,158 @@ func (qe *QueryEngine) executeLead(winFunc WindowFunction, rows []Row, reader *P
 	}
 	
 	return rows
+}
+
+// executeExplain handles EXPLAIN queries
+func (qe *QueryEngine) executeExplain(query *ParsedQuery) (*QueryResult, error) {
+	if query.ExplainQuery == nil {
+		return &QueryResult{
+			Query: query.RawSQL,
+			Error: "no query to explain",
+		}, nil
+	}
+	
+	// Create query plan
+	plan, err := qe.planner.CreatePlan(query.ExplainQuery, qe)
+	if err != nil {
+		return &QueryResult{
+			Query: query.RawSQL,
+			Error: fmt.Sprintf("failed to create query plan: %v", err),
+		}, nil
+	}
+	
+	// If ANALYZE is requested, execute the query and collect actual statistics
+	if query.ExplainOptions.Analyze {
+		// Execute the query and measure time
+		startTime := time.Now()
+		result, err := qe.executeSelect(query.ExplainQuery)
+		elapsed := time.Since(startTime).Milliseconds()
+		
+		if err != nil {
+			return &QueryResult{
+				Query: query.RawSQL,
+				Error: fmt.Sprintf("failed to analyze query: %v", err),
+			}, nil
+		}
+		
+		// Update plan with actual statistics
+		if plan.Root != nil {
+			plan.Root.ActualRows = int64(result.Count)
+			plan.Root.ActualTime = float64(elapsed)
+		}
+	}
+	
+	// Format the output based on options
+	var output string
+	switch query.ExplainOptions.Format {
+	case ExplainFormatJSON:
+		output = qe.formatPlanAsJSON(plan, query.ExplainOptions)
+	case ExplainFormatYAML:
+		output = qe.formatPlanAsYAML(plan, query.ExplainOptions)
+	default:
+		output = qe.formatPlanAsText(plan, query.ExplainOptions)
+	}
+	
+	// Return the plan as a single row result
+	return &QueryResult{
+		Columns: []string{"QUERY PLAN"},
+		Rows: []Row{
+			{"QUERY PLAN": output},
+		},
+		Count: 1,
+		Query: query.RawSQL,
+	}, nil
+}
+
+// formatPlanAsText formats the query plan as text
+func (qe *QueryEngine) formatPlanAsText(plan *QueryPlan, options *ExplainOptions) string {
+	if plan == nil || plan.Root == nil {
+		return "No query plan available"
+	}
+	
+	var result strings.Builder
+	result.WriteString("Query Plan:\n")
+	result.WriteString(plan.Root.StringWithOptions(0, options.Costs))
+	
+	if options.Verbose {
+		result.WriteString("\nNote: Verbose output not fully implemented yet\n")
+	}
+	
+	return result.String()
+}
+
+// formatPlanAsJSON formats the query plan as JSON
+func (qe *QueryEngine) formatPlanAsJSON(plan *QueryPlan, options *ExplainOptions) string {
+	if plan == nil || plan.Root == nil {
+		return "{\"error\": \"No query plan available\"}"
+	}
+	
+	planMap := qe.planNodeToMap(plan.Root, options)
+	jsonBytes, err := json.MarshalIndent(planMap, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("{\"error\": \"Failed to marshal plan: %v\"}", err)
+	}
+	
+	return string(jsonBytes)
+}
+
+// formatPlanAsYAML formats the query plan as YAML (simplified for now)
+func (qe *QueryEngine) formatPlanAsYAML(plan *QueryPlan, options *ExplainOptions) string {
+	// For now, return a simple text representation
+	// A full implementation would use a YAML library
+	return "YAML format not implemented yet\n" + qe.formatPlanAsText(plan, options)
+}
+
+// planNodeToMap converts a plan node to a map for JSON serialization
+func (qe *QueryEngine) planNodeToMap(node *PlanNode, options *ExplainOptions) map[string]interface{} {
+	result := make(map[string]interface{})
+	
+	result["node_type"] = string(node.Type)
+	
+	if options.Costs {
+		result["cost"] = node.Cost
+		result["rows"] = node.Rows
+		result["width"] = node.Width
+	}
+	
+	if node.ActualRows > 0 || node.ActualTime > 0 {
+		result["actual_rows"] = node.ActualRows
+		result["actual_time_ms"] = node.ActualTime
+	}
+	
+	// Add operation-specific fields
+	switch node.Type {
+	case PlanNodeScan:
+		result["table"] = node.TableName
+		if len(node.Columns) > 0 {
+			result["columns"] = node.Columns
+		}
+	case PlanNodeFilter:
+		result["conditions"] = len(node.Filter)
+	case PlanNodeProject:
+		result["columns"] = node.Columns
+	case PlanNodeSort:
+		result["sort_keys"] = node.OrderBy
+	case PlanNodeLimit:
+		result["limit"] = node.LimitCount
+	case PlanNodeJoin:
+		result["join_type"] = getJoinTypeName(node.JoinType)
+	case PlanNodeAggregate:
+		if len(node.GroupBy) > 0 {
+			result["group_by"] = node.GroupBy
+		}
+	case PlanNodeCTE:
+		result["cte_name"] = node.CTEName
+	}
+	
+	// Add children
+	if len(node.Children) > 0 {
+		var children []map[string]interface{}
+		for _, child := range node.Children {
+			children = append(children, qe.planNodeToMap(child, options))
+		}
+		result["children"] = children
+	}
+	
+	return result
 }

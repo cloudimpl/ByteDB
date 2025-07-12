@@ -93,6 +93,10 @@ func (pr *ParquetReader) GetColumnNames() []string {
 	return names
 }
 
+func (pr *ParquetReader) GetRowCount() int {
+	return int(pr.reader.NumRows())
+}
+
 // GetSchemaInfo returns detailed information about the schema
 func (pr *ParquetReader) GetSchemaInfo() map[string]interface{} {
 	fields := pr.schema.Fields()
