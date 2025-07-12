@@ -75,7 +75,7 @@ func (c *Coordinator) ExecuteQuery(ctx context.Context, req *communication.Distr
 	}
 	
 	// Set query type for monitoring
-	queryType := string(parsedQuery.Type)
+	queryType := parsedQuery.Type.String()
 	if parsedQuery.IsAggregate {
 		queryType += "_AGGREGATE"
 	}

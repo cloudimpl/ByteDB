@@ -181,8 +181,8 @@ func (qe *QueryExplainer) buildPlanTree(query *core.ParsedQuery) *PlanNode {
 	default:
 		rootNode = &PlanNode{
 			ID:          "root",
-			Operation:   string(query.Type),
-			Description: fmt.Sprintf("%s operation", query.Type),
+			Operation:   query.Type.String(),
+			Description: fmt.Sprintf("%s operation", query.Type.String()),
 		}
 	}
 	
@@ -289,12 +289,12 @@ func (qe *QueryExplainer) buildJoinPlan(query *core.ParsedQuery) *PlanNode {
 	joinNode := &PlanNode{
 		ID:            "join_1",
 		Operation:     "HASH_JOIN",
-		Description:   fmt.Sprintf("%s JOIN", query.Joins[0].Type),
+		Description:   fmt.Sprintf("%s JOIN", query.Joins[0].Type.String()),
 		EstimatedRows: 1500, // Would be calculated based on join selectivity
 		EstimatedCost: 200.0,
 		EstimatedTime: 75 * time.Millisecond,
 		Properties: map[string]interface{}{
-			"join_type":      query.Joins[0].Type,
+			"join_type":      query.Joins[0].Type.String(),
 			"join_algorithm": "hash_join",
 			"build_side":     "right",
 		},

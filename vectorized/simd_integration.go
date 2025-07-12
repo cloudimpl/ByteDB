@@ -475,15 +475,17 @@ func (result *SIMDPerfResult) String() string {
 	)
 }
 
-// GetSIMDCapabilities returns information about SIMD support
-func GetSIMDCapabilities() map[string]bool {
+// GetSIMDCapabilitiesMap returns information about SIMD support as a map
+func GetSIMDCapabilitiesMap() map[string]bool {
 	capabilities := make(map[string]bool)
 	
-	// For a real implementation, you'd use CPU feature detection
-	capabilities["AVX2"] = hasAVX2()
-	capabilities["AVX512"] = false // Not implemented
-	capabilities["SSE4.2"] = true   // Assume SSE4.2 is available
-	capabilities["CGO"] = true      // CGO SIMD implementation available
+	// Get actual capabilities from detection module
+	caps := GetSIMDCapabilities()
+	capabilities["AVX2"] = caps.HasAVX2
+	capabilities["AVX512"] = caps.HasAVX512F
+	capabilities["SSE4.2"] = caps.HasSSE42
+	capabilities["NEON"] = caps.HasNEON
+	capabilities["CGO"] = true // CGO SIMD implementation available
 	
 	return capabilities
 }
@@ -491,7 +493,7 @@ func GetSIMDCapabilities() map[string]bool {
 // PrintSIMDInfo displays SIMD capabilities and recommendations
 func PrintSIMDInfo() {
 	fmt.Println("SIMD Capabilities:")
-	capabilities := GetSIMDCapabilities()
+	capabilities := GetSIMDCapabilitiesMap()
 	
 	for feature, available := range capabilities {
 		status := "❌ Not Available"
@@ -508,7 +510,8 @@ func PrintSIMDInfo() {
 	fmt.Printf("  CPU Count: %d\n", runtime.NumCPU())
 	
 	fmt.Printf("\nRecommendations:\n")
-	if capabilities["AVX2"] {
+	caps := GetSIMDCapabilities()
+	if caps.HasAVX2 {
 		fmt.Println("  ✅ Use Go assembly SIMD implementation for best performance")
 	} else {
 		fmt.Println("  ⚠️  Use CGO SIMD implementation (requires C compiler)")

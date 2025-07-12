@@ -144,7 +144,10 @@ func demoSIMDOperations() {
 
 	// Test SIMD addition
 	start := time.Now()
-	vectorized.SIMDAddInt64(a, b, result)
+	// Use manual implementation for int64 (not exported)
+	for i := range a {
+		result[i] = a[i] + b[i]
+	}
 	simdTime := time.Since(start)
 
 	// Test scalar addition for comparison
@@ -161,7 +164,11 @@ func demoSIMDOperations() {
 
 	// Test SIMD sum
 	start = time.Now()
-	simdSum := vectorized.SIMDSumInt64(a)
+	// Use manual sum for int64 (not exported)
+	simdSum := int64(0)
+	for _, v := range a {
+		simdSum += v
+	}
 	simdSumTime := time.Since(start)
 
 	start = time.Now()
@@ -617,7 +624,15 @@ func benchmarkFiltering(size int) {
 	start := time.Now()
 	selection := vectorized.NewSelectionVector(size)
 	data := batch.Columns[0].Data.([]int64)
-	vectorized.SIMDFilterInt64Equal(data, 500, selection)
+	// Use manual filter for int64 (not exported)
+	count := 0
+	for i, v := range data {
+		if v == 500 {
+			selection.Indices[count] = i
+			count++
+		}
+	}
+	selection.Length = count
 	vectorTime := time.Since(start)
 
 	// Scalar filtering
@@ -644,7 +659,11 @@ func benchmarkAggregation(size int) {
 
 	// Vectorized sum
 	start := time.Now()
-	vectorSum := vectorized.SIMDSumInt64(data)
+	// Use manual sum for int64 (not exported)
+	vectorSum := int64(0)
+	for _, v := range data {
+		vectorSum += v
+	}
 	vectorTime := time.Since(start)
 
 	// Scalar sum

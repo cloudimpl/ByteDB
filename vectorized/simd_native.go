@@ -163,9 +163,8 @@ func simdSumFloat64Manual(data []float64) float64 {
 
 // CPU feature detection
 func hasAVX2() bool {
-	// This would use runtime CPU detection
-	// For now, return false to use CGO implementation
-	return false
+	caps := GetSIMDCapabilities()
+	return caps.HasAVX2
 }
 
 // High-level vectorized operations for the execution engine

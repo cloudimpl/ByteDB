@@ -164,10 +164,8 @@ func (caps *SIMDCapabilities) GetVectorElementCount(dataType DataType) int {
 // getDataTypeSize returns the size in bytes of a data type
 func getDataTypeSize(dataType DataType) int {
 	switch dataType {
-	case INT8:
-		return 1
-	case INT16:
-		return 2
+	// INT8 and INT16 types would go here if defined
+	// For now, we only support the defined types
 	case INT32, FLOAT32:
 		return 4
 	case INT64, FLOAT64:

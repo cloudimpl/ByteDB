@@ -20,6 +20,28 @@ const (
 	UNSUPPORTED
 )
 
+// String returns the string representation of QueryType
+func (qt QueryType) String() string {
+	switch qt {
+	case SELECT:
+		return "SELECT"
+	case INSERT:
+		return "INSERT"
+	case UPDATE:
+		return "UPDATE"
+	case DELETE:
+		return "DELETE"
+	case EXPLAIN:
+		return "EXPLAIN"
+	case UNION:
+		return "UNION"
+	case UNSUPPORTED:
+		return "UNSUPPORTED"
+	default:
+		return fmt.Sprintf("UNKNOWN(%d)", qt)
+	}
+}
+
 type Column struct {
 	Name       string
 	Alias      string
@@ -69,6 +91,22 @@ const (
 	RIGHT_JOIN
 	FULL_OUTER_JOIN
 )
+
+// String returns the string representation of JoinType
+func (jt JoinType) String() string {
+	switch jt {
+	case INNER_JOIN:
+		return "INNER"
+	case LEFT_JOIN:
+		return "LEFT"
+	case RIGHT_JOIN:
+		return "RIGHT"
+	case FULL_OUTER_JOIN:
+		return "FULL OUTER"
+	default:
+		return fmt.Sprintf("UNKNOWN(%d)", jt)
+	}
+}
 
 type JoinCondition struct {
 	LeftColumn  string // Left table column
