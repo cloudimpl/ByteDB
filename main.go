@@ -20,6 +20,16 @@ func main() {
 	engine := core.NewQueryEngine(dataPath)
 	defer engine.Close()
 
+	// Check if there's a table mappings configuration file
+	configPath := fmt.Sprintf("%s/table_mappings.json", dataPath)
+	if _, err := os.Stat(configPath); err == nil {
+		if err := engine.LoadTableMappings(configPath); err != nil {
+			fmt.Printf("Warning: Failed to load table mappings from %s: %v\n", configPath, err)
+		} else {
+			fmt.Printf("Loaded table mappings from %s\n", configPath)
+		}
+	}
+
 	fmt.Println("ByteDB - Simple SQL Query Engine for Parquet Files")
 	fmt.Println("Type 'help' for available commands, 'exit' to quit")
 	fmt.Println()
