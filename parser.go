@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
@@ -26,6 +27,7 @@ type Column struct {
 	Subquery     *ParsedQuery   // For subquery columns like (SELECT COUNT(*) FROM ...)
 	WindowFunc   *WindowFunction // For window function columns like ROW_NUMBER() OVER (...)
 	CaseExpr     *CaseExpression // For CASE expressions like CASE WHEN ... THEN ... END
+	Function     *FunctionCall  // For function calls like UPPER(name), CONCAT(first, ' ', last)
 }
 
 type WhereCondition struct {
@@ -47,6 +49,10 @@ type WhereCondition struct {
 	// For CASE expressions in WHERE clauses
 	CaseExpr      *CaseExpression // For CASE expressions on left side
 	ValueCaseExpr *CaseExpression // For CASE expressions on right side
+	
+	// For function calls in WHERE clauses
+	Function      *FunctionCall // For function calls on left side
+	ValueFunction *FunctionCall // For function calls on right side
 	
 	// For complex logical operations
 	LogicalOp string              // "AND", "OR", ""
@@ -943,6 +949,11 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 							condition.Column = str.Sval
 						}
 					}
+				} else if funcCall := lexpr.GetFuncCall(); funcCall != nil {
+					// Handle function call on left side
+					if fn := p.parseFunctionCall(funcCall); fn != nil {
+						condition.Function = fn
+					}
 				}
 			}
 			
@@ -1028,6 +1039,11 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 						condition.Column = str.Sval
 					}
 				}
+			} else if funcCall := lexpr.GetFuncCall(); funcCall != nil {
+				// Handle function call on left side
+				if fn := p.parseFunctionCall(funcCall); fn != nil {
+					condition.Function = fn
+				}
 			}
 		}
 		
@@ -1055,6 +1071,11 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 					if str := columnRef.Fields[0].GetString_(); str != nil {
 						condition.ValueColumn = str.Sval
 					}
+				}
+			} else if funcCall := rexpr.GetFuncCall(); funcCall != nil {
+				// Handle function call on right side
+				if fn := p.parseFunctionCall(funcCall); fn != nil {
+					condition.ValueFunction = fn
 				}
 			}
 		}
@@ -1251,6 +1272,21 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 		if agg != nil {
 			query.Aggregates = append(query.Aggregates, *agg)
 			query.IsAggregate = true
+			return
+		}
+		
+		// Otherwise it's a regular function call (string/date/math functions)
+		if fn := p.parseFunctionCall(funcCall); fn != nil {
+			column := Column{
+				Function: fn,
+				Alias:    resTarget.Name,
+			}
+			if column.Alias == "" {
+				column.Name = fn.Name // Use function name as default name
+			} else {
+				column.Name = column.Alias
+			}
+			query.Columns = append(query.Columns, column)
 			return
 		}
 	}
@@ -1523,6 +1559,83 @@ func (p *SQLParser) parseWindowSpecification(windef *pg_query.WindowDef) WindowS
 	return spec
 }
 
+func (p *SQLParser) parseFunctionCall(funcCall *pg_query.FuncCall) *FunctionCall {
+	if len(funcCall.Funcname) == 0 {
+		return nil
+	}
+	
+	// Extract function name (might be schema-qualified like pg_catalog.btrim)
+	funcName := ""
+	for i, part := range funcCall.Funcname {
+		if str := part.GetString_(); str != nil {
+			if i > 0 {
+				funcName += "."
+			}
+			funcName += str.Sval
+		}
+	}
+	
+	// For common functions, strip the schema prefix
+	if strings.HasPrefix(strings.ToUpper(funcName), "PG_CATALOG.") {
+		funcName = funcName[11:] // Remove "pg_catalog."
+	}
+	
+	funcName = strings.ToUpper(funcName)
+	
+	// Handle function name aliases
+	switch funcName {
+	case "BTRIM":
+		funcName = "TRIM"
+	}
+	
+	fn := &FunctionCall{
+		Name: funcName,
+		Args: make([]interface{}, 0),
+	}
+	
+	// Parse function arguments
+	for _, arg := range funcCall.Args {
+		if columnRef := arg.GetColumnRef(); columnRef != nil {
+			// Column reference
+			col := Column{}
+			if len(columnRef.Fields) > 0 {
+				if str := columnRef.Fields[0].GetString_(); str != nil {
+					col.Name = str.Sval
+				}
+			}
+			// Handle qualified column names
+			if len(columnRef.Fields) > 1 {
+				if str := columnRef.Fields[1].GetString_(); str != nil {
+					col.TableName = col.Name
+					col.Name = str.Sval
+				}
+			}
+			fn.Args = append(fn.Args, col)
+		} else if aConst := arg.GetAConst(); aConst != nil {
+			// Constant value
+			if ival := aConst.GetIval(); ival != nil {
+				fn.Args = append(fn.Args, ival.Ival)
+			} else if sval := aConst.GetSval(); sval != nil {
+				fn.Args = append(fn.Args, sval.Sval)
+			} else if fval := aConst.GetFval(); fval != nil {
+				// Parse float string to float64
+				if f, err := strconv.ParseFloat(fval.Fval, 64); err == nil {
+					fn.Args = append(fn.Args, f)
+				} else {
+					fn.Args = append(fn.Args, fval.Fval)
+				}
+			}
+		} else if nestedFunc := arg.GetFuncCall(); nestedFunc != nil {
+			// Nested function call
+			if nestedCall := p.parseFunctionCall(nestedFunc); nestedCall != nil {
+				fn.Args = append(fn.Args, nestedCall)
+			}
+		}
+	}
+	
+	return fn
+}
+
 func (p *SQLParser) parseGroupBy(groupClause []*pg_query.Node, query *ParsedQuery) {
 	for _, groupNode := range groupClause {
 		if columnRef := groupNode.GetColumnRef(); columnRef != nil {
@@ -1574,6 +1687,10 @@ func (q *ParsedQuery) GetRequiredColumns() []string {
 		if col.Name == "*" {
 			// If SELECT *, we need all columns - return empty slice to indicate this
 			return []string{}
+		}
+		// Add columns referenced in functions
+		if col.Function != nil {
+			q.addFunctionColumns(col.Function, requiredCols)
 		}
 		// Skip constant columns
 		if !q.isConstantColumn(col.Name) {
@@ -1628,6 +1745,35 @@ func (q *ParsedQuery) addWhereConditionColumns(where WhereCondition, requiredCol
 	// Handle simple conditions
 	if where.Column != "" {
 		requiredCols[where.Column] = true
+	}
+	
+	// Handle column comparisons
+	if where.ValueColumn != "" {
+		requiredCols[where.ValueColumn] = true
+	}
+	
+	// Handle functions in WHERE conditions
+	if where.Function != nil {
+		q.addFunctionColumns(where.Function, requiredCols)
+	}
+	if where.ValueFunction != nil {
+		q.addFunctionColumns(where.ValueFunction, requiredCols)
+	}
+}
+
+// addFunctionColumns recursively adds all columns referenced in a function call
+func (q *ParsedQuery) addFunctionColumns(fn *FunctionCall, requiredCols map[string]bool) {
+	for _, arg := range fn.Args {
+		switch v := arg.(type) {
+		case Column:
+			// Add the column referenced in the function
+			if v.Name != "" && v.Name != "*" {
+				requiredCols[v.Name] = true
+			}
+		case *FunctionCall:
+			// Recursively process nested functions
+			q.addFunctionColumns(v, requiredCols)
+		}
 	}
 }
 

@@ -23,6 +23,7 @@ type Row map[string]interface{}
 type SubqueryExecutor interface {
 	ExecuteSubquery(query *ParsedQuery) (*QueryResult, error)
 	ExecuteCorrelatedSubquery(query *ParsedQuery, outerRow Row) (*QueryResult, error)
+	EvaluateFunction(fn *FunctionCall, row Row) (interface{}, error)
 }
 
 // Define the structs for our sample data
@@ -731,6 +732,19 @@ func (pr *ParquetReader) SelectColumnsWithEngine(rows []Row, columns []Column, e
 				// Evaluate CASE expression to get the value
 				caseValue := pr.evaluateCaseExpression(col.CaseExpr, row, engine)
 				newRow[key] = caseValue
+			} else if col.Function != nil {
+				// Handle function columns
+				key := col.Name
+				if col.Alias != "" {
+					key = col.Alias
+				}
+				
+				// Evaluate function to get the value
+				funcValue, err := engine.EvaluateFunction(col.Function, row)
+				if err != nil {
+					funcValue = nil
+				}
+				newRow[key] = funcValue
 			} else {
 				if value, exists := row[col.Name]; exists {
 					key := col.Name
@@ -941,7 +955,7 @@ func (pr *ParquetReader) executeColumnSubquery(subquery *ParsedQuery, currentRow
 // hasColumnSubqueries checks if any columns contain subqueries or CASE expressions
 func (pr *ParquetReader) hasColumnSubqueries(columns []Column) bool {
 	for _, col := range columns {
-		if col.Subquery != nil || col.CaseExpr != nil {
+		if col.Subquery != nil || col.CaseExpr != nil || col.Function != nil {
 			return true
 		}
 	}
@@ -969,39 +983,82 @@ func (pr *ParquetReader) evaluateCaseExpression(caseExpr *CaseExpression, row Ro
 
 // evaluateCondition evaluates a WHERE condition for CASE expressions
 func (pr *ParquetReader) evaluateCondition(condition WhereCondition, row Row, engine SubqueryExecutor) bool {
-	// Get the left value (usually a column value)
+	// Get the left value (column or function)
 	var leftValue interface{}
-	if condition.TableName != "" {
-		qualifiedKey := condition.TableName + "." + condition.Column
-		if val, exists := row[qualifiedKey]; exists {
-			leftValue = val
-		} else if val, exists := row[condition.Column]; exists {
-			leftValue = val
+	
+	if condition.Function != nil {
+		// Evaluate function on left side
+		var err error
+		leftValue, err = engine.EvaluateFunction(condition.Function, row)
+		if err != nil {
+			return false
+		}
+	} else if condition.Column != "" {
+		// Get column value
+		if condition.TableName != "" {
+			qualifiedKey := condition.TableName + "." + condition.Column
+			if val, exists := row[qualifiedKey]; exists {
+				leftValue = val
+			} else if val, exists := row[condition.Column]; exists {
+				leftValue = val
+			}
+		} else {
+			if val, exists := row[condition.Column]; exists {
+				leftValue = val
+			}
+		}
+	}
+	
+	// Get right side value (literal, column, or function)
+	var rightValue interface{}
+	if condition.ValueFunction != nil {
+		// Evaluate function on right side
+		var err error
+		rightValue, err = engine.EvaluateFunction(condition.ValueFunction, row)
+		if err != nil {
+			return false
+		}
+	} else if condition.ValueColumn != "" {
+		// Column comparison
+		if condition.ValueTableName != "" {
+			qualifiedKey := condition.ValueTableName + "." + condition.ValueColumn
+			if val, exists := row[qualifiedKey]; exists {
+				rightValue = val
+			} else if val, exists := row[condition.ValueColumn]; exists {
+				rightValue = val
+			}
+		} else {
+			if val, exists := row[condition.ValueColumn]; exists {
+				rightValue = val
+			}
 		}
 	} else {
-		if val, exists := row[condition.Column]; exists {
-			leftValue = val
-		}
+		// Literal value
+		rightValue = condition.Value
 	}
 	
 	// Compare with the right value based on operator
 	switch condition.Operator {
 	case "=":
-		return pr.CompareValues(leftValue, condition.Value) == 0
+		return pr.CompareValues(leftValue, rightValue) == 0
 	case "!=", "<>":
-		return pr.CompareValues(leftValue, condition.Value) != 0
+		return pr.CompareValues(leftValue, rightValue) != 0
 	case "<":
-		return pr.CompareValues(leftValue, condition.Value) < 0
+		return pr.CompareValues(leftValue, rightValue) < 0
 	case "<=":
-		return pr.CompareValues(leftValue, condition.Value) <= 0
+		return pr.CompareValues(leftValue, rightValue) <= 0
 	case ">":
-		return pr.CompareValues(leftValue, condition.Value) > 0
+		return pr.CompareValues(leftValue, rightValue) > 0
 	case ">=":
-		return pr.CompareValues(leftValue, condition.Value) >= 0
+		return pr.CompareValues(leftValue, rightValue) >= 0
 	case "LIKE":
-		return pr.matchesLike(leftValue, condition.Value)
+		return pr.matchesLike(leftValue, rightValue)
 	case "IN":
 		return pr.matchesIn(leftValue, condition.ValueList)
+	case "IS NULL":
+		return leftValue == nil
+	case "IS NOT NULL":
+		return leftValue != nil
 	}
 	
 	return false

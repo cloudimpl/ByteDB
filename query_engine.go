@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ type QueryEngine struct {
 	readersMu   sync.RWMutex
 	cache       *QueryCache
 	planner     *QueryPlanner
+	functions   *FunctionRegistry
 }
 
 type QueryResult struct {
@@ -45,6 +47,7 @@ func NewQueryEngine(dataPath string) *QueryEngine {
 		openReaders: make(map[string]*ParquetReader),
 		cache:       NewQueryCache(cacheConfig),
 		planner:     planner,
+		functions:   NewFunctionRegistry(),
 	}
 }
 
@@ -55,6 +58,11 @@ func (qe *QueryEngine) Close() {
 	for _, reader := range qe.openReaders {
 		reader.Close()
 	}
+}
+
+// EvaluateFunction implements the SubqueryExecutor interface
+func (qe *QueryEngine) EvaluateFunction(fn *FunctionCall, row Row) (interface{}, error) {
+	return qe.functions.EvaluateFunction(fn, row)
 }
 
 func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
@@ -74,9 +82,14 @@ func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
 	var result *QueryResult
 	switch parsedQuery.Type {
 	case SELECT:
-		// Handle constant-only queries (no FROM clause)
-		if parsedQuery.TableName == "" && qe.hasOnlyConstantColumns(parsedQuery) {
-			result, err = qe.executeConstantQuery(parsedQuery)
+		// Handle queries without FROM clause
+		if parsedQuery.TableName == "" {
+			if qe.hasOnlyConstantColumns(parsedQuery) {
+				result, err = qe.executeConstantQuery(parsedQuery)
+			} else {
+				// Has functions or other expressions without FROM clause
+				result, err = qe.executeNoTableQuery(parsedQuery)
+			}
 		} else {
 			result, err = qe.executeSelect(parsedQuery)
 		}
@@ -173,30 +186,76 @@ func (qe *QueryEngine) evaluateCTECondition(condition WhereCondition, row Row) b
 		}
 	}
 	
-	// Get column value
-	columnValue, exists := row[condition.Column]
-	if !exists {
+	// Get left side value (column or function)
+	var leftValue interface{}
+	var exists bool
+	
+	if condition.Function != nil {
+		// Evaluate function on left side
+		var err error
+		leftValue, err = qe.functions.EvaluateFunction(condition.Function, row)
+		if err != nil {
+			return false
+		}
+		exists = true
+	} else if condition.Column != "" {
+		// Get column value
+		leftValue, exists = row[condition.Column]
+		if !exists {
+			return false
+		}
+	} else {
 		return false
+	}
+	
+	// Get right side value (literal, column, or function)
+	var rightValue interface{}
+	if condition.ValueFunction != nil {
+		// Evaluate function on right side
+		var err error
+		rightValue, err = qe.functions.EvaluateFunction(condition.ValueFunction, row)
+		if err != nil {
+			return false
+		}
+	} else if condition.ValueColumn != "" {
+		// Column comparison
+		rightValue, _ = row[condition.ValueColumn]
+	} else {
+		// Literal value
+		rightValue = condition.Value
 	}
 	
 	// Simple comparison operators
 	switch condition.Operator {
 	case "=":
-		return qe.compareValues(columnValue, condition.Value) == 0
+		return qe.compareValues(leftValue, rightValue) == 0
 	case "!=", "<>":
-		return qe.compareValues(columnValue, condition.Value) != 0
+		return qe.compareValues(leftValue, rightValue) != 0
 	case ">":
-		return qe.compareValues(columnValue, condition.Value) > 0
+		return qe.compareValues(leftValue, rightValue) > 0
 	case ">=":
-		return qe.compareValues(columnValue, condition.Value) >= 0
+		return qe.compareValues(leftValue, rightValue) >= 0
 	case "<":
-		return qe.compareValues(columnValue, condition.Value) < 0
+		return qe.compareValues(leftValue, rightValue) < 0
 	case "<=":
-		return qe.compareValues(columnValue, condition.Value) <= 0
+		return qe.compareValues(leftValue, rightValue) <= 0
 	case "IS NULL":
-		return columnValue == nil
+		return leftValue == nil
 	case "IS NOT NULL":
-		return columnValue != nil
+		return leftValue != nil
+	case "LIKE":
+		// Simple LIKE implementation
+		if leftStr, ok := leftValue.(string); ok {
+			if pattern, ok := rightValue.(string); ok {
+				// Convert SQL LIKE pattern to Go regex
+				regexPattern := strings.ReplaceAll(pattern, "%", ".*")
+				regexPattern = strings.ReplaceAll(regexPattern, "_", ".")
+				regexPattern = "^" + regexPattern + "$"
+				matched, _ := regexp.MatchString(regexPattern, leftStr)
+				return matched
+			}
+		}
+		return false
 	}
 	
 	return true
@@ -213,13 +272,37 @@ func (qe *QueryEngine) selectCTEColumns(rows []Row, columns []Column) []Row {
 	for i, row := range rows {
 		selectedRow := make(Row)
 		for _, col := range columns {
-			if val, exists := row[col.Name]; exists {
-				// Use alias if provided, otherwise use column name
-				key := col.Name
-				if col.Alias != "" {
-					key = col.Alias
+			var value interface{}
+			var err error
+			
+			// Handle different column types
+			if col.Function != nil {
+				// Evaluate function
+				value, err = qe.functions.EvaluateFunction(col.Function, row)
+				if err != nil {
+					// If function evaluation fails, use nil
+					value = nil
 				}
-				selectedRow[key] = val
+			} else if col.Subquery != nil {
+				// Handle subquery columns (existing logic would go here)
+				value = nil // Placeholder
+			} else if col.CaseExpr != nil {
+				// Handle CASE expressions (existing logic would go here)
+				value = nil // Placeholder
+			} else {
+				// Regular column
+				if val, exists := row[col.Name]; exists {
+					value = val
+				}
+			}
+			
+			// Use alias if provided, otherwise use column name
+			key := col.Name
+			if col.Alias != "" {
+				key = col.Alias
+			}
+			if value != nil {
+				selectedRow[key] = value
 			}
 		}
 		selectedRows[i] = selectedRow
@@ -1321,6 +1404,10 @@ func (qe *QueryEngine) hasOnlyConstantColumns(query *ParsedQuery) bool {
 		if col.Name == "*" {
 			return false // Wildcard is not a constant
 		}
+		// Check if column has function, subquery, or other non-constant features
+		if col.Function != nil || col.Subquery != nil || col.CaseExpr != nil || col.WindowFunc != nil {
+			return false
+		}
 		if !qe.isConstantColumnName(col.Name) {
 			return false
 		}
@@ -1423,6 +1510,32 @@ func (qe *QueryEngine) executeConstantQuery(query *ParsedQuery) (*QueryResult, e
 		Rows:    []Row{row},
 		Count:   1,
 		Query:   "constant query",
+	}, nil
+}
+
+// executeNoTableQuery handles queries without FROM clause that have functions or expressions
+func (qe *QueryEngine) executeNoTableQuery(query *ParsedQuery) (*QueryResult, error) {
+	// Create a single empty row for function evaluation
+	row := make(Row)
+	
+	// Process columns using selectCTEColumns which handles functions
+	rows := []Row{row}
+	rows = qe.selectCTEColumns(rows, query.Columns)
+	
+	// Extract column names
+	var columns []string
+	if len(rows) > 0 {
+		for key := range rows[0] {
+			columns = append(columns, key)
+		}
+		sort.Strings(columns)
+	}
+	
+	return &QueryResult{
+		Columns: columns,
+		Rows:    rows,
+		Count:   len(rows),
+		Query:   query.RawSQL,
 	}, nil
 }
 
