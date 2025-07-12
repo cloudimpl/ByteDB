@@ -123,7 +123,7 @@ func (h *HistogramMetric) GetStats() HistogramStats {
 	stats := HistogramStats{
 		Count:   h.count,
 		Sum:     h.sum,
-		Buckets: make(map[float64]int64),
+		Buckets: make(map[string]int64),
 	}
 	
 	if h.count > 0 {
@@ -131,18 +131,18 @@ func (h *HistogramMetric) GetStats() HistogramStats {
 	}
 	
 	for i, bucket := range h.buckets {
-		stats.Buckets[bucket] = h.counts[i]
+		stats.Buckets[fmt.Sprintf("%.1f", bucket)] = h.counts[i]
 	}
-	stats.Buckets[999999999] = h.counts[len(h.buckets)] // +Inf bucket
+	stats.Buckets["+Inf"] = h.counts[len(h.buckets)] // +Inf bucket
 	
 	return stats
 }
 
 type HistogramStats struct {
-	Count   int64             `json:"count"`
-	Sum     float64           `json:"sum"`
-	Mean    float64           `json:"mean"`
-	Buckets map[float64]int64 `json:"buckets"`
+	Count   int64                    `json:"count"`
+	Sum     float64                  `json:"sum"`
+	Mean    float64                  `json:"mean"`
+	Buckets map[string]int64         `json:"buckets"`
 }
 
 // TimerMetric tracks timing information

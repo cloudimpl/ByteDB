@@ -6,7 +6,6 @@ import (
 	"html/template"
 	"net/http"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -386,12 +385,8 @@ func (me *MetricsExporter) ExportPrometheusMetrics() string {
 					metricName, stats.Sum, metric.Timestamp.Unix()*1000)
 				
 				for bucket, count := range stats.Buckets {
-					bucketStr := "+Inf"
-					if bucket < 999999999 {
-						bucketStr = strconv.FormatFloat(bucket, 'f', -1, 64)
-					}
 					output += fmt.Sprintf("%s_bucket{le=\"%s\"} %d %d\n", 
-						metricName, bucketStr, count, metric.Timestamp.Unix()*1000)
+						metricName, bucket, count, metric.Timestamp.Unix()*1000)
 				}
 			}
 		}
@@ -469,10 +464,22 @@ func (pp *PerformanceProfiler) StopProfile(profileID string) *ProfileData {
 func (pp *PerformanceProfiler) calculateSummary(profile *ProfileData) ProfileSummary {
 	// Calculate summary statistics from samples
 	// This is a simplified implementation
+	sampleCount := len(profile.Samples)
+	
+	avgLatency := time.Duration(0)
+	if sampleCount > 0 {
+		avgLatency = profile.Duration / time.Duration(sampleCount)
+	}
+	
+	throughputQPS := 0.0
+	if profile.Duration.Seconds() > 0 {
+		throughputQPS = float64(sampleCount) / profile.Duration.Seconds()
+	}
+	
 	return ProfileSummary{
-		TotalQueries:  int64(len(profile.Samples)),
-		AverageLatency: profile.Duration / time.Duration(len(profile.Samples)),
-		ThroughputQPS: float64(len(profile.Samples)) / profile.Duration.Seconds(),
+		TotalQueries:  int64(sampleCount),
+		AverageLatency: avgLatency,
+		ThroughputQPS: throughputQPS,
 	}
 }
 
