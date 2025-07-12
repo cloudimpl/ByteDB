@@ -12,10 +12,11 @@ import (
 
 // DistributedQueryPlanner creates and optimizes distributed execution plans
 type DistributedQueryPlanner struct {
-	partitionManager *PartitionManager
-	costEstimator    *CostEstimator
-	optimizer        *DistributedOptimizer
-	planCache        map[string]*DistributedPlan
+	partitionManager   *PartitionManager
+	costEstimator      *CostEstimator
+	optimizer          *DistributedOptimizer
+	aggregateOptimizer *AggregateOptimizer
+	planCache          map[string]*DistributedPlan
 }
 
 // NewDistributedQueryPlanner creates a new distributed query planner
@@ -23,12 +24,14 @@ func NewDistributedQueryPlanner(workers []WorkerInfo, tableStats map[string]*Tab
 	partitionManager := NewPartitionManager(workers, tableStats, preferences)
 	costEstimator := NewCostEstimator(workers, tableStats)
 	optimizer := NewDistributedOptimizer(costEstimator)
+	aggregateOptimizer := NewAggregateOptimizer(costEstimator)
 	
 	return &DistributedQueryPlanner{
-		partitionManager: partitionManager,
-		costEstimator:    costEstimator,
-		optimizer:        optimizer,
-		planCache:        make(map[string]*DistributedPlan),
+		partitionManager:   partitionManager,
+		costEstimator:      costEstimator,
+		optimizer:          optimizer,
+		aggregateOptimizer: aggregateOptimizer,
+		planCache:          make(map[string]*DistributedPlan),
 	}
 }
 
@@ -165,33 +168,86 @@ func (dqp *DistributedQueryPlanner) planSimpleQuery(plan *DistributedPlan, query
 	
 	plan.Stages = append(plan.Stages, scanStage)
 	
-	// Stage 2: Final result collection (if needed)
+	// Stage 2: Sort stage (if ORDER BY is present)
+	if len(query.OrderBy) > 0 && plan.Partitioning.NumPartitions > 1 {
+		sortStage := ExecutionStage{
+			ID:           "sort_stage",
+			Type:         StageSort,
+			Dependencies: []string{"scan_stage"},
+			Fragments:    []StageFragment{},
+			Parallelism:  plan.Partitioning.NumPartitions,
+			Timeout:      20 * time.Second,
+		}
+		
+		// Create sort fragments for each partition
+		for i := 0; i < plan.Partitioning.NumPartitions; i++ {
+			partitionID := fmt.Sprintf("%s_%d", plan.Partitioning.Type, i)
+			workerID := plan.Partitioning.Colocation[partitionID]
+			
+			fragment := &communication.QueryFragment{
+				ID:           fmt.Sprintf("sort_fragment_%d", i),
+				SQL:          dqp.buildSortSQL(query, i),
+				FragmentType: communication.FragmentTypeSort,
+				IsPartial:    true,
+			}
+			
+			// Use estimates from scan stage
+			estimatedRows := int64(1000)
+			estimatedBytes := int64(1024 * 1024)
+			if plan.Statistics != nil {
+				estimatedRows = plan.Statistics.EstimatedRows / int64(plan.Partitioning.NumPartitions)
+				estimatedBytes = plan.Statistics.EstimatedBytes / int64(plan.Partitioning.NumPartitions)
+			}
+			
+			stageFragment := StageFragment{
+				ID:               fragment.ID,
+				WorkerID:         workerID,
+				Fragment:         fragment,
+				EstimatedRows:    estimatedRows,
+				EstimatedBytes:   estimatedBytes,
+				RequiredMemoryMB: int(estimatedBytes / (1024 * 1024)) * 2, // 2x for sorting
+			}
+			
+			sortStage.Fragments = append(sortStage.Fragments, stageFragment)
+		}
+		
+		plan.Stages = append(plan.Stages, sortStage)
+	}
+	
+	// Final stage: Merge results (if needed)
 	if plan.Partitioning.NumPartitions > 1 {
 		finalStage := ExecutionStage{
 			ID:           "final_stage",
 			Type:         StageFinal,
-			Dependencies: []string{"scan_stage"},
+			Dependencies: []string{},
 			Fragments:    []StageFragment{},
 			Parallelism:  1,
 			Timeout:      10 * time.Second,
 		}
 		
+		// Set dependencies based on whether we have a sort stage
+		if len(query.OrderBy) > 0 {
+			finalStage.Dependencies = []string{"sort_stage"}
+		} else {
+			finalStage.Dependencies = []string{"scan_stage"}
+		}
+		
 		// Single fragment to collect and merge results
 		// Use default estimates if statistics not available yet
-		estimatedRows = int64(1000)
-		estimatedBytes = int64(1024 * 1024)
+		finalEstimatedRows := int64(1000)
+		finalEstimatedBytes := int64(1024 * 1024)
 		if plan.Statistics != nil {
-			estimatedRows = plan.Statistics.EstimatedRows
-			estimatedBytes = plan.Statistics.EstimatedBytes
+			finalEstimatedRows = plan.Statistics.EstimatedRows
+			finalEstimatedBytes = plan.Statistics.EstimatedBytes
 		}
 		
 		finalFragment := StageFragment{
 			ID:               "final_fragment",
 			WorkerID:         dqp.selectCoordinatorWorker(context),
 			Fragment:         dqp.createFinalFragment(query),
-			EstimatedRows:    estimatedRows,
-			EstimatedBytes:   estimatedBytes,
-			RequiredMemoryMB: int(estimatedBytes / (1024 * 1024)), // 1MB per MB of data
+			EstimatedRows:    finalEstimatedRows,
+			EstimatedBytes:   finalEstimatedBytes,
+			RequiredMemoryMB: int(finalEstimatedBytes / (1024 * 1024)), // 1MB per MB of data
 		}
 		
 		finalStage.Fragments = append(finalStage.Fragments, finalFragment)
@@ -203,76 +259,8 @@ func (dqp *DistributedQueryPlanner) planSimpleQuery(plan *DistributedPlan, query
 
 // planAggregateQuery creates a plan for aggregate queries
 func (dqp *DistributedQueryPlanner) planAggregateQuery(plan *DistributedPlan, query *core.ParsedQuery, context *PlanningContext) error {
-	// Stage 1: Partial aggregation on each worker
-	partialAggStage := ExecutionStage{
-		ID:           "partial_agg_stage",
-		Type:         StageAggregate,
-		Dependencies: []string{},
-		Fragments:    []StageFragment{},
-		Parallelism:  plan.Partitioning.NumPartitions,
-		Timeout:      60 * time.Second,
-	}
-	
-	// Create partial aggregation fragments
-	for i := 0; i < plan.Partitioning.NumPartitions; i++ {
-		partitionID := fmt.Sprintf("%s_%d", plan.Partitioning.Type, i)
-		workerID := plan.Partitioning.Colocation[partitionID]
-		
-		fragment := &communication.QueryFragment{
-			ID:           fmt.Sprintf("partial_agg_fragment_%d", i),
-			SQL:          dqp.buildPartialAggregationSQL(query, i, plan.Partitioning),
-			TablePath:    query.TableName,
-			Columns:      dqp.extractColumnNames(query.Columns),
-			WhereClause:  query.Where,
-			GroupBy:      query.GroupBy,
-			Aggregates:   dqp.convertAggregates(query.Aggregates),
-			FragmentType: communication.FragmentTypeAggregate,
-			IsPartial:    true,
-		}
-		
-		stageFragment := StageFragment{
-			ID:               fragment.ID,
-			WorkerID:         workerID,
-			Fragment:         fragment,
-			EstimatedRows:    plan.Statistics.EstimatedRows / int64(plan.Partitioning.NumPartitions),
-			EstimatedBytes:   plan.Statistics.EstimatedBytes / int64(plan.Partitioning.NumPartitions),
-			RequiredMemoryMB: 200, // More memory for aggregation
-		}
-		
-		partialAggStage.Fragments = append(partialAggStage.Fragments, stageFragment)
-	}
-	
-	plan.Stages = append(plan.Stages, partialAggStage)
-	
-	// Stage 2: Final aggregation
-	finalAggStage := ExecutionStage{
-		ID:           "final_agg_stage",
-		Type:         StageAggregate,
-		Dependencies: []string{"partial_agg_stage"},
-		Fragments:    []StageFragment{},
-		Parallelism:  1,
-		Timeout:      30 * time.Second,
-	}
-	
-	// Single fragment for final aggregation
-	finalAggFragment := StageFragment{
-		ID:       "final_agg_fragment",
-		WorkerID: dqp.selectCoordinatorWorker(context),
-		Fragment: &communication.QueryFragment{
-			ID:           "final_agg_fragment",
-			SQL:          dqp.buildFinalAggregationSQL(query),
-			FragmentType: communication.FragmentTypeAggregate,
-			IsPartial:    false,
-		},
-		EstimatedRows:    int64(len(query.GroupBy)) * 100, // Estimated groups
-		EstimatedBytes:   1024 * 1024,                     // 1MB for final result
-		RequiredMemoryMB: 500,                             // Memory for final aggregation
-	}
-	
-	finalAggStage.Fragments = append(finalAggStage.Fragments, finalAggFragment)
-	plan.Stages = append(plan.Stages, finalAggStage)
-	
-	return nil
+	// Use the optimized aggregate planner for better data transfer efficiency
+	return dqp.aggregateOptimizer.OptimizeAggregateQuery(plan, query, context)
 }
 
 // planJoinQuery creates a plan for join queries
@@ -298,23 +286,25 @@ func (dqp *DistributedQueryPlanner) planJoinQuery(plan *DistributedPlan, query *
 
 // planUnionQuery creates a plan for UNION queries
 func (dqp *DistributedQueryPlanner) planUnionQuery(plan *DistributedPlan, query *core.ParsedQuery, context *PlanningContext) error {
-	// Stage 1: Execute each UNION branch in parallel
-	unionStage := ExecutionStage{
-		ID:           "union_stage",
-		Type:         StageUnion,
+	// Stage 1: Scan first table (current_orders)
+	firstScanStage := ExecutionStage{
+		ID:           "scan_first_stage",
+		Type:         StageScan,
 		Dependencies: []string{},
 		Fragments:    []StageFragment{},
-		Parallelism:  len(query.UnionQueries),
-		Timeout:      60 * time.Second,
+		Parallelism:  plan.Partitioning.NumPartitions,
+		Timeout:      30 * time.Second,
 	}
 	
-	// Create fragment for each UNION branch
-	for i, unionQuery := range query.UnionQueries {
-		workerID := dqp.selectWorkerForUnionBranch(i, context)
+	// Create scan fragments for first table
+	for i := 0; i < plan.Partitioning.NumPartitions; i++ {
+		partitionID := fmt.Sprintf("%s_%d", plan.Partitioning.Type, i)
+		workerID := plan.Partitioning.Colocation[partitionID]
 		
 		fragment := &communication.QueryFragment{
-			ID:           fmt.Sprintf("union_fragment_%d", i),
-			SQL:          unionQuery.Query.RawSQL,
+			ID:           fmt.Sprintf("scan_first_fragment_%d", i),
+			SQL:          dqp.buildScanSQL(query, i, plan.Partitioning),
+			TablePath:    query.TableName,
 			FragmentType: communication.FragmentTypeScan,
 			IsPartial:    true,
 		}
@@ -323,24 +313,70 @@ func (dqp *DistributedQueryPlanner) planUnionQuery(plan *DistributedPlan, query 
 			ID:               fragment.ID,
 			WorkerID:         workerID,
 			Fragment:         fragment,
-			EstimatedRows:    1000, // Estimated per branch
-			EstimatedBytes:   1024 * 1024,
-			RequiredMemoryMB: 100,
+			EstimatedRows:    50000, // Estimated for first table
+			EstimatedBytes:   5 * 1024 * 1024,
+			RequiredMemoryMB: 50,
 		}
 		
-		unionStage.Fragments = append(unionStage.Fragments, stageFragment)
+		firstScanStage.Fragments = append(firstScanStage.Fragments, stageFragment)
 	}
 	
-	plan.Stages = append(plan.Stages, unionStage)
+	plan.Stages = append(plan.Stages, firstScanStage)
 	
-	// Stage 2: Union and deduplicate (if not UNION ALL)
+	// Stage 2: Scan union tables
+	unionScanStage := ExecutionStage{
+		ID:           "scan_union_stage", 
+		Type:         StageScan,
+		Dependencies: []string{},
+		Fragments:    []StageFragment{},
+		Parallelism:  len(query.UnionQueries) * plan.Partitioning.NumPartitions,
+		Timeout:      30 * time.Second,
+	}
+	
+	// Create scan fragments for each UNION table
+	for i, unionQuery := range query.UnionQueries {
+		for j := 0; j < plan.Partitioning.NumPartitions; j++ {
+			partitionID := fmt.Sprintf("%s_%d", plan.Partitioning.Type, j)
+			workerID := plan.Partitioning.Colocation[partitionID]
+			
+			fragment := &communication.QueryFragment{
+				ID:           fmt.Sprintf("scan_union_fragment_%d_%d", i, j),
+				SQL:          dqp.buildPartitionedScanSQL(unionQuery.Query.TableName, unionQuery.Query, j, plan.Partitioning),
+				TablePath:    unionQuery.Query.TableName,
+				FragmentType: communication.FragmentTypeScan,
+				IsPartial:    true,
+			}
+			
+			stageFragment := StageFragment{
+				ID:               fragment.ID,
+				WorkerID:         workerID,
+				Fragment:         fragment,
+				EstimatedRows:    200000, // Estimated for archived table
+				EstimatedBytes:   20 * 1024 * 1024,
+				RequiredMemoryMB: 100,
+			}
+			
+			unionScanStage.Fragments = append(unionScanStage.Fragments, stageFragment)
+		}
+	}
+	
+	plan.Stages = append(plan.Stages, unionScanStage)
+	
+	// Stage 3: Union and deduplicate (if not UNION ALL)
 	finalUnionStage := ExecutionStage{
 		ID:           "final_union_stage",
-		Type:         StageFinal,
-		Dependencies: []string{"union_stage"},
+		Type:         StageUnion,
+		Dependencies: []string{"scan_first_stage", "scan_union_stage"},
 		Fragments:    []StageFragment{},
 		Parallelism:  1,
 		Timeout:      30 * time.Second,
+	}
+	
+	unionFinalEstimatedRows := int64(250000)
+	unionFinalEstimatedBytes := int64(25 * 1024 * 1024)
+	if plan.Statistics != nil {
+		unionFinalEstimatedRows = plan.Statistics.EstimatedRows
+		unionFinalEstimatedBytes = plan.Statistics.EstimatedBytes
 	}
 	
 	finalFragment := StageFragment{
@@ -352,8 +388,8 @@ func (dqp *DistributedQueryPlanner) planUnionQuery(plan *DistributedPlan, query 
 			FragmentType: communication.FragmentTypeAggregate,
 			IsPartial:    false,
 		},
-		EstimatedRows:    plan.Statistics.EstimatedRows,
-		EstimatedBytes:   plan.Statistics.EstimatedBytes,
+		EstimatedRows:    unionFinalEstimatedRows,
+		EstimatedBytes:   unionFinalEstimatedBytes,
 		RequiredMemoryMB: 200,
 	}
 	
@@ -440,51 +476,100 @@ func (dqp *DistributedQueryPlanner) planBroadcastJoin(plan *DistributedPlan, que
 
 // planShuffleJoin creates a shuffle join plan
 func (dqp *DistributedQueryPlanner) planShuffleJoin(plan *DistributedPlan, query *core.ParsedQuery, joinInfo *JoinInfo, context *PlanningContext) error {
-	// Stage 1: Scan and partition both tables
-	scanStage := ExecutionStage{
-		ID:           "scan_stage",
+	// Stage 1: Scan left table (orders)
+	leftScanStage := ExecutionStage{
+		ID:           "scan_left_stage",
 		Type:         StageScan,
 		Dependencies: []string{},
 		Fragments:    []StageFragment{},
-		Parallelism:  plan.Partitioning.NumPartitions * 2, // Both tables
-		Timeout:      60 * time.Second,
+		Parallelism:  plan.Partitioning.NumPartitions,
+		Timeout:      30 * time.Second,
 	}
 	
-	// Create scan fragments for both tables
-	tables := []string{query.TableName, query.Joins[0].TableName}
-	for _, tableName := range tables {
-		for i := 0; i < plan.Partitioning.NumPartitions; i++ {
-			partitionID := fmt.Sprintf("%s_%d", plan.Partitioning.Type, i)
-			workerID := plan.Partitioning.Colocation[partitionID]
-			
-			fragment := &communication.QueryFragment{
-				ID:           fmt.Sprintf("scan_%s_fragment_%d", tableName, i),
-				SQL:          dqp.buildPartitionedScanSQL(tableName, query, i, plan.Partitioning),
-				TablePath:    tableName,
-				FragmentType: communication.FragmentTypeScan,
-				IsPartial:    true,
-			}
-			
-			stageFragment := StageFragment{
-				ID:               fragment.ID,
-				WorkerID:         workerID,
-				Fragment:         fragment,
-				EstimatedRows:    plan.Statistics.EstimatedRows / int64(plan.Partitioning.NumPartitions),
-				EstimatedBytes:   plan.Statistics.EstimatedBytes / int64(plan.Partitioning.NumPartitions),
-				RequiredMemoryMB: 150,
-			}
-			
-			scanStage.Fragments = append(scanStage.Fragments, stageFragment)
+	// Create scan fragments for left table
+	for i := 0; i < plan.Partitioning.NumPartitions; i++ {
+		partitionID := fmt.Sprintf("%s_%d", plan.Partitioning.Type, i)
+		workerID := plan.Partitioning.Colocation[partitionID]
+		
+		fragment := &communication.QueryFragment{
+			ID:           fmt.Sprintf("scan_left_fragment_%d", i),
+			SQL:          dqp.buildPartitionedScanSQL(query.TableName, query, i, plan.Partitioning),
+			TablePath:    query.TableName,
+			FragmentType: communication.FragmentTypeScan,
+			IsPartial:    true,
 		}
+		
+		scanEstimatedRows := int64(100000)
+		scanEstimatedBytes := int64(100 * 1024 * 1024)
+		if plan.Statistics != nil {
+			scanEstimatedRows = plan.Statistics.EstimatedRows / int64(plan.Partitioning.NumPartitions)
+			scanEstimatedBytes = plan.Statistics.EstimatedBytes / int64(plan.Partitioning.NumPartitions)
+		}
+		
+		stageFragment := StageFragment{
+			ID:               fragment.ID,
+			WorkerID:         workerID,
+			Fragment:         fragment,
+			EstimatedRows:    scanEstimatedRows,
+			EstimatedBytes:   scanEstimatedBytes,
+			RequiredMemoryMB: 150,
+		}
+		
+		leftScanStage.Fragments = append(leftScanStage.Fragments, stageFragment)
 	}
 	
-	plan.Stages = append(plan.Stages, scanStage)
+	plan.Stages = append(plan.Stages, leftScanStage)
 	
-	// Stage 2: Shuffle and join
+	// Stage 2: Scan right table (customers)
+	rightScanStage := ExecutionStage{
+		ID:           "scan_right_stage",
+		Type:         StageScan,
+		Dependencies: []string{},
+		Fragments:    []StageFragment{},
+		Parallelism:  plan.Partitioning.NumPartitions,
+		Timeout:      30 * time.Second,
+	}
+	
+	// Create scan fragments for right table
+	rightTable := query.Joins[0].TableName
+	for i := 0; i < plan.Partitioning.NumPartitions; i++ {
+		partitionID := fmt.Sprintf("%s_%d", plan.Partitioning.Type, i)
+		workerID := plan.Partitioning.Colocation[partitionID]
+		
+		fragment := &communication.QueryFragment{
+			ID:           fmt.Sprintf("scan_right_fragment_%d", i),
+			SQL:          dqp.buildPartitionedScanSQL(rightTable, query, i, plan.Partitioning),
+			TablePath:    rightTable,
+			FragmentType: communication.FragmentTypeScan,
+			IsPartial:    true,
+		}
+		
+		scanEstimatedRows := int64(100000)
+		scanEstimatedBytes := int64(100 * 1024 * 1024)
+		if plan.Statistics != nil {
+			scanEstimatedRows = plan.Statistics.EstimatedRows / int64(plan.Partitioning.NumPartitions)
+			scanEstimatedBytes = plan.Statistics.EstimatedBytes / int64(plan.Partitioning.NumPartitions)
+		}
+		
+		stageFragment := StageFragment{
+			ID:               fragment.ID,
+			WorkerID:         workerID,
+			Fragment:         fragment,
+			EstimatedRows:    scanEstimatedRows,
+			EstimatedBytes:   scanEstimatedBytes,
+			RequiredMemoryMB: 150,
+		}
+		
+		rightScanStage.Fragments = append(rightScanStage.Fragments, stageFragment)
+	}
+	
+	plan.Stages = append(plan.Stages, rightScanStage)
+	
+	// Stage 3: Shuffle and join
 	joinStage := ExecutionStage{
 		ID:           "shuffle_join_stage",
 		Type:         StageJoin,
-		Dependencies: []string{"scan_stage"},
+		Dependencies: []string{"scan_left_stage", "scan_right_stage"},
 		Fragments:    []StageFragment{},
 		Parallelism:  plan.Partitioning.NumPartitions,
 		ShuffleKey:   joinInfo.JoinConditions,
@@ -503,12 +588,17 @@ func (dqp *DistributedQueryPlanner) planShuffleJoin(plan *DistributedPlan, query
 			IsPartial:    true,
 		}
 		
+		joinEstimatedBytes := int64(200 * 1024 * 1024) // Default 200MB
+		if plan.Statistics != nil {
+			joinEstimatedBytes = plan.Statistics.EstimatedBytes * 2 // Join expansion
+		}
+		
 		stageFragment := StageFragment{
 			ID:               fragment.ID,
 			WorkerID:         workerID,
 			Fragment:         fragment,
 			EstimatedRows:    joinInfo.EstimatedOutput / int64(plan.Partitioning.NumPartitions),
-			EstimatedBytes:   plan.Statistics.EstimatedBytes * 2, // Join expansion
+			EstimatedBytes:   joinEstimatedBytes,
 			RequiredMemoryMB: 500, // High memory for shuffle join
 		}
 		
@@ -842,6 +932,22 @@ func (dqp *DistributedQueryPlanner) buildPartitionFilter(partitionIndex int, par
 			partitioning.NumPartitions, partitionIndex)
 	}
 	return ""
+}
+
+func (dqp *DistributedQueryPlanner) buildSortSQL(query *core.ParsedQuery, partitionIndex int) string {
+	// Build ORDER BY clause for sort stage
+	orderCols := []string{}
+	for _, orderBy := range query.OrderBy {
+		direction := orderBy.Direction
+		if direction == "" {
+			direction = "ASC"
+		}
+		orderCols = append(orderCols, fmt.Sprintf("%s %s", orderBy.Column, direction))
+	}
+	
+	// Use a subquery to sort the partition's data
+	return fmt.Sprintf("SELECT * FROM partition_%d ORDER BY %s", 
+		partitionIndex, strings.Join(orderCols, ", "))
 }
 
 func (dqp *DistributedQueryPlanner) selectCoordinatorWorker(context *PlanningContext) string {

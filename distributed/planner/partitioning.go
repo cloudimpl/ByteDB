@@ -110,6 +110,13 @@ func (pm *PartitionManager) analyzeQuery(query *core.ParsedQuery) *QueryAnalysis
 		analysis.JoinColumns = append(analysis.JoinColumns, join.Condition.LeftColumn, join.Condition.RightColumn)
 	}
 	
+	// For UNION queries, include all tables
+	if query.HasUnion {
+		for _, unionQuery := range query.UnionQueries {
+			analysis.TableNames = append(analysis.TableNames, unionQuery.Query.TableName)
+		}
+	}
+	
 	// Estimate cardinality and selectivity
 	pm.estimateCardinality(analysis)
 	
@@ -135,17 +142,17 @@ func (pm *PartitionManager) selectPartitionType(analysis *QueryAnalysis, context
 		return PartitionHash // Hash partition on GROUP BY keys
 	}
 	
-	// For range queries
-	if analysis.IsRangeQuery && len(analysis.WhereColumns) > 0 {
+	// For point queries, always prefer hash
+	if analysis.IsPointQuery {
+		return PartitionHash
+	}
+	
+	// For range queries with ORDER BY on the same column
+	if analysis.IsRangeQuery && len(analysis.WhereColumns) > 0 && len(analysis.OrderByColumns) > 0 {
 		// Check if we have good statistics for range partitioning
 		if pm.hasRangeStatistics(analysis.WhereColumns[0], context) {
 			return PartitionTypeRange
 		}
-	}
-	
-	// For point queries or when no specific pattern
-	if analysis.IsPointQuery {
-		return PartitionHash
 	}
 	
 	// For broadcast-eligible small tables
@@ -153,7 +160,7 @@ func (pm *PartitionManager) selectPartitionType(analysis *QueryAnalysis, context
 		return PartitionBroadcast
 	}
 	
-	// Default to round-robin for full scans
+	// Default to round-robin for full scans and unions
 	return PartitionRoundRobin
 }
 
@@ -517,14 +524,25 @@ func (pm *PartitionManager) estimateCardinality(analysis *QueryAnalysis) {
 }
 
 func (pm *PartitionManager) classifyQueryType(analysis *QueryAnalysis) {
-	// Classify as point query if there are equality conditions
-	analysis.IsPointQuery = pm.hasEqualityConditions(analysis.WhereColumns)
-	
-	// Classify as range query if there are range conditions
-	analysis.IsRangeQuery = pm.hasRangeConditions(analysis.WhereColumns)
+	// We need the original query to check operator types
+	// For now, we'll check based on available information
 	
 	// Classify as analytical if it has aggregations or complex processing
 	analysis.IsAnalytical = analysis.HasAggregation || len(analysis.GroupByColumns) > 0
+	
+	// Simple heuristic: if there are WHERE columns but it's not analytical,
+	// it could be either point or range query
+	if len(analysis.WhereColumns) > 0 && !analysis.IsAnalytical {
+		// Assume range query if there's ORDER BY (common pattern)
+		if len(analysis.OrderByColumns) > 0 {
+			analysis.IsRangeQuery = true
+			analysis.IsPointQuery = false
+		} else {
+			// Otherwise assume point query
+			analysis.IsPointQuery = true
+			analysis.IsRangeQuery = false
+		}
+	}
 }
 
 func (pm *PartitionManager) hasExistingPartitioning(column string, context *PlanningContext) bool {
@@ -544,6 +562,10 @@ func (pm *PartitionManager) hasRangeStatistics(column string, context *PlanningC
 
 func (pm *PartitionManager) isBroadcastEligible(analysis *QueryAnalysis, context *PlanningContext) bool {
 	// Small tables (< 10MB) are good candidates for broadcasting
+	// But not for UNION queries which typically involve multiple tables
+	if len(analysis.TableNames) > 1 {
+		return false // Multiple tables (union/join) should not broadcast
+	}
 	return analysis.EstimatedBytes < int64(10*1024*1024)
 }
 

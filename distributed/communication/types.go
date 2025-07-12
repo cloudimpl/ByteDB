@@ -27,6 +27,7 @@ const (
 	FragmentTypeAggregate FragmentType = "aggregate"
 	FragmentTypeJoin      FragmentType = "join"
 	FragmentTypeFilter    FragmentType = "filter"
+	FragmentTypeSort      FragmentType = "sort"
 )
 
 // FragmentResult represents the result of executing a query fragment

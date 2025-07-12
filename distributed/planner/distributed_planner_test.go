@@ -687,6 +687,97 @@ func createTestTableStats() map[string]*TableStatistics {
 				},
 			},
 		},
+		"sales": {
+			TableName: "sales",
+			RowCount:  10000000,
+			SizeBytes: 1024 * 1024 * 1024, // 1GB
+			ColumnStats: map[string]*ColumnStatistics{
+				"id": {
+					ColumnName:    "id",
+					DataType:      "int",
+					DistinctCount: 10000000,
+					MinValue:      1,
+					MaxValue:      10000000,
+				},
+				"sale_date": {
+					ColumnName:    "sale_date",
+					DataType:      "date",
+					DistinctCount: 365,
+					MinValue:      "2023-01-01",
+					MaxValue:      "2023-12-31",
+				},
+				"amount": {
+					ColumnName:    "amount",
+					DataType:      "decimal",
+					DistinctCount: 100000,
+					MinValue:      0.01,
+					MaxValue:      9999.99,
+				},
+			},
+		},
+		"current_orders": {
+			TableName: "current_orders",
+			RowCount:  500000,
+			SizeBytes: 50 * 1024 * 1024, // 50MB
+			ColumnStats: map[string]*ColumnStatistics{
+				"id": {
+					ColumnName:    "id",
+					DataType:      "int",
+					DistinctCount: 500000,
+					MinValue:      1,
+					MaxValue:      500000,
+				},
+				"status": {
+					ColumnName:    "status",
+					DataType:      "varchar",
+					DistinctCount: 5,
+					MinValue:      "active",
+					MaxValue:      "pending",
+				},
+			},
+		},
+		"archived_orders": {
+			TableName: "archived_orders",
+			RowCount:  2000000,
+			SizeBytes: 200 * 1024 * 1024, // 200MB
+			ColumnStats: map[string]*ColumnStatistics{
+				"id": {
+					ColumnName:    "id",
+					DataType:      "int",
+					DistinctCount: 2000000,
+					MinValue:      500001,
+					MaxValue:      2500000,
+				},
+				"status": {
+					ColumnName:    "status",
+					DataType:      "varchar",
+					DistinctCount: 10,
+					MinValue:      "cancelled",
+					MaxValue:      "completed",
+				},
+			},
+		},
+		"customers": {
+			TableName: "customers",
+			RowCount:  100000,
+			SizeBytes: 10 * 1024 * 1024, // 10MB
+			ColumnStats: map[string]*ColumnStatistics{
+				"id": {
+					ColumnName:    "id",
+					DataType:      "int",
+					DistinctCount: 100000,
+					MinValue:      1,
+					MaxValue:      100000,
+				},
+				"name": {
+					ColumnName:    "name",
+					DataType:      "varchar",
+					DistinctCount: 90000,
+					MinValue:      "Aaron",
+					MaxValue:      "Zoe",
+				},
+			},
+		},
 	}
 }
 
