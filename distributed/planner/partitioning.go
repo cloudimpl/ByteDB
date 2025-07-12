@@ -211,6 +211,14 @@ func (pm *PartitionManager) selectPartitionKeys(query *core.ParsedQuery, analysi
 func (pm *PartitionManager) calculateOptimalPartitions(analysis *QueryAnalysis, context *PlanningContext) int {
 	// Base number on available workers
 	basePartitions := len(pm.workers)
+	if basePartitions == 0 {
+		// Use context workers if available
+		if context != nil && len(context.Workers) > 0 {
+			basePartitions = len(context.Workers)
+		} else {
+			basePartitions = 1 // Default to 1 if no workers
+		}
+	}
 	
 	// Adjust based on data size
 	if analysis.EstimatedBytes > 0 {
@@ -391,6 +399,9 @@ func (pm *PartitionManager) calculateDistribution(strategy *PartitioningStrategy
 // calculateHashDistribution estimates distribution for hash partitioning
 func (pm *PartitionManager) calculateHashDistribution(strategy *PartitioningStrategy, analysis *QueryAnalysis) {
 	// For hash partitioning, assume relatively even distribution
+	if strategy.NumPartitions == 0 {
+		strategy.NumPartitions = 1 // Prevent divide by zero
+	}
 	totalBytes := analysis.EstimatedBytes
 	bytesPerPartition := totalBytes / int64(strategy.NumPartitions)
 	

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -505,17 +506,14 @@ func (c *Coordinator) buildOptimizedAggregateSQL(query *core.ParsedQuery, worker
 	if len(query.Where) > 0 {
 		conditions := []string{}
 		for _, where := range query.Where {
-			// Properly format value based on type
-			var valueStr string
-			switch v := where.Value.(type) {
-			case string:
-				valueStr = fmt.Sprintf("'%s'", v)
-			default:
-				valueStr = fmt.Sprintf("%v", v)
+			conditionStr := c.formatWhereCondition(where)
+			if conditionStr != "" {
+				conditions = append(conditions, conditionStr)
 			}
-			conditions = append(conditions, fmt.Sprintf("%s %s %s", where.Column, where.Operator, valueStr))
 		}
-		sql += " WHERE " + strings.Join(conditions, " AND ")
+		if len(conditions) > 0 {
+			sql += " WHERE " + strings.Join(conditions, " AND ")
+		}
 	}
 	
 	// Add GROUP BY
@@ -596,9 +594,13 @@ func (c *Coordinator) aggregateResults(query *core.ParsedQuery, results []*commu
 		result := results[0]
 		
 		// Check if we need final aggregation processing
+		
 		if (len(query.GroupBy) > 0 || len(query.Aggregates) > 0) && len(result.Rows) > 0 {
 			// Check for intermediate columns that need final processing
+			// Check both column names and actual row keys since column metadata might be incomplete
 			hasIntermediateColumns := false
+			
+			// First check column names
 			for _, col := range result.Columns {
 				if strings.HasSuffix(col, "_sum") || strings.HasSuffix(col, "_count") {
 					hasIntermediateColumns = true
@@ -606,9 +608,37 @@ func (c *Coordinator) aggregateResults(query *core.ParsedQuery, results []*commu
 				}
 			}
 			
+			// If not found in columns, check actual row data
+			if !hasIntermediateColumns && len(result.Rows) > 0 {
+				for key := range result.Rows[0] {
+					if strings.HasSuffix(key, "_sum") || strings.HasSuffix(key, "_count") {
+						hasIntermediateColumns = true
+						break
+					}
+				}
+			}
+			
 			if hasIntermediateColumns {
 				// Perform final aggregation even for single worker
-				aggregatedRows, err := c.performFinalAggregation(query, result.Rows, result.Columns)
+				
+				// Build actual columns from row data if column metadata is incomplete
+				actualColumns := result.Columns
+				if len(result.Rows) > 0 && len(actualColumns) < len(result.Rows[0]) {
+					// Column metadata is incomplete, rebuild from row keys
+					columnSet := make(map[string]bool)
+					for _, col := range result.Columns {
+						columnSet[col] = true
+					}
+					
+					// Add missing columns from row data
+					for key := range result.Rows[0] {
+						if !columnSet[key] {
+							actualColumns = append(actualColumns, key)
+						}
+					}
+				}
+				
+				aggregatedRows, err := c.performFinalAggregation(query, result.Rows, actualColumns)
 				if err != nil {
 					return nil, err
 				}
@@ -656,6 +686,19 @@ func (c *Coordinator) aggregateResults(query *core.ParsedQuery, results []*commu
 		}
 		allRows = aggregatedRows
 		totalCount = len(aggregatedRows)
+		
+		// Update columns to final aggregate names
+		finalColumns := make([]string, 0)
+		finalColumns = append(finalColumns, query.GroupBy...)
+		for _, agg := range query.Aggregates {
+			finalColumns = append(finalColumns, agg.Alias)
+		}
+		columns = finalColumns
+	}
+	
+	// Apply ORDER BY if specified
+	if len(query.OrderBy) > 0 {
+		allRows = c.applyOrderBy(allRows, query.OrderBy)
 	}
 	
 	// Apply final LIMIT if specified
@@ -684,7 +727,10 @@ func (c *Coordinator) performFinalAggregation(query *core.ParsedQuery, rows []co
 		}
 	}
 	
-	if hasPartialAggregates {
+	// Also check if we have GROUP BY with aggregates (distributed partial results)
+	hasGroupByAggregates := len(query.GroupBy) > 0 && len(query.Aggregates) > 0
+	
+	if hasPartialAggregates || hasGroupByAggregates {
 		// Handle optimized aggregation - combine partial results
 		return c.combinePartialAggregates(query, rows, columns)
 	}
@@ -843,6 +889,148 @@ func (c *Coordinator) combinePartialAggregates(query *core.ParsedQuery, rows []c
 	return finalRows, nil
 }
 
+// applyOrderBy sorts rows according to ORDER BY clause
+func (c *Coordinator) applyOrderBy(rows []core.Row, orderBy []core.OrderByColumn) []core.Row {
+	if len(rows) == 0 || len(orderBy) == 0 {
+		return rows
+	}
+	
+	// Make a copy to avoid modifying original
+	sortedRows := make([]core.Row, len(rows))
+	copy(sortedRows, rows)
+	
+	// Sort based on ORDER BY columns
+	sort.Slice(sortedRows, func(i, j int) bool {
+		for _, col := range orderBy {
+			valI := sortedRows[i][col.Column]
+			valJ := sortedRows[j][col.Column]
+			
+			// Compare values
+			cmp := compareValues(valI, valJ)
+			if cmp != 0 {
+				if strings.ToUpper(col.Direction) == "DESC" {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+		}
+		return false // Equal
+	})
+	
+	return sortedRows
+}
+
+// compareValues compares two values and returns -1, 0, or 1
+func compareValues(a, b interface{}) int {
+	// Convert to comparable types
+	aFloat := getFloat64(a)
+	bFloat := getFloat64(b)
+	
+	// Try numeric comparison first
+	if aFloat != 0 || bFloat != 0 {
+		if aFloat < bFloat {
+			return -1
+		} else if aFloat > bFloat {
+			return 1
+		}
+		return 0
+	}
+	
+	// Fall back to string comparison
+	aStr := fmt.Sprintf("%v", a)
+	bStr := fmt.Sprintf("%v", b)
+	
+	if aStr < bStr {
+		return -1
+	} else if aStr > bStr {
+		return 1
+	}
+	return 0
+}
+
+// formatWhereCondition formats a WHERE condition into SQL string
+func (c *Coordinator) formatWhereCondition(where core.WhereCondition) string {
+	if where.IsComplex {
+		// Handle complex logical operations
+		leftStr := ""
+		if where.Left != nil {
+			leftStr = c.formatWhereCondition(*where.Left)
+		}
+		rightStr := ""
+		if where.Right != nil {
+			rightStr = c.formatWhereCondition(*where.Right)
+		}
+		
+		if leftStr != "" && rightStr != "" {
+			return fmt.Sprintf("(%s %s %s)", leftStr, where.LogicalOp, rightStr)
+		} else if leftStr != "" {
+			return leftStr
+		} else if rightStr != "" {
+			return rightStr
+		}
+		return ""
+	}
+	
+	// Handle single conditions
+	if where.Column == "" {
+		return ""
+	}
+	
+	operator := strings.ToUpper(where.Operator)
+	
+	// Handle IN operator with ValueList
+	if operator == "IN" && len(where.ValueList) > 0 {
+		valueStrs := make([]string, len(where.ValueList))
+		for i, val := range where.ValueList {
+			switch v := val.(type) {
+			case string:
+				valueStrs[i] = fmt.Sprintf("'%s'", v)
+			default:
+				valueStrs[i] = fmt.Sprintf("%v", v)
+			}
+		}
+		return fmt.Sprintf("%s IN (%s)", where.Column, strings.Join(valueStrs, ", "))
+	}
+	
+	// Handle BETWEEN operator
+	if operator == "BETWEEN" && where.ValueFrom != nil && where.ValueTo != nil {
+		fromStr := ""
+		toStr := ""
+		switch v := where.ValueFrom.(type) {
+		case string:
+			fromStr = fmt.Sprintf("'%s'", v)
+		default:
+			fromStr = fmt.Sprintf("%v", v)
+		}
+		switch v := where.ValueTo.(type) {
+		case string:
+			toStr = fmt.Sprintf("'%s'", v)
+		default:
+			toStr = fmt.Sprintf("%v", v)
+		}
+		return fmt.Sprintf("%s BETWEEN %s AND %s", where.Column, fromStr, toStr)
+	}
+	
+	// Handle standard operators with single value
+	if where.Value != nil {
+		var valueStr string
+		switch v := where.Value.(type) {
+		case string:
+			valueStr = fmt.Sprintf("'%s'", v)
+		default:
+			valueStr = fmt.Sprintf("%v", v)
+		}
+		return fmt.Sprintf("%s %s %s", where.Column, where.Operator, valueStr)
+	}
+	
+	// Handle column-to-column comparisons
+	if where.ValueColumn != "" {
+		return fmt.Sprintf("%s %s %s", where.Column, where.Operator, where.ValueColumn)
+	}
+	
+	return ""
+}
+
 // Helper functions
 func (c *Coordinator) generateFragmentID() string {
 	c.queryIDMux.Lock()
@@ -918,11 +1106,17 @@ func (c *Coordinator) aggregateGlobal(aggregates []core.Column, rows []core.Row,
 	result := make(core.Row)
 	
 	// Check if we have partial aggregation results
-	hasPartialResults := false
-	for _, col := range columns {
-		if col == "total_employees" || col == "count" {
-			hasPartialResults = true
-			break
+	// This happens when we have multiple rows with same column names (from different workers)
+	hasPartialResults := len(rows) > 1
+	
+	// Also check for specific aggregate column names
+	if !hasPartialResults {
+		for _, col := range columns {
+			if col == "total_employees" || col == "count" || col == "total" ||
+			   strings.HasSuffix(col, "_sum") || strings.HasSuffix(col, "_count") {
+				hasPartialResults = true
+				break
+			}
 		}
 	}
 	
