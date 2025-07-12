@@ -14,7 +14,8 @@
       "Bash(./debug_where2)",
       "Bash(make:*)",
       "Bash(find:*)",
-      "Bash(./migrate_tests.sh:*)"
+      "Bash(./migrate_tests.sh:*)",
+      "Bash(grep:*)"
     ],
     "deny": []
   }

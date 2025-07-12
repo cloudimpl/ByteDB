@@ -38,9 +38,10 @@ type PlanNode struct {
 	ActualTime  float64 // Actual execution time in ms (for EXPLAIN ANALYZE)
 	
 	// Operation-specific fields
-	TableName   string            // For Scan nodes
-	Columns     []string          // For Project nodes
-	Filter      []WhereCondition  // For Filter nodes
+	TableName        string            // For Scan nodes
+	Columns          []string          // For Project nodes
+	Filter           []WhereCondition  // For Filter nodes
+	FilterConditions []WhereCondition  // For optimized filter pushdown
 	JoinType    JoinType          // For Join nodes
 	JoinCond    JoinCondition     // For Join nodes
 	GroupBy     []string          // For Aggregate nodes

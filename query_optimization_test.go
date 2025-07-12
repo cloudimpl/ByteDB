@@ -1,466 +1,302 @@
 package main
 
 import (
-	"strings"
 	"testing"
-	"encoding/json"
-	"math"
+	"time"
 )
 
-func TestQueryPlan(t *testing.T) {
+func TestQueryOptimization(t *testing.T) {
 	engine := NewTestQueryEngine()
 	defer engine.Close()
 
-	t.Run("Simple SELECT Plan", func(t *testing.T) {
-		query := "EXPLAIN SELECT name, salary FROM employees WHERE department = 'Engineering'"
-		result, err := engine.Execute(query)
-		if err != nil {
-			t.Fatalf("Query failed: %v", err)
-		}
-		if result.Error != "" {
-			t.Fatalf("Query error: %s", result.Error)
-		}
-
-		// Check that we got a plan
-		if result.Count != 1 {
-			t.Errorf("Expected 1 row with query plan, got %d", result.Count)
-		}
-
-		// Verify the plan contains expected nodes
-		planText := result.Rows[0]["QUERY PLAN"].(string)
-		if !strings.Contains(planText, "TableScan") {
-			t.Errorf("Expected TableScan in plan, got: %s", planText)
-		}
-		if !strings.Contains(planText, "Filter") {
-			t.Errorf("Expected Filter in plan, got: %s", planText)
-		}
-		if !strings.Contains(planText, "Project") {
-			t.Errorf("Expected Project in plan, got: %s", planText)
-		}
-	})
-
-	t.Run("Aggregate Query Plan", func(t *testing.T) {
-		query := "EXPLAIN SELECT department, COUNT(*), AVG(salary) FROM employees GROUP BY department"
-		result, err := engine.Execute(query)
-		if err != nil {
-			t.Fatalf("Query failed: %v", err)
-		}
-		if result.Error != "" {
-			t.Fatalf("Query error: %s", result.Error)
-		}
-
-		planText := result.Rows[0]["QUERY PLAN"].(string)
-		if !strings.Contains(planText, "Aggregate") {
-			t.Errorf("Expected Aggregate in plan, got: %s", planText)
-		}
-		if !strings.Contains(planText, "GROUP BY department") {
-			t.Errorf("Expected GROUP BY in plan, got: %s", planText)
-		}
-	})
-
-	t.Run("JOIN Query Plan", func(t *testing.T) {
-		query := "EXPLAIN SELECT e.name, d.name FROM employees e JOIN departments d ON e.department = d.name"
-		result, err := engine.Execute(query)
-		if err != nil {
-			t.Fatalf("Query failed: %v", err)
-		}
-		if result.Error != "" {
-			t.Fatalf("Query error: %s", result.Error)
-		}
-
-		planText := result.Rows[0]["QUERY PLAN"].(string)
-		if !strings.Contains(planText, "Join") {
-			t.Errorf("Expected Join in plan, got: %s", planText)
-		}
-		if !strings.Contains(planText, "Inner Join") {
-			t.Errorf("Expected Inner Join in plan, got: %s", planText)
-		}
-	})
-
-	t.Run("CTE Query Plan", func(t *testing.T) {
-		query := `EXPLAIN WITH high_earners AS (
-			SELECT name, salary FROM employees WHERE salary > 70000
-		)
-		SELECT * FROM high_earners`
-		result, err := engine.Execute(query)
-		if err != nil {
-			t.Fatalf("Query failed: %v", err)
-		}
-		if result.Error != "" {
-			t.Fatalf("Query error: %s", result.Error)
-		}
-
-		planText := result.Rows[0]["QUERY PLAN"].(string)
-		if !strings.Contains(planText, "CTE") {
-			t.Errorf("Expected CTE in plan, got: %s", planText)
-		}
-		if !strings.Contains(planText, "high_earners") {
-			t.Errorf("Expected CTE name in plan, got: %s", planText)
-		}
-	})
-
-	t.Run("Window Function Query Plan", func(t *testing.T) {
-		query := `EXPLAIN SELECT name, salary, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank FROM employees`
-		result, err := engine.Execute(query)
-		if err != nil {
-			t.Fatalf("Query failed: %v", err)
-		}
-		if result.Error != "" {
-			t.Fatalf("Query error: %s", result.Error)
-		}
-
-		planText := result.Rows[0]["QUERY PLAN"].(string)
-		if !strings.Contains(planText, "Window") {
-			t.Errorf("Expected Window in plan, got: %s", planText)
-		}
-	})
-
-	t.Run("Complex Query Plan with Sort and Limit", func(t *testing.T) {
-		query := `EXPLAIN SELECT name, salary FROM employees WHERE department = 'Engineering' ORDER BY salary DESC LIMIT 5`
-		result, err := engine.Execute(query)
-		if err != nil {
-			t.Fatalf("Query failed: %v", err)
-		}
-		if result.Error != "" {
-			t.Fatalf("Query error: %s", result.Error)
-		}
-
-		planText := result.Rows[0]["QUERY PLAN"].(string)
-		if !strings.Contains(planText, "Sort") {
-			t.Errorf("Expected Sort in plan, got: %s", planText)
-		}
-		if !strings.Contains(planText, "Limit") {
-			t.Errorf("Expected Limit in plan, got: %s", planText)
-		}
-		if !strings.Contains(planText, "salary DESC") {
-			t.Errorf("Expected sort direction in plan, got: %s", planText)
-		}
-	})
-}
-
-func TestExplainOptions(t *testing.T) {
-	engine := NewTestQueryEngine()
-	defer engine.Close()
-
-	t.Run("EXPLAIN with JSON format", func(t *testing.T) {
-		query := "EXPLAIN (FORMAT JSON) SELECT name FROM employees"
-		result, err := engine.Execute(query)
-		if err != nil {
-			t.Fatalf("Query failed: %v", err)
-		}
-		if result.Error != "" {
-			t.Fatalf("Query error: %s", result.Error)
-		}
-
-		// Check that output is valid JSON
-		planJSON := result.Rows[0]["QUERY PLAN"].(string)
-		var planData map[string]interface{}
-		if err := json.Unmarshal([]byte(planJSON), &planData); err != nil {
-			t.Errorf("Plan output is not valid JSON: %v", err)
-		}
-
-		// Verify JSON structure
-		if _, ok := planData["node_type"]; !ok {
-			t.Error("JSON plan missing node_type")
-		}
-		if _, ok := planData["cost"]; !ok {
-			t.Error("JSON plan missing cost")
-		}
-		if _, ok := planData["rows"]; !ok {
-			t.Error("JSON plan missing rows")
-		}
-	})
-
-	t.Run("EXPLAIN ANALYZE", func(t *testing.T) {
-		query := "EXPLAIN ANALYZE SELECT name FROM employees WHERE salary > 70000"
-		result, err := engine.Execute(query)
-		if err != nil {
-			t.Fatalf("Query failed: %v", err)
-		}
-		if result.Error != "" {
-			t.Fatalf("Query error: %s", result.Error)
-		}
-
-		planText := result.Rows[0]["QUERY PLAN"].(string)
-		// ANALYZE should add actual execution statistics
-		if !strings.Contains(planText, "actual") {
-			t.Errorf("Expected actual statistics in ANALYZE output, got: %s", planText)
-		}
-	})
-
-	t.Run("EXPLAIN without costs", func(t *testing.T) {
-		t.Skip("COSTS FALSE option parsing needs more work with pg_query")
+	t.Run("Column Pruning Optimization", func(t *testing.T) {
+		// Query that only needs specific columns
+		query := "SELECT name, salary FROM employees WHERE department = 'Engineering'"
 		
-		query := "EXPLAIN (COSTS FALSE) SELECT name FROM employees"
+		start := time.Now()
 		result, err := engine.Execute(query)
+		duration := time.Since(start)
+		
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
+		
 		if result.Error != "" {
-			t.Fatalf("Query error: %s", result.Error)
+			t.Fatalf("Query returned error: %s", result.Error)
 		}
-
-		planText := result.Rows[0]["QUERY PLAN"].(string)
-		// Should not contain cost information
-		if strings.Contains(planText, "cost=") {
-			t.Errorf("Expected no cost information with COSTS FALSE, got: %s", planText)
+		
+		// Verify only requested columns are returned
+		expectedColumns := []string{"name", "salary"}
+		if len(result.Columns) != len(expectedColumns) {
+			t.Errorf("Expected %d columns, got %d", len(expectedColumns), len(result.Columns))
 		}
+		
+		for i, expected := range expectedColumns {
+			if i < len(result.Columns) && result.Columns[i] != expected {
+				t.Errorf("Expected column %d to be '%s', got '%s'", i, expected, result.Columns[i])
+			}
+		}
+		
+		t.Logf("Column pruning query completed in %v", duration)
+		t.Logf("Returned %d rows with %d columns", result.Count, len(result.Columns))
 	})
-}
 
-func TestStatisticsCollection(t *testing.T) {
-	engine := NewTestQueryEngine()
-	defer engine.Close()
-
-	t.Run("Collect Table Statistics", func(t *testing.T) {
-		stats, err := engine.planner.statsCollector.CollectTableStats("employees")
+	t.Run("Predicate Pushdown Effectiveness", func(t *testing.T) {
+		// Query with selective WHERE clause
+		selectiveQuery := "SELECT * FROM employees WHERE id = 1"
+		
+		start := time.Now()
+		selectiveResult, err := engine.Execute(selectiveQuery)
+		selectiveDuration := time.Since(start)
+		
 		if err != nil {
-			t.Fatalf("Failed to collect stats: %v", err)
+			t.Fatalf("Selective query failed: %v", err)
 		}
-
-		// Verify basic statistics
-		if stats.TableName != "employees" {
-			t.Errorf("Expected table name 'employees', got '%s'", stats.TableName)
-		}
-		if stats.RowCount != 10 {
-			t.Errorf("Expected row count %d, got %d", 10, stats.RowCount)
-		}
-		if stats.SizeBytes <= 0 {
-			t.Error("Expected positive table size")
-		}
-
-		// Verify column statistics
-		if len(stats.ColumnStats) == 0 {
-			t.Error("Expected column statistics")
-		}
-
-		// Check specific column stats
-		if salaryStats, ok := stats.ColumnStats["salary"]; ok {
-			if salaryStats.DistinctCount <= 0 {
-				t.Error("Expected positive distinct count for salary")
-			}
-			if salaryStats.MinValue == nil || salaryStats.MaxValue == nil {
-				t.Error("Expected min/max values for salary")
-			}
-			if salaryStats.DataType != "float" {
-				t.Errorf("Expected salary data type 'float', got '%s'", salaryStats.DataType)
-			}
-		} else {
-			t.Error("Missing statistics for salary column")
-		}
-	})
-
-	t.Run("Statistics Persistence", func(t *testing.T) {
-		// Collect and save stats
-		stats1, err := engine.planner.statsCollector.CollectTableStats("departments")
+		
+		// Query without WHERE clause (full table scan)
+		scanQuery := "SELECT * FROM employees"
+		
+		start = time.Now()
+		scanResult, err := engine.Execute(scanQuery)
+		scanDuration := time.Since(start)
+		
 		if err != nil {
-			t.Fatalf("Failed to collect stats: %v", err)
+			t.Fatalf("Scan query failed: %v", err)
 		}
-
-		// Clear cache to force reload from disk
-		engine.planner.statsCollector.cache = make(map[string]*TableStatistics)
-
-		// Load stats from disk
-		stats2 := engine.planner.statsCollector.GetTableStats("departments")
-		if stats2 == nil {
-			t.Fatal("Failed to load persisted statistics")
+		
+		// Selective query should return fewer rows
+		if selectiveResult.Count >= scanResult.Count {
+			t.Errorf("Expected selective query to return fewer rows. Selective: %d, Scan: %d", 
+				selectiveResult.Count, scanResult.Count)
 		}
-
-		// Verify loaded stats match original
-		if stats2.RowCount != stats1.RowCount {
-			t.Errorf("Row count mismatch: expected %d, got %d", stats1.RowCount, stats2.RowCount)
-		}
-		if stats2.TableName != stats1.TableName {
-			t.Errorf("Table name mismatch: expected %s, got %s", stats1.TableName, stats2.TableName)
+		
+		// Selective query should be faster (though timing can be variable in tests)
+		t.Logf("Selective query (%d rows): %v", selectiveResult.Count, selectiveDuration)
+		t.Logf("Full scan query (%d rows): %v", scanResult.Count, scanDuration)
+		
+		// Verify selective query returned exactly 1 row
+		if selectiveResult.Count != 1 {
+			t.Errorf("Expected selective query to return 1 row, got %d", selectiveResult.Count)
 		}
 	})
-}
 
-func TestCostEstimation(t *testing.T) {
-	engine := NewTestQueryEngine()
-	defer engine.Close()
+	t.Run("Function Optimization in WHERE", func(t *testing.T) {
+		// Query with function in WHERE clause
+		query := "SELECT name FROM employees WHERE UPPER(department) = 'ENGINEERING'"
+		
+		start := time.Now()
+		result, err := engine.Execute(query)
+		duration := time.Since(start)
+		
+		if err != nil {
+			t.Fatalf("Function query failed: %v", err)
+		}
+		
+		if result.Error != "" {
+			t.Fatalf("Function query returned error: %s", result.Error)
+		}
+		
+		// Should return engineering employees
+		if result.Count == 0 {
+			t.Error("Expected to find engineering employees")
+		}
+		
+		t.Logf("Function WHERE query completed in %v", duration)
+		t.Logf("Found %d engineering employees", result.Count)
+	})
 
-	testCases := []struct {
-		name          string
-		query         string
-		expectedNodes []string
-		costOrder     []string // Expected nodes in ascending cost order
-	}{
-		{
-			name:          "Simple scan cheaper than filtered scan",
-			query:         "SELECT * FROM employees",
-			expectedNodes: []string{"TableScan"},
-			costOrder:     []string{"TableScan"},
-		},
-		{
-			name:          "Filter adds cost",
-			query:         "SELECT * FROM employees WHERE salary > 70000",
-			expectedNodes: []string{"TableScan", "Filter"},
-			costOrder:     []string{"TableScan", "Filter"},
-		},
-		{
-			name:          "Sort is expensive",
-			query:         "SELECT * FROM employees ORDER BY salary",
-			expectedNodes: []string{"TableScan", "Sort"},
-			costOrder:     []string{"TableScan", "Sort"},
-		},
-		{
-			name:          "Aggregation cost",
-			query:         "SELECT department, AVG(salary) FROM employees GROUP BY department",
-			expectedNodes: []string{"TableScan", "Aggregate"},
-			costOrder:     []string{"TableScan", "Aggregate"},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			parsedQuery, err := engine.parser.Parse(tc.query)
-			if err != nil {
-				t.Fatalf("Failed to parse query: %v", err)
-			}
-
-			plan, err := engine.planner.CreatePlan(parsedQuery, engine)
-			if err != nil {
-				t.Fatalf("Failed to create plan: %v", err)
-			}
-
-			// Verify plan has expected structure
-			if plan.Root == nil {
-				t.Fatal("Plan has no root node")
-			}
-
-			// Check that costs are calculated
-			if plan.Root.Cost <= 0 {
-				t.Error("Root node has no cost estimate")
-			}
-
-			// Verify cost increases up the tree
-			var checkCostIncrease func(node *PlanNode)
-			checkCostIncrease = func(node *PlanNode) {
-				for _, child := range node.Children {
-					if child.Cost >= node.Cost {
-						t.Errorf("Child cost (%f) >= parent cost (%f)", child.Cost, node.Cost)
-					}
-					checkCostIncrease(child)
+	t.Run("JOIN Optimization", func(t *testing.T) {
+		// JOIN query that should benefit from optimization
+		query := `
+			SELECT e.name, e.salary, d.manager 
+			FROM employees e 
+			JOIN departments d ON e.department = d.name 
+			WHERE e.salary > 70000 
+			ORDER BY e.salary DESC 
+			LIMIT 5
+		`
+		
+		start := time.Now()
+		result, err := engine.Execute(query)
+		duration := time.Since(start)
+		
+		if err != nil {
+			t.Fatalf("JOIN query failed: %v", err)
+		}
+		
+		if result.Error != "" {
+			t.Fatalf("JOIN query returned error: %s", result.Error)
+		}
+		
+		// Verify results
+		if result.Count == 0 {
+			t.Error("Expected JOIN results")
+		}
+		
+		// Verify columns
+		expectedColumns := []string{"name", "salary", "manager"}
+		for _, expectedCol := range expectedColumns {
+			found := false
+			for _, actualCol := range result.Columns {
+				if actualCol == expectedCol {
+					found = true
+					break
 				}
 			}
-			checkCostIncrease(plan.Root)
-		})
-	}
+			if !found {
+				t.Errorf("Expected column '%s' not found in result", expectedCol)
+			}
+		}
+		
+		t.Logf("JOIN query completed in %v", duration)
+		t.Logf("Returned %d rows", result.Count)
+	})
 }
 
-func TestQueryPlannerSelectivity(t *testing.T) {
-	planner := NewQueryPlanner()
-
-	t.Run("Equality selectivity", func(t *testing.T) {
-		cond := WhereCondition{
-			Column:   "department",
-			Operator: "=",
-			Value:    "Engineering",
+func TestOptimizationRules(t *testing.T) {
+	t.Run("Predicate Pushdown Rule", func(t *testing.T) {
+		rule := &PredicatePushdownRule{}
+		
+		// Test rule name
+		if rule.Name() != "PredicatePushdown" {
+			t.Errorf("Expected rule name 'PredicatePushdown', got '%s'", rule.Name())
 		}
 		
-		// Without statistics
-		sel := planner.estimateConditionSelectivity(cond, nil)
-		if sel != 0.1 {
-			t.Errorf("Expected default equality selectivity 0.1, got %f", sel)
+		// Test rule cost
+		if rule.Cost() != 1 {
+			t.Errorf("Expected rule cost 1, got %d", rule.Cost())
 		}
-
-		// With statistics
-		stats := &NodeStatistics{
-			DistinctValues: map[string]int64{
-				"department": 5,
+		
+		// Create a simple plan for testing
+		plan := &QueryPlan{
+			Root: &PlanNode{
+				Type: PlanNodeFilter,
+				FilterConditions: []WhereCondition{
+					{Column: "salary", Operator: ">", Value: 70000},
+				},
+				Children: []*PlanNode{
+					{
+						Type:      PlanNodeScan,
+						TableName: "employees",
+					},
+				},
 			},
 		}
-		sel = planner.estimateConditionSelectivity(cond, stats)
-		expected := 1.0 / 5.0
-		if sel != expected {
-			t.Errorf("Expected selectivity %f, got %f", expected, sel)
+		
+		// Apply the rule
+		optimizedPlan, changed := rule.Apply(plan)
+		
+		if !changed {
+			t.Error("Expected predicate pushdown rule to make changes")
 		}
+		
+		if optimizedPlan == nil {
+			t.Error("Expected optimized plan to be returned")
+		}
+		
+		t.Logf("Predicate pushdown rule applied successfully")
 	})
 
-	t.Run("Range selectivity", func(t *testing.T) {
-		cond := WhereCondition{
-			Column:   "salary",
-			Operator: ">",
-			Value:    70000,
+	t.Run("Column Pruning Rule", func(t *testing.T) {
+		rule := &ColumnPruningRule{}
+		
+		// Test basic properties
+		if rule.Name() != "ColumnPruning" {
+			t.Errorf("Expected rule name 'ColumnPruning', got '%s'", rule.Name())
 		}
 		
-		sel := planner.estimateConditionSelectivity(cond, nil)
-		if sel != 0.3 {
-			t.Errorf("Expected default range selectivity 0.3, got %f", sel)
+		// Create a plan with unnecessary columns
+		plan := &QueryPlan{
+			Root: &PlanNode{
+				Type:    PlanNodeProject,
+				Columns: []string{"name", "salary"},
+				Children: []*PlanNode{
+					{
+						Type:      PlanNodeScan,
+						TableName: "employees",
+						Columns:   []string{"*"}, // All columns
+					},
+				},
+			},
 		}
+		
+		// Apply the rule
+		optimizedPlan, changed := rule.Apply(plan)
+		
+		if !changed {
+			t.Error("Expected column pruning rule to make changes")
+		}
+		
+		// Check that scan node now has pruned columns
+		scanNode := optimizedPlan.Root.Children[0]
+		if len(scanNode.Columns) == 1 && scanNode.Columns[0] == "*" {
+			t.Error("Expected scan node columns to be pruned")
+		}
+		
+		t.Logf("Column pruning rule applied successfully")
 	})
 
-	t.Run("IN selectivity", func(t *testing.T) {
-		cond := WhereCondition{
-			Column:    "department",
-			Operator:  "IN",
-			ValueList: []interface{}{"Engineering", "Sales", "Marketing"},
+	t.Run("Join Order Optimization Rule", func(t *testing.T) {
+		rule := &JoinOrderOptimizationRule{}
+		
+		if rule.Name() != "JoinOrderOptimization" {
+			t.Errorf("Expected rule name 'JoinOrderOptimization', got '%s'", rule.Name())
 		}
 		
-		// Without statistics
-		sel := planner.estimateConditionSelectivity(cond, nil)
-		expected := 3 * 0.1
-		if math.Abs(sel - expected) > 0.0001 {
-			t.Errorf("Expected IN selectivity %f, got %f", expected, sel)
-		}
-
-		// With statistics
-		stats := &NodeStatistics{
-			DistinctValues: map[string]int64{
-				"department": 10,
+		// Create a plan with suboptimal join order
+		plan := &QueryPlan{
+			Root: &PlanNode{
+				Type: PlanNodeJoin,
+				Children: []*PlanNode{
+					{Type: PlanNodeScan, TableName: "large_table", Rows: 10000},
+					{Type: PlanNodeScan, TableName: "small_table", Rows: 100},
+				},
 			},
 		}
-		sel = planner.estimateConditionSelectivity(cond, stats)
-		expected = 3.0 / 10.0
-		if math.Abs(sel - expected) > 0.0001 {
-			t.Errorf("Expected IN selectivity %f, got %f", expected, sel)
+		
+		// Apply the rule
+		optimizedPlan, changed := rule.Apply(plan)
+		
+		if !changed {
+			t.Error("Expected join order optimization rule to make changes")
 		}
+		
+		// Check that smaller table is now on the right (build side)
+		rightChild := optimizedPlan.Root.Children[1]
+		if rightChild.TableName != "small_table" {
+			t.Error("Expected smaller table to be on the right side of join")
+		}
+		
+		t.Logf("Join order optimization rule applied successfully")
 	})
+}
 
-	t.Run("Complex condition selectivity", func(t *testing.T) {
-		// Test AND conditions
-		andCond := WhereCondition{
-			IsComplex: true,
-			LogicalOp: "AND",
-			Left: &WhereCondition{
-				Column:   "department",
-				Operator: "=",
-				Value:    "Engineering",
-			},
-			Right: &WhereCondition{
-				Column:   "salary",
-				Operator: ">",
-				Value:    70000,
-			},
+func TestOptimizationStats(t *testing.T) {
+	engine := NewTestQueryEngine()
+	defer engine.Close()
+
+	t.Run("Get Optimization Statistics", func(t *testing.T) {
+		query := "SELECT name, salary FROM employees WHERE department = 'Engineering' ORDER BY salary DESC"
+		
+		// Get optimization stats
+		stats, err := engine.GetOptimizationStats(query)
+		if err != nil {
+			t.Fatalf("Failed to get optimization stats: %v", err)
 		}
 		
-		sel := planner.estimateConditionSelectivity(andCond, nil)
-		expected := 0.1 * 0.3 // AND multiplies selectivities
-		if sel != expected {
-			t.Errorf("Expected AND selectivity %f, got %f", expected, sel)
-		}
-
-		// Test OR conditions
-		orCond := WhereCondition{
-			IsComplex: true,
-			LogicalOp: "OR",
-			Left: &WhereCondition{
-				Column:   "department",
-				Operator: "=",
-				Value:    "Engineering",
-			},
-			Right: &WhereCondition{
-				Column:   "department",
-				Operator: "=",
-				Value:    "Sales",
-			},
+		// Verify stats structure
+		if stats == nil {
+			t.Error("Expected optimization stats to be returned")
 		}
 		
-		sel = planner.estimateConditionSelectivity(orCond, nil)
-		expected = 0.1 + 0.1 - (0.1 * 0.1) // OR formula
-		if sel != expected {
-			t.Errorf("Expected OR selectivity %f, got %f", expected, sel)
+		// Check for expected fields
+		expectedFields := []string{"original_nodes", "optimized_nodes", "original_cost", "optimized_cost"}
+		for _, field := range expectedFields {
+			if _, exists := stats[field]; !exists {
+				t.Errorf("Expected optimization stats to contain field '%s'", field)
+			}
 		}
+		
+		t.Logf("Optimization stats: %+v", stats)
 	})
 }

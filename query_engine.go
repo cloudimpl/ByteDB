@@ -20,15 +20,17 @@ type QueryEngine struct {
 	readersMu   sync.RWMutex
 	cache       *QueryCache
 	planner     *QueryPlanner
+	optimizer   *QueryOptimizer
 	functions   *FunctionRegistry
 }
 
 type QueryResult struct {
-	Columns []string      `json:"columns"`
-	Rows    []Row         `json:"rows"`
-	Count   int           `json:"count"`
-	Query   string        `json:"query"`
-	Error   string        `json:"error,omitempty"`
+	Columns           []string               `json:"columns"`
+	Rows              []Row                  `json:"rows"`
+	Count             int                    `json:"count"`
+	Query             string                 `json:"query"`
+	Error             string                 `json:"error,omitempty"`
+	OptimizationStats map[string]interface{} `json:"optimization_stats,omitempty"`
 }
 
 func NewQueryEngine(dataPath string) *QueryEngine {
@@ -41,6 +43,7 @@ func NewQueryEngine(dataPath string) *QueryEngine {
 	
 	planner := NewQueryPlanner()
 	planner.statsCollector.Initialize(dataPath)
+	optimizer := NewQueryOptimizer(planner)
 	
 	return &QueryEngine{
 		parser:      NewSQLParser(),
@@ -49,6 +52,7 @@ func NewQueryEngine(dataPath string) *QueryEngine {
 		openReaders: make(map[string]*ParquetReader),
 		cache:       NewQueryCache(cacheConfig),
 		planner:     planner,
+		optimizer:   optimizer,
 		functions:   NewFunctionRegistry(),
 	}
 }
@@ -389,7 +393,12 @@ func (qe *QueryEngine) executeSelectWithCTEs(query *ParsedQuery, parentCTEs map[
 		return qe.executeJoinQuery(query)
 	}
 	
-	// Single table query (existing logic)
+	// Try optimized execution first
+	if optimizedResult := qe.executeOptimized(query); optimizedResult != nil {
+		return optimizedResult, nil
+	}
+
+	// Fallback to original execution logic
 	reader, err := qe.getReader(query.TableName)
 	if err != nil {
 		return &QueryResult{
@@ -1387,12 +1396,18 @@ func (qe *QueryEngine) ListTables() ([]string, error) {
 
 // NewQueryEngineWithCache creates a QueryEngine with custom cache configuration
 func NewQueryEngineWithCache(dataPath string, cacheConfig CacheConfig) *QueryEngine {
+	planner := NewQueryPlanner()
+	planner.statsCollector.Initialize(dataPath)
+	optimizer := NewQueryOptimizer(planner)
+	
 	return &QueryEngine{
 		parser:      NewSQLParser(),
 		dataPath:    dataPath,
 		httpTables:  make(map[string]string),
 		openReaders: make(map[string]*ParquetReader),
 		cache:       NewQueryCache(cacheConfig),
+		planner:     planner,
+		optimizer:   optimizer,
 	}
 }
 
