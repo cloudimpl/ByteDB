@@ -328,9 +328,17 @@ func (pr *ParquetReader) matchesSubqueryCondition(row Row, condition WhereCondit
 	case "NOT IN":
 		return !pr.matchesInSubquery(row, condition, engine)
 	case "EXISTS":
-		return pr.matchesExistsSubquery(condition, engine)
+		if condition.Subquery.IsCorrelated {
+			return pr.matchesExistsSubqueryWithOuter(condition, engine, row)
+		} else {
+			return pr.matchesExistsSubquery(condition, engine)
+		}
 	case "NOT EXISTS":
-		return !pr.matchesExistsSubquery(condition, engine)
+		if condition.Subquery.IsCorrelated {
+			return !pr.matchesExistsSubqueryWithOuter(condition, engine, row)
+		} else {
+			return !pr.matchesExistsSubquery(condition, engine)
+		}
 	case "=", "!=", "<>", "<", "<=", ">", ">=":
 		return pr.matchesScalarSubquery(row, condition, engine)
 	default:
@@ -843,6 +851,7 @@ func (pr *ParquetReader) executeColumnSubquery(subquery *ParsedQuery, currentRow
 	if engine == nil {
 		return nil
 	}
+	
 	
 	var result *QueryResult
 	var err error

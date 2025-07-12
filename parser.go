@@ -32,6 +32,10 @@ type WhereCondition struct {
 	TableName string        // For qualified columns like "e.department"
 	Subquery  *ParsedQuery  // For subquery conditions like IN (SELECT ...), EXISTS (SELECT ...)
 	
+	// For column-to-column comparisons (e.g., e2.department = e.department)
+	ValueColumn     string // Column name on right side for column comparisons
+	ValueTableName  string // Table name for right side column in qualified comparisons
+	
 	// For BETWEEN operator
 	ValueFrom interface{} // Start value for BETWEEN
 	ValueTo   interface{} // End value for BETWEEN
@@ -355,7 +359,16 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 					// Extract column from testexpr
 					if subLink.Testexpr != nil {
 						if columnRef := subLink.Testexpr.GetColumnRef(); columnRef != nil {
-							if len(columnRef.Fields) > 0 {
+							if len(columnRef.Fields) >= 2 {
+								// Qualified column: table.column
+								if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+									condition.TableName = tableStr.Sval
+								}
+								if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+									condition.Column = columnStr.Sval
+								}
+							} else if len(columnRef.Fields) == 1 {
+								// Unqualified column
 								if str := columnRef.Fields[0].GetString_(); str != nil {
 									condition.Column = str.Sval
 								}
@@ -385,7 +398,16 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 			// Get column name from left expression
 			if lexpr := aExpr.Lexpr; lexpr != nil {
 				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) > 0 {
+					if len(columnRef.Fields) >= 2 {
+						// Qualified column: table.column
+						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+							condition.TableName = tableStr.Sval
+						}
+						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+							condition.Column = columnStr.Sval
+						}
+					} else if len(columnRef.Fields) == 1 {
+						// Unqualified column
 						if str := columnRef.Fields[0].GetString_(); str != nil {
 							condition.Column = str.Sval
 						}
@@ -412,7 +434,16 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 			// Get column name from left expression
 			if lexpr := aExpr.Lexpr; lexpr != nil {
 				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) > 0 {
+					if len(columnRef.Fields) >= 2 {
+						// Qualified column: table.column
+						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+							condition.TableName = tableStr.Sval
+						}
+						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+							condition.Column = columnStr.Sval
+						}
+					} else if len(columnRef.Fields) == 1 {
+						// Unqualified column
 						if str := columnRef.Fields[0].GetString_(); str != nil {
 							condition.Column = str.Sval
 						}
@@ -448,7 +479,16 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 			
 			if lexpr := aExpr.Lexpr; lexpr != nil {
 				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) > 0 {
+					if len(columnRef.Fields) >= 2 {
+						// Qualified column: table.column
+						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+							condition.TableName = tableStr.Sval
+						}
+						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+							condition.Column = columnStr.Sval
+						}
+					} else if len(columnRef.Fields) == 1 {
+						// Unqualified column
 						if str := columnRef.Fields[0].GetString_(); str != nil {
 							condition.Column = str.Sval
 						}
@@ -472,6 +512,22 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 					if subquery := p.parseSubquery(subLink); subquery != nil {
 						condition.Subquery = subquery
 					}
+				} else if columnRef := rexpr.GetColumnRef(); columnRef != nil {
+					// Handle column reference on right side (e.g., e2.department = e.department)
+					if len(columnRef.Fields) >= 2 {
+						// Qualified column: table.column
+						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+							condition.ValueTableName = tableStr.Sval
+						}
+						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+							condition.ValueColumn = columnStr.Sval
+						}
+					} else if len(columnRef.Fields) == 1 {
+						// Unqualified column
+						if str := columnRef.Fields[0].GetString_(); str != nil {
+							condition.ValueColumn = str.Sval
+						}
+					}
 				}
 			}
 		}
@@ -490,7 +546,16 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 			// For IN subqueries, we need to extract the column from the testexpr
 			if subLink.Testexpr != nil {
 				if columnRef := subLink.Testexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) > 0 {
+					if len(columnRef.Fields) >= 2 {
+						// Qualified column: table.column
+						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+							condition.TableName = tableStr.Sval
+						}
+						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+							condition.Column = columnStr.Sval
+						}
+					} else if len(columnRef.Fields) == 1 {
+						// Unqualified column
 						if str := columnRef.Fields[0].GetString_(); str != nil {
 							condition.Column = str.Sval
 						}
@@ -561,7 +626,16 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 			// Get column name from left expression
 			if lexpr := aExpr.Lexpr; lexpr != nil {
 				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) > 0 {
+					if len(columnRef.Fields) >= 2 {
+						// Qualified column: table.column
+						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+							condition.TableName = tableStr.Sval
+						}
+						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+							condition.Column = columnStr.Sval
+						}
+					} else if len(columnRef.Fields) == 1 {
+						// Unqualified column
 						if str := columnRef.Fields[0].GetString_(); str != nil {
 							condition.Column = str.Sval
 						}
@@ -592,7 +666,16 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 			// Get column name from left expression
 			if lexpr := aExpr.Lexpr; lexpr != nil {
 				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) > 0 {
+					if len(columnRef.Fields) >= 2 {
+						// Qualified column: table.column
+						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+							condition.TableName = tableStr.Sval
+						}
+						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+							condition.Column = columnStr.Sval
+						}
+					} else if len(columnRef.Fields) == 1 {
+						// Unqualified column
 						if str := columnRef.Fields[0].GetString_(); str != nil {
 							condition.Column = str.Sval
 						}
@@ -635,7 +718,16 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 							// Get column from left expression
 							if lexpr := aExpr.Lexpr; lexpr != nil {
 								if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-									if len(columnRef.Fields) > 0 {
+									if len(columnRef.Fields) >= 2 {
+										// Qualified column: table.column
+										if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+											condition.TableName = tableStr.Sval
+										}
+										if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+											condition.Column = columnStr.Sval
+										}
+									} else if len(columnRef.Fields) == 1 {
+										// Unqualified column
 										if str := columnRef.Fields[0].GetString_(); str != nil {
 											condition.Column = str.Sval
 										}
@@ -659,7 +751,16 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 		// Get column name from left expression
 		if lexpr := aExpr.Lexpr; lexpr != nil {
 			if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-				if len(columnRef.Fields) > 0 {
+				if len(columnRef.Fields) >= 2 {
+					// Qualified column: table.column
+					if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+						condition.TableName = tableStr.Sval
+					}
+					if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+						condition.Column = columnStr.Sval
+					}
+				} else if len(columnRef.Fields) == 1 {
+					// Unqualified column
 					if str := columnRef.Fields[0].GetString_(); str != nil {
 						condition.Column = str.Sval
 					}
@@ -675,6 +776,22 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 				// Handle scalar subquery (e.g., col = (SELECT ...))
 				if subquery := p.parseSubquery(subLink); subquery != nil {
 					condition.Subquery = subquery
+				}
+			} else if columnRef := rexpr.GetColumnRef(); columnRef != nil {
+				// Handle column reference on right side (e.g., e2.department = e.department)
+				if len(columnRef.Fields) >= 2 {
+					// Qualified column: table.column
+					if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+						condition.ValueTableName = tableStr.Sval
+					}
+					if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+						condition.ValueColumn = columnStr.Sval
+					}
+				} else if len(columnRef.Fields) == 1 {
+					// Unqualified column
+					if str := columnRef.Fields[0].GetString_(); str != nil {
+						condition.ValueColumn = str.Sval
+					}
 				}
 			}
 		}
@@ -692,7 +809,16 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 			// For IN subqueries, we need to extract the column from the testexpr
 			if subLink.Testexpr != nil {
 				if columnRef := subLink.Testexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) > 0 {
+					if len(columnRef.Fields) >= 2 {
+						// Qualified column: table.column
+						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+							condition.TableName = tableStr.Sval
+						}
+						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+							condition.Column = columnStr.Sval
+						}
+					} else if len(columnRef.Fields) == 1 {
+						// Unqualified column
 						if str := columnRef.Fields[0].GetString_(); str != nil {
 							condition.Column = str.Sval
 						}
@@ -779,12 +905,9 @@ func (p *SQLParser) detectCorrelation(subquery *ParsedQuery, outerQuery *ParsedQ
 		}
 	}
 	
-	// Check subquery WHERE conditions for references to outer tables
+	// Check subquery WHERE conditions for references to outer tables (including nested complex conditions)
 	for _, condition := range subquery.Where {
-		if condition.TableName != "" && outerTables[condition.TableName] {
-			subquery.IsCorrelated = true
-			subquery.CorrelatedColumns = append(subquery.CorrelatedColumns, condition.TableName+"."+condition.Column)
-		}
+		p.checkConditionForCorrelation(condition, outerTables, subquery)
 	}
 	
 	// Check subquery columns for references to outer tables
@@ -1130,17 +1253,57 @@ func (q *ParsedQuery) String() string {
 
 // detectAllCorrelations scans the entire query to detect correlated subqueries
 func (p *SQLParser) detectAllCorrelations(query *ParsedQuery) {
-	// Check all WHERE conditions for subqueries
+	// Check all WHERE conditions for subqueries (including nested ones)
 	for i := range query.Where {
-		if query.Where[i].Subquery != nil {
-			p.detectCorrelation(query.Where[i].Subquery, query)
-		}
+		p.detectCorrelationInCondition(&query.Where[i], query)
 	}
 	
 	// Check column subqueries (for future SELECT clause subqueries)
 	for i := range query.Columns {
 		if query.Columns[i].Subquery != nil {
 			p.detectCorrelation(query.Columns[i].Subquery, query)
+		}
+	}
+}
+
+// detectCorrelationInCondition recursively checks all subqueries in a WHERE condition
+func (p *SQLParser) detectCorrelationInCondition(condition *WhereCondition, outerQuery *ParsedQuery) {
+	// Check direct subquery in this condition
+	if condition.Subquery != nil {
+		p.detectCorrelation(condition.Subquery, outerQuery)
+	}
+	
+	// Check nested conditions (for complex AND/OR conditions)
+	if condition.IsComplex {
+		if condition.Left != nil {
+			p.detectCorrelationInCondition(condition.Left, outerQuery)
+		}
+		if condition.Right != nil {
+			p.detectCorrelationInCondition(condition.Right, outerQuery)
+		}
+	}
+}
+
+// checkConditionForCorrelation recursively checks a condition for correlation with outer tables
+func (p *SQLParser) checkConditionForCorrelation(condition WhereCondition, outerTables map[string]bool, subquery *ParsedQuery) {
+	// Check simple condition for correlation
+	if condition.TableName != "" && outerTables[condition.TableName] {
+		subquery.IsCorrelated = true
+		subquery.CorrelatedColumns = append(subquery.CorrelatedColumns, condition.TableName+"."+condition.Column)
+	}
+	// Also check the right side of the condition for column references
+	if condition.ValueTableName != "" && outerTables[condition.ValueTableName] {
+		subquery.IsCorrelated = true
+		subquery.CorrelatedColumns = append(subquery.CorrelatedColumns, condition.ValueTableName+"."+condition.ValueColumn)
+	}
+	
+	// Check nested conditions (for complex AND/OR conditions)
+	if condition.IsComplex {
+		if condition.Left != nil {
+			p.checkConditionForCorrelation(*condition.Left, outerTables, subquery)
+		}
+		if condition.Right != nil {
+			p.checkConditionForCorrelation(*condition.Right, outerTables, subquery)
 		}
 	}
 }

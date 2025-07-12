@@ -1128,6 +1128,7 @@ func (qe *QueryEngine) ExecuteSubquery(query *ParsedQuery) (*QueryResult, error)
 
 // ExecuteCorrelatedSubquery implements the SubqueryExecutor interface for correlated subqueries
 func (qe *QueryEngine) ExecuteCorrelatedSubquery(query *ParsedQuery, outerRow Row) (*QueryResult, error) {
+	
 	if !query.IsCorrelated {
 		// If not correlated, use regular execution
 		return qe.ExecuteSubquery(query)
@@ -1270,6 +1271,7 @@ func (qe *QueryEngine) executeCorrelatedJoinQuery(query *ParsedQuery, outerRow R
 
 // matchesCorrelatedWhereConditions checks if a row matches WHERE conditions with outer row context
 func (qe *QueryEngine) matchesCorrelatedWhereConditions(row Row, conditions []WhereCondition, outerRow Row) bool {
+	
 	for _, condition := range conditions {
 		if !qe.matchesCorrelatedCondition(row, condition, outerRow) {
 			return false
@@ -1278,19 +1280,37 @@ func (qe *QueryEngine) matchesCorrelatedWhereConditions(row Row, conditions []Wh
 	return true
 }
 
-// matchesCorrelatedCondition checks if a row matches a single WHERE condition with outer row context
+// matchesCorrelatedCondition checks if a row matches a single WHERE condition with outer row context  
 func (qe *QueryEngine) matchesCorrelatedCondition(row Row, condition WhereCondition, outerRow Row) bool {
+	// Handle complex logical conditions (AND/OR)
+	if condition.IsComplex {
+		switch condition.LogicalOp {
+		case "AND":
+			return qe.matchesCorrelatedCondition(row, *condition.Left, outerRow) && 
+				   qe.matchesCorrelatedCondition(row, *condition.Right, outerRow)
+		case "OR":
+			return qe.matchesCorrelatedCondition(row, *condition.Left, outerRow) || 
+				   qe.matchesCorrelatedCondition(row, *condition.Right, outerRow)
+		default:
+			return false
+		}
+	}
+	
 	var leftValue interface{}
 	
 	// Determine the left value - could be from current row or outer row
 	if condition.TableName != "" {
-		// This is a qualified column reference - need to resolve from appropriate context
+		// This is a qualified column reference - need to determine if it refers to outer or inner table
+		// For correlated subqueries, we need to be more careful about which table the column refers to
+		
+		// Check if this table alias refers to the outer query (we need outer query table info for this)
+		// For now, use a simple heuristic: if the qualified key exists in outer row, use it
 		qualifiedKey := condition.TableName + "." + condition.Column
 		if outerValue, exists := outerRow[qualifiedKey]; exists {
-			leftValue = outerValue
-		} else if outerValue, exists := outerRow[condition.Column]; exists {
+			// Table alias found in outer row - use outer context
 			leftValue = outerValue
 		} else {
+			// Table alias not in outer row - must be inner table reference, use inner row
 			leftValue = row[condition.Column]
 		}
 	} else {
@@ -1305,20 +1325,43 @@ func (qe *QueryEngine) matchesCorrelatedCondition(row Row, condition WhereCondit
 	// Create a dummy reader for comparison operations
 	dummyReader := &ParquetReader{}
 	
+	// Determine the right value - could be a constant or column reference
+	var rightValue interface{}
+	if condition.ValueColumn != "" {
+		// This is a column-to-column comparison (e.g., e2.department = e.department)
+		if condition.ValueTableName != "" {
+			// Qualified column reference - resolve from appropriate context
+			qualifiedKey := condition.ValueTableName + "." + condition.ValueColumn
+			if outerValue, exists := outerRow[qualifiedKey]; exists {
+				rightValue = outerValue
+			} else if outerValue, exists := outerRow[condition.ValueColumn]; exists {
+				rightValue = outerValue
+			} else {
+				rightValue = row[condition.ValueColumn]
+			}
+		} else {
+			// Unqualified column reference
+			rightValue = row[condition.ValueColumn]
+		}
+	} else {
+		// Regular constant value
+		rightValue = condition.Value
+	}
+	
 	// Handle regular conditions
 	switch condition.Operator {
 	case "=":
-		return leftValue == condition.Value
+		return leftValue == rightValue
 	case "!=":
-		return leftValue != condition.Value
+		return leftValue != rightValue
 	case "<":
-		return dummyReader.CompareValues(leftValue, condition.Value) < 0
+		return dummyReader.CompareValues(leftValue, rightValue) < 0
 	case "<=":
-		return dummyReader.CompareValues(leftValue, condition.Value) <= 0
+		return dummyReader.CompareValues(leftValue, rightValue) <= 0
 	case ">":
-		return dummyReader.CompareValues(leftValue, condition.Value) > 0
+		return dummyReader.CompareValues(leftValue, rightValue) > 0
 	case ">=":
-		return dummyReader.CompareValues(leftValue, condition.Value) >= 0
+		return dummyReader.CompareValues(leftValue, rightValue) >= 0
 	case "IN":
 		for _, val := range condition.ValueList {
 			if leftValue == val {
@@ -1327,7 +1370,7 @@ func (qe *QueryEngine) matchesCorrelatedCondition(row Row, condition WhereCondit
 		}
 		return false
 	case "LIKE":
-		return dummyReader.matchesLike(leftValue, condition.Value)
+		return dummyReader.matchesLike(leftValue, rightValue)
 	}
 	
 	return false
@@ -1380,4 +1423,13 @@ func (qe *QueryEngine) matchesCorrelatedSubqueryCondition(leftValue interface{},
 	}
 	
 	return false
+}
+
+// Helper function for debug output
+func getRowKeys(row Row) []string {
+	var keys []string
+	for k, v := range row {
+		keys = append(keys, fmt.Sprintf("%s=%v", k, v))
+	}
+	return keys
 }
