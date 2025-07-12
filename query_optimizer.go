@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -124,12 +125,22 @@ func (r *ColumnPruningRule) applyColumnPruning(node *PlanNode, required map[stri
 
 	// For scan nodes, prune unnecessary columns
 	if node.Type == PlanNodeScan {
-		if len(node.Columns) == 0 {
+		// If we have "*" and we know which columns are required, replace with specific columns
+		if len(node.Columns) == 1 && node.Columns[0] == "*" && len(required) > 0 {
+			var cols []string
+			for col := range required {
+				cols = append(cols, col)
+			}
+			sort.Strings(cols) // For consistent ordering
+			node.Columns = cols
+			*changed = true
+		} else if len(node.Columns) == 0 {
 			// No columns specified, set required columns
 			var cols []string
 			for col := range required {
 				cols = append(cols, col)
 			}
+			sort.Strings(cols) // For consistent ordering
 			node.Columns = cols
 			*changed = true
 		} else {
@@ -175,7 +186,9 @@ func (r *JoinOrderOptimizationRule) optimizeJoinOrder(node *PlanNode, changed *b
 		// Simple heuristic: put smaller table on the right (build side)
 		left, right := node.Children[0], node.Children[1]
 		
-		if r.estimateRows(right) < r.estimateRows(left) {
+		// If left table is smaller than right table, swap them
+		// to ensure smaller table is on the right (build side)
+		if r.estimateRows(left) < r.estimateRows(right) {
 			// Swap join order
 			node.Children[0], node.Children[1] = right, left
 			*changed = true

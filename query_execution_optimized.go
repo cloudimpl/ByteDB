@@ -6,6 +6,11 @@ import (
 
 // executeOptimized attempts to execute a query using optimization
 func (qe *QueryEngine) executeOptimized(query *ParsedQuery) *QueryResult {
+	// Skip optimization for subqueries to avoid issues
+	if query.IsSubquery {
+		return nil
+	}
+	
 	// Create an execution plan
 	plan, err := qe.planner.CreatePlan(query, qe)
 	if err != nil {

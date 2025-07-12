@@ -243,13 +243,13 @@ func TestOptimizationRules(t *testing.T) {
 			t.Errorf("Expected rule name 'JoinOrderOptimization', got '%s'", rule.Name())
 		}
 		
-		// Create a plan with suboptimal join order
+		// Create a plan with suboptimal join order (small table on left, large on right)
 		plan := &QueryPlan{
 			Root: &PlanNode{
 				Type: PlanNodeJoin,
 				Children: []*PlanNode{
-					{Type: PlanNodeScan, TableName: "large_table", Rows: 10000},
 					{Type: PlanNodeScan, TableName: "small_table", Rows: 100},
+					{Type: PlanNodeScan, TableName: "large_table", Rows: 10000},
 				},
 			},
 		}

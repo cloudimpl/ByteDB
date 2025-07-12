@@ -15,7 +15,8 @@
       "Bash(make:*)",
       "Bash(find:*)",
       "Bash(./migrate_tests.sh:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(true)"
     ],
     "deny": []
   }

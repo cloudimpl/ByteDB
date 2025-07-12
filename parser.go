@@ -167,6 +167,7 @@ type ParsedQuery struct {
 	IsCorrelated bool // True if subquery references outer query columns
 	CorrelatedColumns []string // List of outer query columns referenced
 	CTEs        []CTE // Common Table Expressions (WITH clauses)
+	IsSubquery  bool // True if this query is being executed as a subquery
 	
 	// EXPLAIN specific fields
 	ExplainOptions *ExplainOptions // Options for EXPLAIN command

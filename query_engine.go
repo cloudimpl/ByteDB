@@ -1312,6 +1312,10 @@ func (qe *QueryEngine) evaluateQueryColumns(rows []Row, queryColumns []Column) [
 				// Handle CASE expressions
 				reader := &ParquetReader{} // Create a temporary reader for evaluation
 				value = reader.evaluateCaseExpression(col.CaseExpr, row, qe)
+			} else if col.Subquery != nil {
+				// Handle subqueries in SELECT clause
+				reader := &ParquetReader{} // Create a temporary reader for evaluation
+				value = reader.executeColumnSubquery(col.Subquery, row, qe)
 			} else if col.Name == "*" {
 				// For wildcard, copy all original columns
 				for k, v := range row {
@@ -1336,6 +1340,9 @@ func (qe *QueryEngine) evaluateQueryColumns(rows []Row, queryColumns []Column) [
 			} else if col.CaseExpr != nil {
 				// For CASE expressions without alias, use "case" as key
 				newRow["case"] = value
+			} else if col.Subquery != nil {
+				// For subqueries without alias, use "subquery" as key
+				newRow["subquery"] = value
 			} else {
 				newRow[col.Name] = value
 			}
@@ -1553,6 +1560,9 @@ func (qe *QueryEngine) isConstantColumnName(name string) bool {
 func (qe *QueryEngine) ExecuteSubquery(query *ParsedQuery) (*QueryResult, error) {
 	// Execute subquery without caching to avoid cache pollution
 	// and infinite recursion issues
+	// Mark as subquery to avoid optimization issues
+	query.IsSubquery = true
+	
 	switch query.Type {
 	case SELECT:
 		// Handle constant-only queries (no FROM clause)
