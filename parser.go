@@ -15,6 +15,7 @@ const (
 	UPDATE
 	DELETE
 	EXPLAIN
+	UNION
 	UNSUPPORTED
 )
 
@@ -136,6 +137,11 @@ type CTE struct {
 	IsRecursive  bool         // For RECURSIVE CTEs (future enhancement)
 }
 
+type UnionQuery struct {
+	Query    *ParsedQuery // The query to union
+	UnionAll bool         // True for UNION ALL, false for UNION
+}
+
 type ParsedQuery struct {
 	Type        QueryType
 	TableName   string
@@ -159,6 +165,10 @@ type ParsedQuery struct {
 	// EXPLAIN specific fields
 	ExplainOptions *ExplainOptions // Options for EXPLAIN command
 	ExplainQuery   *ParsedQuery    // The query being explained
+	
+	// UNION specific fields
+	UnionQueries []UnionQuery // List of queries to union
+	HasUnion     bool         // True if query contains UNION/UNION ALL
 }
 
 type SQLParser struct{}
@@ -410,6 +420,91 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 				query.Limit = int(ival.Ival)
 			}
 		}
+	}
+
+	// Check for UNION operations
+	if stmt.Op != pg_query.SetOperation_SETOP_NONE {
+		query.HasUnion = true
+		query.Type = UNION
+		
+		// For UNION queries, we need to parse left and right separately
+		var leftQuery *ParsedQuery
+		var rightQuery *ParsedQuery
+		
+		// Parse left side
+		if stmt.Larg != nil {
+			leftQuery = &ParsedQuery{}
+			_, err := p.parseSelect(stmt.Larg, leftQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse UNION left side: %w", err)
+			}
+		} else {
+			// If no Larg, the current query data is the left side
+			leftQuery = &ParsedQuery{
+				Type:        SELECT,
+				TableName:   query.TableName,
+				TableAlias:  query.TableAlias,
+				Columns:     query.Columns,
+				Aggregates:  query.Aggregates,
+				WindowFuncs: query.WindowFuncs,
+				GroupBy:     query.GroupBy,
+				Where:       query.Where,
+				Joins:       query.Joins,
+				CTEs:        query.CTEs,
+			}
+		}
+		
+		// Parse right side
+		if stmt.Rarg != nil {
+			rightQuery = &ParsedQuery{}
+			_, err := p.parseSelect(stmt.Rarg, rightQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse UNION right side: %w", err)
+			}
+		}
+		
+		// Clear the current query and set it up as a UNION
+		query.TableName = ""
+		query.TableAlias = ""
+		query.Columns = nil
+		query.Aggregates = nil
+		query.WindowFuncs = nil
+		query.GroupBy = nil
+		query.Where = nil
+		query.Joins = nil
+		
+		// Add both sides to UnionQueries
+		if leftQuery != nil {
+			if leftQuery.HasUnion {
+				// Left side is also a UNION, add all its queries
+				query.UnionQueries = append(query.UnionQueries, leftQuery.UnionQueries...)
+			} else {
+				// Left side is a simple SELECT
+				query.UnionQueries = append(query.UnionQueries, UnionQuery{
+					Query:    leftQuery,
+					UnionAll: stmt.All, // Use the UNION/UNION ALL setting from the statement
+				})
+			}
+		}
+		
+		if rightQuery != nil {
+			if rightQuery.HasUnion {
+				// Right side is also a UNION, add all its queries
+				for _, uq := range rightQuery.UnionQueries {
+					uq.UnionAll = stmt.All // Apply the current UNION/UNION ALL setting
+					query.UnionQueries = append(query.UnionQueries, uq)
+				}
+			} else {
+				// Right side is a simple SELECT
+				query.UnionQueries = append(query.UnionQueries, UnionQuery{
+					Query:    rightQuery,
+					UnionAll: stmt.All,
+				})
+			}
+		}
+		
+		// ORDER BY and LIMIT apply to the entire UNION result
+		// These are already parsed into query.OrderBy and query.Limit
 	}
 
 	// Post-process to detect correlated subqueries

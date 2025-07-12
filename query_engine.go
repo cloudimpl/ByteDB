@@ -80,6 +80,8 @@ func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
 		} else {
 			result, err = qe.executeSelect(parsedQuery)
 		}
+	case UNION:
+		result, err = qe.executeUnion(parsedQuery)
 	case EXPLAIN:
 		result, err = qe.executeExplain(parsedQuery)
 	default:
@@ -1180,6 +1182,19 @@ func (qe *QueryEngine) compareRows(row1, row2 Row, orderBy []OrderByColumn, read
 }
 
 func (qe *QueryEngine) getResultColumns(rows []Row, queryColumns []Column) []string {
+	// If there are query columns specified, use those even if there are no rows
+	if len(rows) == 0 && len(queryColumns) > 0 {
+		var columns []string
+		for _, col := range queryColumns {
+			if col.Alias != "" {
+				columns = append(columns, col.Alias)
+			} else {
+				columns = append(columns, col.Name)
+			}
+		}
+		return columns
+	}
+	
 	if len(rows) == 0 {
 		return []string{}
 	}
@@ -2137,4 +2152,207 @@ func (qe *QueryEngine) planNodeToMap(node *PlanNode, options *ExplainOptions) ma
 	}
 	
 	return result
+}
+
+// executeUnion handles UNION and UNION ALL queries
+func (qe *QueryEngine) executeUnion(query *ParsedQuery) (*QueryResult, error) {
+	return qe.executeUnionWithCTEs(query, nil)
+}
+
+func (qe *QueryEngine) executeUnionWithCTEs(query *ParsedQuery, parentCTEs map[string][]Row) (*QueryResult, error) {
+	if len(query.UnionQueries) == 0 {
+		return &QueryResult{
+			Query: query.RawSQL,
+			Error: "UNION query has no queries to union",
+		}, nil
+	}
+	
+	// Initialize CTE results with parent CTEs if provided
+	cteResults := make(map[string][]Row)
+	if parentCTEs != nil {
+		for name, rows := range parentCTEs {
+			cteResults[name] = rows
+		}
+	}
+	
+	// Process CTEs if present
+	if len(query.CTEs) > 0 {
+		for _, cte := range query.CTEs {
+			// Execute each CTE and store the results
+			cteResult, err := qe.executeSelectWithCTEs(cte.Query, cteResults)
+			if err != nil {
+				return nil, fmt.Errorf("failed to execute CTE '%s': %w", cte.Name, err)
+			}
+			
+			// If the CTE has column aliases, apply them
+			rows := cteResult.Rows
+			if len(cte.ColumnNames) > 0 {
+				rows = qe.applyCTEColumnAliases(rows, cteResult.Columns, cte.ColumnNames)
+			}
+			
+			// Store the CTE results with aliased columns
+			cteResults[cte.Name] = rows
+		}
+	}
+	
+	// Execute all queries in the UNION
+	var allResults []*QueryResult
+	var allRows []Row
+	var commonColumns []string
+	
+	// Execute each query
+	for i, unionQuery := range query.UnionQueries {
+		var result *QueryResult
+		var err error
+		
+		// Pass CTEs to each union query
+		unionQuery.Query.CTEs = query.CTEs
+		
+		// Execute the query
+		if unionQuery.Query.Type == SELECT {
+			result, err = qe.executeSelectWithCTEs(unionQuery.Query, cteResults)
+		} else {
+			return &QueryResult{
+				Query: query.RawSQL,
+				Error: fmt.Sprintf("UNION query %d is not a SELECT", i+1),
+			}, nil
+		}
+		
+		if err != nil {
+			return &QueryResult{
+				Query: query.RawSQL,
+				Error: fmt.Sprintf("failed to execute UNION query %d: %v", i+1, err),
+			}, nil
+		}
+		
+		if result.Error != "" {
+			return &QueryResult{
+				Query: query.RawSQL,
+				Error: fmt.Sprintf("UNION query %d error: %s", i+1, result.Error),
+			}, nil
+		}
+		
+		// Check column compatibility
+		if i == 0 {
+			commonColumns = result.Columns
+			if len(commonColumns) == 0 {
+				// If no columns returned, there might be an issue
+				return &QueryResult{
+					Query: query.RawSQL,
+					Error: fmt.Sprintf("UNION query 1 returned no columns"),
+				}, nil
+			}
+		} else {
+			if len(result.Columns) != len(commonColumns) {
+				return &QueryResult{
+					Query: query.RawSQL,
+					Error: fmt.Sprintf("UNION queries must have the same number of columns: query 1 has %d, query %d has %d",
+						len(commonColumns), i+1, len(result.Columns)),
+				}, nil
+			}
+		}
+		
+		allResults = append(allResults, result)
+		allRows = append(allRows, result.Rows...)
+	}
+	
+	// Handle UNION vs UNION ALL
+	var finalRows []Row
+	// Check if any UNION (not ALL) exists - if so, we need to deduplicate
+	needsDedupe := false
+	for _, uq := range query.UnionQueries {
+		if !uq.UnionAll {
+			needsDedupe = true
+			break
+		}
+	}
+	
+	if needsDedupe {
+		// UNION - remove duplicates
+		finalRows = qe.removeDuplicateRows(allRows, commonColumns)
+	} else {
+		// UNION ALL - keep all rows including duplicates
+		finalRows = allRows
+	}
+	
+	// Apply final ORDER BY if present
+	if len(query.OrderBy) > 0 {
+		finalRows = qe.sortUnionRows(finalRows, query.OrderBy, commonColumns)
+	}
+	
+	// Apply final LIMIT if present
+	if query.Limit > 0 && len(finalRows) > query.Limit {
+		finalRows = finalRows[:query.Limit]
+	}
+	
+	return &QueryResult{
+		Columns: commonColumns,
+		Rows:    finalRows,
+		Count:   len(finalRows),
+		Query:   query.RawSQL,
+	}, nil
+}
+
+// hasUnionAll checks if all unions should preserve duplicates
+func (qe *QueryEngine) hasUnionAll(query *ParsedQuery) bool {
+	// For now, if any query uses UNION (not ALL), we need to deduplicate
+	for _, unionQuery := range query.UnionQueries {
+		if !unionQuery.UnionAll {
+			return false
+		}
+	}
+	return true
+}
+
+// removeDuplicateRows removes duplicate rows for UNION (not UNION ALL)
+func (qe *QueryEngine) removeDuplicateRows(rows []Row, columns []string) []Row {
+	seen := make(map[string]bool)
+	var uniqueRows []Row
+	
+	for _, row := range rows {
+		// Create a key from all column values
+		key := qe.createRowKey(row, columns)
+		if !seen[key] {
+			seen[key] = true
+			uniqueRows = append(uniqueRows, row)
+		}
+	}
+	
+	return uniqueRows
+}
+
+// createRowKey creates a unique key for a row based on column values
+func (qe *QueryEngine) createRowKey(row Row, columns []string) string {
+	var parts []string
+	for _, col := range columns {
+		val := row[col]
+		parts = append(parts, fmt.Sprintf("%v", val))
+	}
+	return strings.Join(parts, "|")
+}
+
+// sortUnionRows sorts rows from a UNION query
+func (qe *QueryEngine) sortUnionRows(rows []Row, orderBy []OrderByColumn, columns []string) []Row {
+	sort.Slice(rows, func(i, j int) bool {
+		for _, ob := range orderBy {
+			// Find the column in the row
+			colName := ob.Column
+			
+			// Get values from both rows
+			val1 := rows[i][colName]
+			val2 := rows[j][colName]
+			
+			cmp := qe.compareValues(val1, val2)
+			
+			if cmp != 0 {
+				if ob.Direction == "DESC" {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+		}
+		return false
+	})
+	
+	return rows
 }
