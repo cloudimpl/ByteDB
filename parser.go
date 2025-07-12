@@ -294,7 +294,35 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 }
 
 func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
-	if aExpr := node.GetAExpr(); aExpr != nil {
+	if boolExpr := node.GetBoolExpr(); boolExpr != nil {
+		// Handle NOT expressions (e.g., NOT IN)
+		if boolExpr.Boolop == pg_query.BoolExprType_NOT_EXPR && len(boolExpr.Args) > 0 {
+			// Parse the inner expression and negate it
+			firstArg := boolExpr.Args[0]
+			if subLink := firstArg.GetSubLink(); subLink != nil {
+				condition := WhereCondition{}
+				if subLink.SubLinkType == pg_query.SubLinkType_ANY_SUBLINK {
+					condition.Operator = "NOT IN"
+					// Extract column from testexpr
+					if subLink.Testexpr != nil {
+						if columnRef := subLink.Testexpr.GetColumnRef(); columnRef != nil {
+							if len(columnRef.Fields) > 0 {
+								if str := columnRef.Fields[0].GetString_(); str != nil {
+									condition.Column = str.Sval
+								}
+							}
+						}
+					}
+					if subquery := p.parseSubquery(subLink); subquery != nil {
+						condition.Subquery = subquery
+					}
+					if condition.Subquery != nil {
+						query.Where = append(query.Where, condition)
+					}
+				}
+			}
+		}
+	} else if aExpr := node.GetAExpr(); aExpr != nil {
 		condition := WhereCondition{}
 		
 		// Check if this is an IN expression
