@@ -288,7 +288,7 @@ func (pr *ParquetReader) matchesConditionWithEngine(row Row, condition WhereCond
 		return exists && value != nil
 	}
 	
-	// Get left-side value (column or CASE expression)
+	// Get left-side value (column, function, or CASE expression)
 	var leftValue interface{}
 	var exists bool
 	
@@ -296,19 +296,37 @@ func (pr *ParquetReader) matchesConditionWithEngine(row Row, condition WhereCond
 		// Evaluate CASE expression on left side
 		leftValue = pr.evaluateCaseExpression(condition.CaseExpr, row, engine)
 		exists = true
-	} else {
+	} else if condition.Function != nil && engine != nil {
+		// Evaluate function on left side
+		var err error
+		leftValue, err = engine.EvaluateFunction(condition.Function, row)
+		if err != nil {
+			return false
+		}
+		exists = true
+	} else if condition.Column != "" {
 		// Regular column lookup
 		leftValue, exists = row[condition.Column]
 		if !exists {
 			return false
 		}
+	} else {
+		// No column or function specified
+		return false
 	}
 
-	// Get right-side value (handling CASE expressions, column references, or literal values)
+	// Get right-side value (handling functions, CASE expressions, column references, or literal values)
 	var rightValue interface{}
 	if condition.ValueCaseExpr != nil {
 		// Evaluate CASE expression on right side
 		rightValue = pr.evaluateCaseExpression(condition.ValueCaseExpr, row, engine)
+	} else if condition.ValueFunction != nil && engine != nil {
+		// Evaluate function on right side
+		var err error
+		rightValue, err = engine.EvaluateFunction(condition.ValueFunction, row)
+		if err != nil {
+			rightValue = condition.Value // Fall back to literal value
+		}
 	} else if condition.ValueColumn != "" {
 		// Column reference on right side
 		if condition.ValueTableName != "" {

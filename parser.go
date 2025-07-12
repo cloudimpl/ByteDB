@@ -653,191 +653,17 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 				}
 			}
 		}
-	} else if aExpr := node.GetAExpr(); aExpr != nil {
-		condition := WhereCondition{}
-		
-		// Check if this is a BETWEEN expression
-		if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_BETWEEN || aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_NOT_BETWEEN {
-			if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_BETWEEN {
-				condition.Operator = "BETWEEN"
-			} else {
-				condition.Operator = "NOT BETWEEN"
-			}
-			
-			// Get column name from left expression
-			if lexpr := aExpr.Lexpr; lexpr != nil {
-				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) >= 2 {
-						// Qualified column: table.column
-						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
-							condition.TableName = tableStr.Sval
-						}
-						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
-							condition.Column = columnStr.Sval
-						}
-					} else if len(columnRef.Fields) == 1 {
-						// Unqualified column
-						if str := columnRef.Fields[0].GetString_(); str != nil {
-							condition.Column = str.Sval
-						}
-					}
-				}
-			}
-			
-			// Get BETWEEN values from right expression (should be a list)
-			if rexpr := aExpr.Rexpr; rexpr != nil {
-				if aList := rexpr.GetList(); aList != nil && len(aList.Items) >= 2 {
-					// Parse first value (FROM)
-					if aConst := aList.Items[0].GetAConst(); aConst != nil {
-						condition.ValueFrom = p.parseConstantNode(aConst)
-					}
-					// Parse second value (TO) 
-					if aConst := aList.Items[1].GetAConst(); aConst != nil {
-						condition.ValueTo = p.parseConstantNode(aConst)
-					}
-				}
-			}
-		} else if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_IN {
-			condition.Operator = "IN"
-			
-			// Get column name from left expression
-			if lexpr := aExpr.Lexpr; lexpr != nil {
-				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) >= 2 {
-						// Qualified column: table.column
-						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
-							condition.TableName = tableStr.Sval
-						}
-						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
-							condition.Column = columnStr.Sval
-						}
-					} else if len(columnRef.Fields) == 1 {
-						// Unqualified column
-						if str := columnRef.Fields[0].GetString_(); str != nil {
-							condition.Column = str.Sval
-						}
-					}
-				}
-			}
-			
-			// Get list of values from right expression
-			if rexpr := aExpr.Rexpr; rexpr != nil {
-				if aList := rexpr.GetList(); aList != nil {
-					p.parseValueList(aList.Items, &condition)
-				} else if subLink := rexpr.GetSubLink(); subLink != nil {
-					// Handle IN subquery
-					if subquery := p.parseSubquery(subLink); subquery != nil {
-						condition.Subquery = subquery
-						condition.ValueList = nil // Clear value list for subquery
-					}
-				}
-			}
-		} else {
-			// Regular operators (=, !=, <, <=, >, >=, LIKE)
-			if len(aExpr.Name) > 0 {
-				if str := aExpr.Name[0].GetString_(); str != nil {
-					operator := str.Sval
-					// PostgreSQL represents LIKE as "~~" operator
-					if operator == "~~" {
-						condition.Operator = "LIKE"
-					} else {
-						condition.Operator = operator
-					}
-				}
-			}
-			
-			if lexpr := aExpr.Lexpr; lexpr != nil {
-				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) >= 2 {
-						// Qualified column: table.column
-						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
-							condition.TableName = tableStr.Sval
-						}
-						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
-							condition.Column = columnStr.Sval
-						}
-					} else if len(columnRef.Fields) == 1 {
-						// Unqualified column
-						if str := columnRef.Fields[0].GetString_(); str != nil {
-							condition.Column = str.Sval
-						}
-					}
-				}
-			}
-			
-			if rexpr := aExpr.Rexpr; rexpr != nil {
-				if aConst := rexpr.GetAConst(); aConst != nil {
-					if ival := aConst.GetIval(); ival != nil {
-						condition.Value = ival.Ival
-					} else if sval := aConst.GetSval(); sval != nil {
-						condition.Value = sval.Sval
-					} else if fval := aConst.GetFval(); fval != nil {
-						condition.Value = fval.Fval
-					} else if bval := aConst.GetBoolval(); bval != nil {
-						condition.Value = bval.Boolval
-					}
-				} else if subLink := rexpr.GetSubLink(); subLink != nil {
-					// Handle scalar subquery (e.g., col = (SELECT ...))
-					if subquery := p.parseSubquery(subLink); subquery != nil {
-						condition.Subquery = subquery
-					}
-				} else if columnRef := rexpr.GetColumnRef(); columnRef != nil {
-					// Handle column reference on right side (e.g., e2.department = e.department)
-					if len(columnRef.Fields) >= 2 {
-						// Qualified column: table.column
-						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
-							condition.ValueTableName = tableStr.Sval
-						}
-						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
-							condition.ValueColumn = columnStr.Sval
-						}
-					} else if len(columnRef.Fields) == 1 {
-						// Unqualified column
-						if str := columnRef.Fields[0].GetString_(); str != nil {
-							condition.ValueColumn = str.Sval
-						}
-					}
-				}
-			}
+	} else if node.GetAExpr() != nil {
+		// Use parseWhereCondition to handle all the logic including functions
+		condition := p.parseWhereCondition(node)
+		if condition != nil {
+			query.Where = append(query.Where, *condition)
 		}
-		
-		query.Where = append(query.Where, condition)
-	} else if subLink := node.GetSubLink(); subLink != nil {
-		// Handle EXISTS subqueries
-		condition := WhereCondition{}
-		if subLink.SubLinkType == pg_query.SubLinkType_EXISTS_SUBLINK {
-			condition.Operator = "EXISTS"
-			if subquery := p.parseSubquery(subLink); subquery != nil {
-				condition.Subquery = subquery
-			}
-		} else if subLink.SubLinkType == pg_query.SubLinkType_ANY_SUBLINK {
-			condition.Operator = "IN"
-			// For IN subqueries, we need to extract the column from the testexpr
-			if subLink.Testexpr != nil {
-				if columnRef := subLink.Testexpr.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) >= 2 {
-						// Qualified column: table.column
-						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
-							condition.TableName = tableStr.Sval
-						}
-						if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
-							condition.Column = columnStr.Sval
-						}
-					} else if len(columnRef.Fields) == 1 {
-						// Unqualified column
-						if str := columnRef.Fields[0].GetString_(); str != nil {
-							condition.Column = str.Sval
-						}
-					}
-				}
-			}
-			if subquery := p.parseSubquery(subLink); subquery != nil {
-				condition.Subquery = subquery
-			}
-		}
-		
-		if condition.Subquery != nil {
-			query.Where = append(query.Where, condition)
+	} else if node.GetSubLink() != nil {
+		// Use parseWhereCondition to handle sublinks
+		condition := p.parseWhereCondition(node)
+		if condition != nil {
+			query.Where = append(query.Where, *condition)
 		}
 	}
 }
@@ -1022,7 +848,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 			}
 		}
 		
-		// Get column name from left expression
+		// Get column name or function from left expression
 		if lexpr := aExpr.Lexpr; lexpr != nil {
 			if columnRef := lexpr.GetColumnRef(); columnRef != nil {
 				if len(columnRef.Fields) >= 2 {
