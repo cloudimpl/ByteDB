@@ -23,3 +23,5 @@ google.golang.org/protobuf v1.26.0-rc.1/go.mod h1:jlhhOSvTdKEhbULTjvd4ARK9grFBp0
 google.golang.org/protobuf v1.31.0/go.mod h1:HV8QOd/L58Z+nl8r43ehVNZIU/HEI6OcFqwMG9pJV4I=
 google.golang.org/protobuf v1.34.2 h1:6xV6lTsCfpGD21XK49h7MhtcApnLqkfYgPcdHftf6hg=
 google.golang.org/protobuf v1.34.2/go.mod h1:qYOHts0dSfpeUzUFpOMr/WGzszTmLH+DiWniOlNbLDw=
+howett.net/ranger v0.0.0-20171016084633-e2e137620847 h1:jHX+2Sv8rQNb1nG2G9pcQLdVoWXBLW5fcd2gnfHluCU=
+howett.net/ranger v0.0.0-20171016084633-e2e137620847/go.mod h1:ZWGIG4mR6Ck+CdmFqK2/jox5vO2OAS8Qpb33HB8z0og=

@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"reflect"
 	"regexp"
@@ -9,12 +11,15 @@ import (
 	"strings"
 
 	"github.com/parquet-go/parquet-go"
+	"howett.net/ranger"
 )
 
 type ParquetReader struct {
-	filePath string
-	schema   *parquet.Schema
-	reader   *parquet.File
+	filePath   string
+	schema     *parquet.Schema
+	reader     *parquet.File
+	httpReader io.ReaderAt
+	closer     io.Closer
 }
 
 type Row map[string]interface{}
@@ -54,6 +59,22 @@ type Department struct {
 }
 
 func NewParquetReader(filePath string) (*ParquetReader, error) {
+	// Check if filePath is a URL
+	if isHTTPURL(filePath) {
+		return newHTTPParquetReader(filePath)
+	}
+	return newLocalParquetReader(filePath)
+}
+
+func isHTTPURL(path string) bool {
+	u, err := url.Parse(path)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "http" || u.Scheme == "https"
+}
+
+func newLocalParquetReader(filePath string) (*ParquetReader, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
@@ -75,10 +96,48 @@ func NewParquetReader(filePath string) (*ParquetReader, error) {
 		filePath: filePath,
 		schema:   reader.Schema(),
 		reader:   reader,
+		closer:   file,
+	}, nil
+}
+
+func newHTTPParquetReader(urlStr string) (*ParquetReader, error) {
+	// Parse the URL
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse URL: %w", err)
+	}
+
+	// Create HTTP ranger for range requests
+	httpRanger := &ranger.HTTPRanger{URL: parsedURL}
+	reader, err := ranger.NewReader(httpRanger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP reader: %w", err)
+	}
+
+	// Get the content length
+	length, err := reader.Length()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get HTTP content length: %w", err)
+	}
+
+	// Open parquet file using the HTTP reader
+	parquetReader, err := parquet.OpenFile(reader, length)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open remote parquet file: %w", err)
+	}
+
+	return &ParquetReader{
+		filePath:   urlStr,
+		schema:     parquetReader.Schema(),
+		reader:     parquetReader,
+		httpReader: reader,
 	}, nil
 }
 
 func (pr *ParquetReader) Close() error {
+	if pr.closer != nil {
+		return pr.closer.Close()
+	}
 	return nil
 }
 

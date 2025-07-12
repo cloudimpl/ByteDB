@@ -15,6 +15,7 @@ import (
 type QueryEngine struct {
 	parser      *SQLParser
 	dataPath    string
+	httpTables  map[string]string // Map table names to HTTP URLs
 	openReaders map[string]*ParquetReader
 	readersMu   sync.RWMutex
 	cache       *QueryCache
@@ -44,6 +45,7 @@ func NewQueryEngine(dataPath string) *QueryEngine {
 	return &QueryEngine{
 		parser:      NewSQLParser(),
 		dataPath:    dataPath,
+		httpTables:  make(map[string]string),
 		openReaders: make(map[string]*ParquetReader),
 		cache:       NewQueryCache(cacheConfig),
 		planner:     planner,
@@ -957,7 +959,15 @@ func (qe *QueryEngine) getReader(tableName string) (*ParquetReader, error) {
 		return reader, nil
 	}
 
-	filePath := filepath.Join(qe.dataPath, tableName+".parquet")
+	var filePath string
+	
+	// Check if this table is registered as an HTTP table
+	if httpURL, exists := qe.httpTables[tableName]; exists {
+		filePath = httpURL
+	} else {
+		filePath = filepath.Join(qe.dataPath, tableName+".parquet")
+	}
+	
 	reader, err := NewParquetReader(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open table %s: %w", tableName, err)
@@ -1380,8 +1390,28 @@ func NewQueryEngineWithCache(dataPath string, cacheConfig CacheConfig) *QueryEng
 	return &QueryEngine{
 		parser:      NewSQLParser(),
 		dataPath:    dataPath,
+		httpTables:  make(map[string]string),
 		openReaders: make(map[string]*ParquetReader),
 		cache:       NewQueryCache(cacheConfig),
+	}
+}
+
+// RegisterHTTPTable registers an HTTP URL for a table name
+func (qe *QueryEngine) RegisterHTTPTable(tableName, url string) {
+	qe.readersMu.Lock()
+	defer qe.readersMu.Unlock()
+	qe.httpTables[tableName] = url
+}
+
+// UnregisterHTTPTable removes an HTTP table registration
+func (qe *QueryEngine) UnregisterHTTPTable(tableName string) {
+	qe.readersMu.Lock()
+	defer qe.readersMu.Unlock()
+	delete(qe.httpTables, tableName)
+	// Also close and remove any open reader for this table
+	if reader, exists := qe.openReaders[tableName]; exists {
+		reader.Close()
+		delete(qe.openReaders, tableName)
 	}
 }
 

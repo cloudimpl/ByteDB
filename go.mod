@@ -14,4 +14,5 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	golang.org/x/sys v0.21.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
+	howett.net/ranger v0.0.0-20171016084633-e2e137620847 // indirect
 )
