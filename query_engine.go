@@ -464,6 +464,9 @@ func (qe *QueryEngine) executeSelectWithCTEs(query *ParsedQuery, parentCTEs map[
 		rows = rows[:query.Limit]
 	}
 
+	// Evaluate function calls and compute column values
+	rows = qe.evaluateQueryColumns(rows, query.Columns)
+
 	columns := qe.getResultColumns(rows, query.Columns)
 
 	return &QueryResult{
@@ -1283,6 +1286,60 @@ func (qe *QueryEngine) compareRows(row1, row2 Row, orderBy []OrderByColumn, read
 	return false
 }
 
+// evaluateQueryColumns processes query columns and evaluates function calls
+func (qe *QueryEngine) evaluateQueryColumns(rows []Row, queryColumns []Column) []Row {
+	if len(queryColumns) == 0 {
+		return rows
+	}
+
+	result := make([]Row, len(rows))
+	
+	for i, row := range rows {
+		newRow := make(Row)
+		
+		for _, col := range queryColumns {
+			var value interface{}
+			var err error
+			
+			// Check if this is a function call
+			if col.Function != nil {
+				value, err = qe.functions.EvaluateFunction(col.Function, row)
+				if err != nil {
+					// If function evaluation fails, set to nil
+					value = nil
+				}
+			} else if col.Name == "*" {
+				// For wildcard, copy all original columns
+				for k, v := range row {
+					newRow[k] = v
+				}
+				continue
+			} else {
+				// Regular column - get value from row
+				if col.TableName != "" {
+					value = row[col.TableName+"."+col.Name]
+				} else {
+					value = row[col.Name]
+				}
+			}
+			
+			// Set the value with appropriate key
+			if col.Alias != "" {
+				newRow[col.Alias] = value
+			} else if col.Function != nil {
+				// For functions without alias, use function name + args as key
+				newRow[col.Function.Name] = value
+			} else {
+				newRow[col.Name] = value
+			}
+		}
+		
+		result[i] = newRow
+	}
+	
+	return result
+}
+
 func (qe *QueryEngine) getResultColumns(rows []Row, queryColumns []Column) []string {
 	// If there are query columns specified, use those to maintain order
 	if len(queryColumns) > 0 {
@@ -1408,6 +1465,7 @@ func NewQueryEngineWithCache(dataPath string, cacheConfig CacheConfig) *QueryEng
 		cache:       NewQueryCache(cacheConfig),
 		planner:     planner,
 		optimizer:   optimizer,
+		functions:   NewFunctionRegistry(),
 	}
 }
 

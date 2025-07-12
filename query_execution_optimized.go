@@ -99,8 +99,8 @@ func (qe *QueryEngine) executeScanNode(node *PlanNode, query *ParsedQuery) ([]Ro
 	}
 
 	// Apply pushed-down filter conditions at scan level (predicate pushdown)
-	if len(node.FilterConditions) > 0 {
-		rows = qe.applyOptimizedFilters(rows, node.FilterConditions, reader)
+	if len(node.Filter) > 0 {
+		rows = reader.FilterRowsWithEngine(rows, node.Filter, qe)
 	}
 
 	return rows, nil
@@ -140,19 +140,14 @@ func (qe *QueryEngine) executeProjectNode(node *PlanNode, query *ParsedQuery) ([
 		return nil, err
 	}
 
-	// Apply column selection
-	reader, err := qe.getReader(query.TableName)
-	if err != nil {
-		return nil, err
+	// For aggregate queries, the aggregate node already handled column projection
+	// Don't apply function evaluation as aggregates are already calculated
+	if query.IsAggregate {
+		return rows, nil
 	}
 
-	// Convert node columns to query columns format
-	var queryColumns []Column
-	for _, colName := range node.Columns {
-		queryColumns = append(queryColumns, Column{Name: colName})
-	}
-
-	projected := reader.SelectColumns(rows, queryColumns)
+	// Apply column selection and function evaluation using original query columns
+	projected := qe.evaluateQueryColumns(rows, query.Columns)
 	return projected, nil
 }
 

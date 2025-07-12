@@ -47,7 +47,7 @@ func (r *PredicatePushdownRule) applyToNode(node *PlanNode, changed *bool) {
 		for _, child := range node.Children {
 			if child.Type == PlanNodeScan {
 				// Push the filter conditions to the scan node
-				child.FilterConditions = append(child.FilterConditions, node.FilterConditions...)
+				child.Filter = append(child.Filter, node.Filter...)
 				// Remove this filter node by replacing it with its child
 				*node = *child
 				*changed = true
