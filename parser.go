@@ -374,8 +374,39 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 	} else if aExpr := node.GetAExpr(); aExpr != nil {
 		condition := WhereCondition{}
 		
-		// Check if this is an IN expression
-		if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_IN {
+		// Check if this is a BETWEEN expression
+		if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_BETWEEN || aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_NOT_BETWEEN {
+			if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_BETWEEN {
+				condition.Operator = "BETWEEN"
+			} else {
+				condition.Operator = "NOT BETWEEN"
+			}
+			
+			// Get column name from left expression
+			if lexpr := aExpr.Lexpr; lexpr != nil {
+				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
+					if len(columnRef.Fields) > 0 {
+						if str := columnRef.Fields[0].GetString_(); str != nil {
+							condition.Column = str.Sval
+						}
+					}
+				}
+			}
+			
+			// Get BETWEEN values from right expression (should be a list)
+			if rexpr := aExpr.Rexpr; rexpr != nil {
+				if aList := rexpr.GetList(); aList != nil && len(aList.Items) >= 2 {
+					// Parse first value (FROM)
+					if aConst := aList.Items[0].GetAConst(); aConst != nil {
+						condition.ValueFrom = p.parseConstantNode(aConst)
+					}
+					// Parse second value (TO) 
+					if aConst := aList.Items[1].GetAConst(); aConst != nil {
+						condition.ValueTo = p.parseConstantNode(aConst)
+					}
+				}
+			}
+		} else if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_IN {
 			condition.Operator = "IN"
 			
 			// Get column name from left expression
@@ -480,6 +511,43 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 // parseWhereCondition parses a single WHERE condition node
 func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 	condition := &WhereCondition{}
+	
+	// Handle nested BoolExpr (for parenthesized expressions)
+	if boolExpr := node.GetBoolExpr(); boolExpr != nil {
+		// Handle AND/OR expressions
+		if boolExpr.Boolop == pg_query.BoolExprType_AND_EXPR || boolExpr.Boolop == pg_query.BoolExprType_OR_EXPR {
+			if len(boolExpr.Args) >= 2 {
+				condition.IsComplex = true
+				
+				if boolExpr.Boolop == pg_query.BoolExprType_AND_EXPR {
+					condition.LogicalOp = "AND"
+				} else {
+					condition.LogicalOp = "OR"
+				}
+				
+				// Parse left and right conditions recursively
+				condition.Left = p.parseWhereCondition(boolExpr.Args[0])
+				condition.Right = p.parseWhereCondition(boolExpr.Args[1])
+				
+				// For more than 2 args, chain them with the same operator
+				if len(boolExpr.Args) > 2 {
+					for i := 2; i < len(boolExpr.Args); i++ {
+						// Create a copy of the current condition to avoid circular reference
+						leftCondition := *condition
+						condition = &WhereCondition{
+							IsComplex: true,
+							LogicalOp: condition.LogicalOp,
+							Left:      &leftCondition,
+							Right:     p.parseWhereCondition(boolExpr.Args[i]),
+						}
+					}
+				}
+				
+				return condition
+			}
+		}
+		return condition
+	}
 	
 	if aExpr := node.GetAExpr(); aExpr != nil {
 		// Handle BETWEEN expressions
