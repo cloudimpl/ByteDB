@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bytedb/core"
 )
 
 func TestFinalBandwidthDemo(t *testing.T) {
@@ -17,7 +19,7 @@ func TestFinalBandwidthDemo(t *testing.T) {
 		server := createBandwidthTrackingServer()
 		defer server.Close()
 
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		t.Logf("🌐 Test server started at: %s", server.URL)
@@ -42,7 +44,7 @@ func TestFinalBandwidthDemo(t *testing.T) {
 				name:        "Selective Query Demo",
 				query:       "SELECT name FROM large_employees LIMIT 100",
 				description: "Early termination with LIMIT optimization",
-				tableName:   "large_employees", 
+				tableName:   "large_employees",
 				fileName:    "large_employees.parquet",
 			},
 			{
@@ -106,7 +108,7 @@ func TestFinalBandwidthDemo(t *testing.T) {
 				if req.RangeHeader != "" {
 					rangeInfo = req.RangeHeader
 				}
-				t.Logf("      %d. %s %s (%s) - %s", 
+				t.Logf("      %d. %s %s (%s) - %s",
 					j+1, req.Method, extractFileName(req.URL), rangeInfo, formatBytes(req.BytesRead))
 			}
 			bandwidthTracker.mu.RUnlock()
@@ -117,7 +119,7 @@ func TestFinalBandwidthDemo(t *testing.T) {
 				t.Log("   💡 Efficiency Analysis:")
 				t.Logf("      Actual Bandwidth Used: %s", formatBytes(totalBytes))
 				t.Logf("      HTTP Range Requests Used: %d", rangeReqs)
-				
+
 				// Get file size for comparison
 				if fileSize := getFileSize("./data/" + scenario.fileName); fileSize > 0 {
 					t.Logf("      Full File Size: %s", formatBytes(fileSize))
@@ -190,7 +192,7 @@ func TestBandwidthOptimizationSummary(t *testing.T) {
 		t.Log("")
 		t.Log("🌐 Real-World Bandwidth Savings:")
 		t.Log("   ✅ Small files (1-10 MB): 30-60% bandwidth reduction")
-		t.Log("   ✅ Medium files (10-100 MB): 60-85% bandwidth reduction") 
+		t.Log("   ✅ Medium files (10-100 MB): 60-85% bandwidth reduction")
 		t.Log("   ✅ Large files (100+ MB): 80-95% bandwidth reduction")
 		t.Log("   ✅ Selective queries: Up to 99% bandwidth savings")
 		t.Log("")

@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ func (qe *QueryEngine) executeOptimized(query *ParsedQuery) *QueryResult {
 	if query.IsSubquery {
 		return nil
 	}
-	
+
 	// Create an execution plan
 	plan, err := qe.planner.CreatePlan(query, qe)
 	if err != nil {
@@ -52,7 +52,7 @@ func (qe *QueryEngine) executePlan(plan *QueryPlan, query *ParsedQuery) (*QueryR
 
 	// Build the result
 	columns := qe.getResultColumns(rows, query.Columns)
-	
+
 	return &QueryResult{
 		Columns: columns,
 		Rows:    rows,
@@ -261,7 +261,7 @@ func (qe *QueryEngine) applyOptimizedFilters(rows []Row, conditions []WhereCondi
 func (qe *QueryEngine) performHashJoin(leftRows, rightRows []Row, joinCond JoinCondition, joinType JoinType) []Row {
 	// Create a hash table from the smaller relation (typically the right side)
 	rightHash := make(map[interface{}][]Row)
-	
+
 	for _, rightRow := range rightRows {
 		if rightVal, exists := rightRow[joinCond.RightColumn]; exists {
 			rightHash[rightVal] = append(rightHash[rightVal], rightRow)

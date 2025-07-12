@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"crypto/md5"
@@ -33,11 +33,11 @@ type QueryCache struct {
 
 // CacheStats tracks cache performance metrics
 type CacheStats struct {
-	Hits        int64
-	Misses      int64
-	Evictions   int64
+	Hits         int64
+	Misses       int64
+	Evictions    int64
 	TotalQueries int64
-	CurrentSize int64 // Current memory usage in bytes
+	CurrentSize  int64 // Current memory usage in bytes
 }
 
 // NewQueryCache creates a new query cache with the given configuration
@@ -61,7 +61,7 @@ func (qc *QueryCache) Get(sql string) (*QueryResult, bool) {
 
 	qc.stats.TotalQueries++
 	key := qc.generateCacheKey(sql)
-	
+
 	entry, exists := qc.entries[key]
 	if !exists {
 		qc.stats.Misses++
@@ -78,7 +78,7 @@ func (qc *QueryCache) Get(sql string) (*QueryResult, bool) {
 	// Move to end for LRU (most recently used)
 	qc.moveToEnd(key)
 	qc.stats.Hits++
-	
+
 	return entry.Result, true
 }
 
@@ -147,7 +147,7 @@ func (qc *QueryCache) removeEntry(key string) {
 	if entry, exists := qc.entries[key]; exists {
 		qc.stats.CurrentSize -= entry.Size
 		delete(qc.entries, key)
-		
+
 		// Remove from order slice
 		for i, k := range qc.keyOrder {
 			if k == key {
@@ -161,10 +161,10 @@ func (qc *QueryCache) removeEntry(key string) {
 // evictIfNeeded removes old entries if memory limit is exceeded
 func (qc *QueryCache) evictIfNeeded() {
 	maxBytes := int64(qc.config.MaxMemoryMB) * 1024 * 1024
-	
+
 	// Remove expired entries first
 	qc.removeExpiredEntries()
-	
+
 	// Then remove LRU entries if still over limit
 	for qc.stats.CurrentSize > maxBytes && len(qc.keyOrder) > 0 {
 		// Remove the least recently used (first in order)
@@ -177,13 +177,13 @@ func (qc *QueryCache) evictIfNeeded() {
 // removeExpiredEntries removes all expired entries from the cache
 func (qc *QueryCache) removeExpiredEntries() {
 	var keysToRemove []string
-	
+
 	for key, entry := range qc.entries {
 		if qc.isExpired(entry) {
 			keysToRemove = append(keysToRemove, key)
 		}
 	}
-	
+
 	for _, key := range keysToRemove {
 		qc.removeEntry(key)
 	}
@@ -193,7 +193,7 @@ func (qc *QueryCache) removeExpiredEntries() {
 func (qc *QueryCache) Clear() {
 	qc.mutex.Lock()
 	defer qc.mutex.Unlock()
-	
+
 	qc.entries = make(map[string]*CacheEntry)
 	qc.keyOrder = make([]string, 0)
 	qc.stats.CurrentSize = 0
@@ -203,14 +203,14 @@ func (qc *QueryCache) Clear() {
 func (qc *QueryCache) GetStats() CacheStats {
 	qc.mutex.RLock()
 	defer qc.mutex.RUnlock()
-	
+
 	stats := qc.stats
 	if stats.TotalQueries > 0 {
 		// Add hit rate calculation
 		stats.Hits = qc.stats.Hits
 		stats.Misses = qc.stats.Misses
 	}
-	
+
 	return stats
 }
 
@@ -221,15 +221,15 @@ func (qc *QueryCache) estimateSize(result *QueryResult) int64 {
 	}
 
 	size := int64(0)
-	
+
 	// Base struct size
 	size += 100 // QueryResult struct overhead
-	
+
 	// Columns slice
 	for _, col := range result.Columns {
 		size += int64(len(col)) + 16 // string overhead
 	}
-	
+
 	// Rows data
 	for _, row := range result.Rows {
 		size += 50 // Row map overhead
@@ -238,13 +238,13 @@ func (qc *QueryCache) estimateSize(result *QueryResult) int64 {
 			size += qc.estimateValueSize(value)
 		}
 	}
-	
+
 	// Query string
 	size += int64(len(result.Query)) + 16
-	
+
 	// Error string
 	size += int64(len(result.Error)) + 16
-	
+
 	return size
 }
 
@@ -253,7 +253,7 @@ func (qc *QueryCache) estimateValueSize(value interface{}) int64 {
 	if value == nil {
 		return 8
 	}
-	
+
 	switch v := value.(type) {
 	case string:
 		return int64(len(v)) + 16

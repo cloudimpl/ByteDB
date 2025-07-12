@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -19,10 +19,10 @@ const (
 
 // FunctionCall represents a function call in SQL
 type FunctionCall struct {
-	Name      string
-	Args      []interface{} // Can be Column, literal values, or other FunctionCalls
-	Alias     string
-	Type      FunctionType
+	Name  string
+	Args  []interface{} // Can be Column, literal values, or other FunctionCalls
+	Alias string
+	Type  FunctionType
 }
 
 // FunctionRegistry manages all available SQL functions
@@ -32,12 +32,12 @@ type FunctionRegistry struct {
 
 // FunctionDefinition defines a SQL function
 type FunctionDefinition struct {
-	Name         string
-	Type         FunctionType
-	MinArgs      int
-	MaxArgs      int // -1 for unlimited
-	Evaluator    FunctionEvaluator
-	Description  string
+	Name        string
+	Type        FunctionType
+	MinArgs     int
+	MaxArgs     int // -1 for unlimited
+	Evaluator   FunctionEvaluator
+	Description string
 }
 
 // FunctionEvaluator is the function that evaluates the SQL function
@@ -48,13 +48,13 @@ func NewFunctionRegistry() *FunctionRegistry {
 	registry := &FunctionRegistry{
 		functions: make(map[string]FunctionDefinition),
 	}
-	
+
 	// Register string functions
 	registry.registerStringFunctions()
-	
+
 	// Register date functions
 	registry.registerDateFunctions()
-	
+
 	return registry
 }
 
@@ -78,7 +78,7 @@ func (fr *FunctionRegistry) registerStringFunctions() {
 			return result.String(), nil
 		},
 	}
-	
+
 	// SUBSTRING - extract substring
 	fr.functions["substring"] = FunctionDefinition{
 		Name:        "SUBSTRING",
@@ -90,41 +90,41 @@ func (fr *FunctionRegistry) registerStringFunctions() {
 			if args[0] == nil {
 				return nil, nil
 			}
-			
+
 			str := fmt.Sprintf("%v", args[0])
 			start, err := toInt(args[1])
 			if err != nil {
 				return nil, fmt.Errorf("SUBSTRING: invalid start position: %v", err)
 			}
-			
+
 			// SQL uses 1-based indexing
 			if start < 1 {
 				start = 1
 			}
 			start-- // Convert to 0-based for Go
-			
+
 			if start >= len(str) {
 				return "", nil
 			}
-			
+
 			if len(args) == 3 {
 				length, err := toInt(args[2])
 				if err != nil {
 					return nil, fmt.Errorf("SUBSTRING: invalid length: %v", err)
 				}
-				
+
 				end := start + length
 				if end > len(str) {
 					end = len(str)
 				}
-				
+
 				return str[start:end], nil
 			}
-			
+
 			return str[start:], nil
 		},
 	}
-	
+
 	// LENGTH - get string length
 	fr.functions["length"] = FunctionDefinition{
 		Name:        "LENGTH",
@@ -140,7 +140,7 @@ func (fr *FunctionRegistry) registerStringFunctions() {
 			return len(str), nil
 		},
 	}
-	
+
 	// UPPER - convert to uppercase
 	fr.functions["upper"] = FunctionDefinition{
 		Name:        "UPPER",
@@ -156,7 +156,7 @@ func (fr *FunctionRegistry) registerStringFunctions() {
 			return strings.ToUpper(str), nil
 		},
 	}
-	
+
 	// LOWER - convert to lowercase
 	fr.functions["lower"] = FunctionDefinition{
 		Name:        "LOWER",
@@ -172,7 +172,7 @@ func (fr *FunctionRegistry) registerStringFunctions() {
 			return strings.ToLower(str), nil
 		},
 	}
-	
+
 	// TRIM - remove leading and trailing whitespace
 	fr.functions["trim"] = FunctionDefinition{
 		Name:        "TRIM",
@@ -188,7 +188,7 @@ func (fr *FunctionRegistry) registerStringFunctions() {
 			return strings.TrimSpace(str), nil
 		},
 	}
-	
+
 	// LTRIM - remove leading whitespace
 	fr.functions["ltrim"] = FunctionDefinition{
 		Name:        "LTRIM",
@@ -204,7 +204,7 @@ func (fr *FunctionRegistry) registerStringFunctions() {
 			return strings.TrimLeftFunc(str, unicode.IsSpace), nil
 		},
 	}
-	
+
 	// RTRIM - remove trailing whitespace
 	fr.functions["rtrim"] = FunctionDefinition{
 		Name:        "RTRIM",
@@ -235,7 +235,7 @@ func (fr *FunctionRegistry) registerDateFunctions() {
 			return time.Now().Format("2006-01-02 15:04:05"), nil
 		},
 	}
-	
+
 	// CURRENT_DATE - current date
 	fr.functions["current_date"] = FunctionDefinition{
 		Name:        "CURRENT_DATE",
@@ -247,7 +247,7 @@ func (fr *FunctionRegistry) registerDateFunctions() {
 			return time.Now().Format("2006-01-02"), nil
 		},
 	}
-	
+
 	// DATE_PART - extract part of date
 	fr.functions["date_part"] = FunctionDefinition{
 		Name:        "DATE_PART",
@@ -259,16 +259,16 @@ func (fr *FunctionRegistry) registerDateFunctions() {
 			if args[1] == nil {
 				return nil, nil
 			}
-			
+
 			part := strings.ToLower(fmt.Sprintf("%v", args[0]))
 			dateStr := fmt.Sprintf("%v", args[1])
-			
+
 			// Parse the date
 			date, err := parseDate(dateStr)
 			if err != nil {
 				return nil, fmt.Errorf("DATE_PART: invalid date: %v", err)
 			}
-			
+
 			switch part {
 			case "year":
 				return date.Year(), nil
@@ -293,10 +293,10 @@ func (fr *FunctionRegistry) registerDateFunctions() {
 			}
 		},
 	}
-	
+
 	// EXTRACT - SQL standard for date_part
 	fr.functions["extract"] = fr.functions["date_part"]
-	
+
 	// DATE_TRUNC - truncate date to specified precision
 	fr.functions["date_trunc"] = FunctionDefinition{
 		Name:        "DATE_TRUNC",
@@ -308,16 +308,16 @@ func (fr *FunctionRegistry) registerDateFunctions() {
 			if args[1] == nil {
 				return nil, nil
 			}
-			
+
 			precision := strings.ToLower(fmt.Sprintf("%v", args[0]))
 			dateStr := fmt.Sprintf("%v", args[1])
-			
+
 			// Parse the date
 			date, err := parseDate(dateStr)
 			if err != nil {
 				return nil, fmt.Errorf("DATE_TRUNC: invalid date: %v", err)
 			}
-			
+
 			switch precision {
 			case "year":
 				return time.Date(date.Year(), 1, 1, 0, 0, 0, 0, date.Location()).Format("2006-01-02 15:04:05"), nil
@@ -348,7 +348,7 @@ func (fr *FunctionRegistry) EvaluateFunction(call *FunctionCall, row Row) (inter
 	if !exists {
 		return nil, fmt.Errorf("unknown function: %s", call.Name)
 	}
-	
+
 	// Evaluate arguments
 	evaluatedArgs := make([]interface{}, len(call.Args))
 	for i, arg := range call.Args {
@@ -374,7 +374,7 @@ func (fr *FunctionRegistry) EvaluateFunction(call *FunctionCall, row Row) (inter
 			evaluatedArgs[i] = v
 		}
 	}
-	
+
 	// Check argument count
 	if len(evaluatedArgs) < fn.MinArgs {
 		return nil, fmt.Errorf("%s requires at least %d arguments, got %d", fn.Name, fn.MinArgs, len(evaluatedArgs))
@@ -382,7 +382,7 @@ func (fr *FunctionRegistry) EvaluateFunction(call *FunctionCall, row Row) (inter
 	if fn.MaxArgs != -1 && len(evaluatedArgs) > fn.MaxArgs {
 		return nil, fmt.Errorf("%s accepts at most %d arguments, got %d", fn.Name, fn.MaxArgs, len(evaluatedArgs))
 	}
-	
+
 	// Evaluate the function
 	return fn.Evaluator(evaluatedArgs)
 }
@@ -416,12 +416,12 @@ func parseDate(dateStr string) (time.Time, error) {
 		time.RFC3339,
 		time.RFC3339Nano,
 	}
-	
+
 	for _, format := range formats {
 		if date, err := time.Parse(format, dateStr); err == nil {
 			return date, nil
 		}
 	}
-	
+
 	return time.Time{}, fmt.Errorf("cannot parse date: %s", dateStr)
 }

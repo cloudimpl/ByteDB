@@ -3,7 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
-	
+
+	"bytedb/core"
 	"github.com/parquet-go/parquet-go"
 )
 
@@ -37,14 +38,14 @@ func CleanupTestData() error {
 }
 
 // NewTestQueryEngine creates a query engine pointed at test data
-func NewTestQueryEngine() *QueryEngine {
+func NewTestQueryEngine() *core.QueryEngine {
 	// Ensure test data exists
 	if _, err := os.Stat(TestDataDir); os.IsNotExist(err) {
 		if err := SetupTestData(); err != nil {
 			panic("Failed to setup test data: " + err.Error())
 		}
 	}
-	return NewQueryEngine(TestDataDir)
+	return core.NewQueryEngine(TestDataDir)
 }
 
 func generateTestEmployees() error {
@@ -54,7 +55,7 @@ func generateTestEmployees() error {
 	}
 	defer file.Close()
 
-	writer := parquet.NewWriter(file, parquet.SchemaOf(Employee{}))
+	writer := parquet.NewWriter(file, parquet.SchemaOf(core.Employee{}))
 	defer writer.Close()
 
 	for _, emp := range TestEmployees {
@@ -72,7 +73,7 @@ func generateTestProducts() error {
 	}
 	defer file.Close()
 
-	writer := parquet.NewWriter(file, parquet.SchemaOf(Product{}))
+	writer := parquet.NewWriter(file, parquet.SchemaOf(core.Product{}))
 	defer writer.Close()
 
 	for _, prod := range TestProducts {
@@ -90,7 +91,7 @@ func generateTestDepartments() error {
 	}
 	defer file.Close()
 
-	writer := parquet.NewWriter(file, parquet.SchemaOf(Department{}))
+	writer := parquet.NewWriter(file, parquet.SchemaOf(core.Department{}))
 	defer writer.Close()
 
 	for _, dept := range TestDepartments {

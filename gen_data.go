@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 package main
@@ -9,11 +10,11 @@ import (
 	"os"
 	"time"
 
+	"bytedb/core"
 	"github.com/parquet-go/parquet-go"
 )
 
 // Structs are defined in parquet_reader.go
-
 
 func main() {
 	generateSampleData()
@@ -31,7 +32,7 @@ func generateSampleData() {
 }
 
 func generateEmployees() {
-	employees := []Employee{
+	employees := []core.Employee{
 		{1, "John Doe", "Engineering", 75000.0, 30, "2020-01-15"},
 		{2, "Jane Smith", "Marketing", 65000.0, 28, "2019-03-22"},
 		{3, "Mike Johnson", "Engineering", 80000.0, 35, "2018-07-10"},
@@ -50,7 +51,7 @@ func generateEmployees() {
 	}
 	defer file.Close()
 
-	writer := parquet.NewWriter(file, parquet.SchemaOf(Employee{}))
+	writer := parquet.NewWriter(file, parquet.SchemaOf(core.Employee{}))
 	defer writer.Close()
 
 	for _, emp := range employees {
@@ -61,7 +62,7 @@ func generateEmployees() {
 }
 
 func generateProducts() {
-	products := []Product{
+	products := []core.Product{
 		{1, "Laptop", "Electronics", 999.99, true, "High-performance laptop"},
 		{2, "Mouse", "Electronics", 29.99, true, "Wireless optical mouse"},
 		{3, "Keyboard", "Electronics", 79.99, true, "Mechanical keyboard"},
@@ -80,7 +81,7 @@ func generateProducts() {
 	}
 	defer file.Close()
 
-	writer := parquet.NewWriter(file, parquet.SchemaOf(Product{}))
+	writer := parquet.NewWriter(file, parquet.SchemaOf(core.Product{}))
 	defer writer.Close()
 
 	for _, prod := range products {
@@ -91,7 +92,7 @@ func generateProducts() {
 }
 
 func generateDepartments() {
-	departments := []Department{
+	departments := []core.Department{
 		{"Engineering", "Lisa Davis", 1000000.0, "Building A", 4},
 		{"Marketing", "Jane Smith", 500000.0, "Building B", 2},
 		{"HR", "Sarah Wilson", 300000.0, "Building C", 1},
@@ -106,7 +107,7 @@ func generateDepartments() {
 	}
 	defer file.Close()
 
-	writer := parquet.NewWriter(file, parquet.SchemaOf(Department{}))
+	writer := parquet.NewWriter(file, parquet.SchemaOf(core.Department{}))
 	defer writer.Close()
 
 	for _, dept := range departments {
@@ -119,4 +120,3 @@ func generateDepartments() {
 func init() {
 	rand.Seed(time.Now().UnixNano())
 }
-

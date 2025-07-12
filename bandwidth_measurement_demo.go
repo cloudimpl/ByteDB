@@ -9,16 +9,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"bytedb/core"
 )
 
 // BandwidthTracker tracks HTTP request statistics
 type BandwidthTracker struct {
-	TotalRequests     int64
-	TotalBytesRead    int64
-	RangeRequests     int64
-	FullFileRequests  int64
-	RequestDetails    []RequestDetail
-	mu                sync.RWMutex
+	TotalRequests    int64
+	TotalBytesRead   int64
+	RangeRequests    int64
+	FullFileRequests int64
+	RequestDetails   []RequestDetail
+	mu               sync.RWMutex
 }
 
 type RequestDetail struct {
@@ -33,7 +35,7 @@ type RequestDetail struct {
 func (bt *BandwidthTracker) Reset() {
 	bt.mu.Lock()
 	defer bt.mu.Unlock()
-	
+
 	atomic.StoreInt64(&bt.TotalRequests, 0)
 	atomic.StoreInt64(&bt.TotalBytesRead, 0)
 	atomic.StoreInt64(&bt.RangeRequests, 0)
@@ -45,13 +47,13 @@ func (bt *BandwidthTracker) Reset() {
 func (bt *BandwidthTracker) AddRequest(method, url, rangeHeader string, bytesRead int64) {
 	atomic.AddInt64(&bt.TotalRequests, 1)
 	atomic.AddInt64(&bt.TotalBytesRead, bytesRead)
-	
+
 	if rangeHeader != "" {
 		atomic.AddInt64(&bt.RangeRequests, 1)
 	} else {
 		atomic.AddInt64(&bt.FullFileRequests, 1)
 	}
-	
+
 	bt.mu.Lock()
 	bt.RequestDetails = append(bt.RequestDetails, RequestDetail{
 		Method:      method,
@@ -66,9 +68,9 @@ func (bt *BandwidthTracker) AddRequest(method, url, rangeHeader string, bytesRea
 // GetStats returns current statistics
 func (bt *BandwidthTracker) GetStats() (int64, int64, int64, int64) {
 	return atomic.LoadInt64(&bt.TotalRequests),
-		   atomic.LoadInt64(&bt.TotalBytesRead),
-		   atomic.LoadInt64(&bt.RangeRequests),
-		   atomic.LoadInt64(&bt.FullFileRequests)
+		atomic.LoadInt64(&bt.TotalBytesRead),
+		atomic.LoadInt64(&bt.RangeRequests),
+		atomic.LoadInt64(&bt.FullFileRequests)
 }
 
 // Global bandwidth tracker
@@ -84,7 +86,7 @@ func BandwidthMeasurementDemo() {
 	server := createBandwidthTrackingServer()
 	defer server.Close()
 
-	engine := NewQueryEngine("./data")
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	fmt.Printf("🌐 Test server started at: %s\n", server.URL)
@@ -109,7 +111,7 @@ func BandwidthMeasurementDemo() {
 			name:           "Selective Filtering",
 			query:          "SELECT * FROM employees WHERE salary > 80000 LIMIT 3",
 			description:    "Early filtering with LIMIT optimization",
-			expectedSaving: "70-90% bandwidth reduction", 
+			expectedSaving: "70-90% bandwidth reduction",
 		},
 		{
 			name:           "Function with Column Pruning",
@@ -168,7 +170,7 @@ func BandwidthMeasurementDemo() {
 			if req.RangeHeader != "" {
 				rangeInfo = req.RangeHeader
 			}
-			fmt.Printf("   %d. %s %s (%s) - %s\n", 
+			fmt.Printf("   %d. %s %s (%s) - %s\n",
 				j+1, req.Method, extractFileName(req.URL), rangeInfo, formatBytes(req.BytesRead))
 		}
 		bandwidthTracker.mu.RUnlock()
@@ -178,7 +180,7 @@ func BandwidthMeasurementDemo() {
 			fmt.Printf("\n💡 Efficiency Analysis:\n")
 			fmt.Printf("   Expected Saving: %s\n", scenario.expectedSaving)
 			fmt.Printf("   Actual Bandwidth Used: %s\n", formatBytes(totalBytes))
-			
+
 			// Get file size for comparison
 			if fileSize := getFileSize("./data/employees.parquet"); fileSize > 0 {
 				savingPct := (1.0 - float64(totalBytes)/float64(fileSize)) * 100
@@ -205,7 +207,7 @@ func BandwidthComparisonDemo() {
 	server := createBandwidthTrackingServer()
 	defer server.Close()
 
-	engine := NewQueryEngine("./data")
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	httpURL := server.URL + "/employees.parquet"
@@ -223,7 +225,7 @@ func BandwidthComparisonDemo() {
 	// Get actual optimized usage
 	bandwidthTracker.Reset()
 	result, err := engine.Execute(testQuery)
-	
+
 	if err != nil || result.Error != "" {
 		fmt.Printf("❌ Query failed: %v %s\n", err, result.Error)
 		return
@@ -235,11 +237,11 @@ func BandwidthComparisonDemo() {
 	fmt.Println("📈 Comparison Results:")
 	fmt.Printf("   Full File Download: %s\n", formatBytes(fullFileSize))
 	fmt.Printf("   Optimized Download: %s\n", formatBytes(optimizedBytes))
-	
+
 	if fullFileSize > 0 && optimizedBytes > 0 {
 		savingBytes := fullFileSize - optimizedBytes
 		savingPct := float64(savingBytes) / float64(fullFileSize) * 100
-		
+
 		fmt.Printf("   Bandwidth Saved: %s (%.1f%%)\n", formatBytes(savingBytes), savingPct)
 		fmt.Printf("   Efficiency Ratio: %.1fx less data transfer\n", float64(fullFileSize)/float64(optimizedBytes))
 	}
@@ -261,22 +263,22 @@ func DetailedBandwidthAnalysis() {
 	server := createBandwidthTrackingServer()
 	defer server.Close()
 
-	engine := NewQueryEngine("./data")
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	httpURL := server.URL + "/employees.parquet"
 	engine.RegisterHTTPTable("employees", httpURL)
 
 	queries := []struct {
-		query       string
-		analysis    string
+		query    string
+		analysis string
 	}{
 		{
 			"SELECT * FROM employees",
 			"Full table scan - shows baseline bandwidth usage",
 		},
 		{
-			"SELECT name FROM employees", 
+			"SELECT name FROM employees",
 			"Single column - demonstrates column pruning savings",
 		},
 		{
@@ -315,15 +317,15 @@ func DetailedBandwidthAnalysis() {
 		}
 
 		_, bytesUsed, rangeReqs, _ := bandwidthTracker.GetStats()
-		
+
 		fmt.Printf("   ✅ Success: %d rows, %d cols in %v\n", result.Count, len(result.Columns), duration)
 		fmt.Printf("   📊 Bandwidth: %s (%d range requests)\n", formatBytes(bytesUsed), rangeReqs)
-		
+
 		if totalFileSize > 0 {
 			efficiency := (1.0 - float64(bytesUsed)/float64(totalFileSize)) * 100
 			fmt.Printf("   🎯 Efficiency: %.1f%% bandwidth saving\n", efficiency)
 		}
-		
+
 		fmt.Println()
 	}
 
@@ -340,7 +342,7 @@ func createBandwidthTrackingServer() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Map URL to local file
 		filePath := "./data" + r.URL.Path
-		
+
 		// Check if file exists
 		if _, err := os.Stat(filePath); os.IsNotExist(err) {
 			http.NotFound(w, r)
@@ -368,13 +370,13 @@ func createBandwidthTrackingServer() *httptest.Server {
 
 		// Track the request
 		rangeHeader := r.Header.Get("Range")
-		
+
 		// Use a custom ResponseWriter to track bytes written
 		tracker := &bytesTracker{ResponseWriter: w}
-		
+
 		// Serve with range support
 		http.ServeContent(tracker, r, filePath, stat.ModTime(), file)
-		
+
 		// Record bandwidth usage
 		bandwidthTracker.AddRequest(r.Method, r.URL.String(), rangeHeader, tracker.bytesWritten)
 	}))

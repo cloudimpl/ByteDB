@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	"bytedb/core"
 	"github.com/parquet-go/parquet-go"
 )
 
@@ -30,7 +31,7 @@ func generateEmployees() {
 	}
 	defer file.Close()
 
-	writer := parquet.NewWriter(file, parquet.SchemaOf(Employee{}))
+	writer := parquet.NewWriter(file, parquet.SchemaOf(core.Employee{}))
 	defer writer.Close()
 
 	for _, emp := range employees {
@@ -50,7 +51,7 @@ func generateProducts() {
 	}
 	defer file.Close()
 
-	writer := parquet.NewWriter(file, parquet.SchemaOf(Product{}))
+	writer := parquet.NewWriter(file, parquet.SchemaOf(core.Product{}))
 	defer writer.Close()
 
 	for _, prod := range products {
@@ -70,7 +71,7 @@ func generateDepartments() {
 	}
 	defer file.Close()
 
-	writer := parquet.NewWriter(file, parquet.SchemaOf(Department{}))
+	writer := parquet.NewWriter(file, parquet.SchemaOf(core.Department{}))
 	defer writer.Close()
 
 	for _, dept := range departments {

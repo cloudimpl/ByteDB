@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
-	"testing"
 	"strings"
+	"testing"
+
+	"bytedb/core"
 )
 
 // TestBasicWindowFunctions tests core window function functionality
@@ -14,7 +16,7 @@ func TestBasicWindowFunctions(t *testing.T) {
 	t.Run("ROW_NUMBER without PARTITION BY", func(t *testing.T) {
 		query := "SELECT name, salary, ROW_NUMBER() OVER (ORDER BY salary DESC) as row_num FROM employees"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
@@ -24,7 +26,7 @@ func TestBasicWindowFunctions(t *testing.T) {
 		if len(result.Rows) != 10 {
 			t.Fatalf("Expected 10 rows, got %d", len(result.Rows))
 		}
-		
+
 		// Check that Lisa Davis (highest salary) gets row_num = 1
 		found := false
 		for _, row := range result.Rows {
@@ -43,26 +45,26 @@ func TestBasicWindowFunctions(t *testing.T) {
 	t.Run("ROW_NUMBER with PARTITION BY", func(t *testing.T) {
 		query := "SELECT name, department, salary, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) as dept_rank FROM employees"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Verify each department has someone with rank 1
 		deptRanks := make(map[string]map[int]int) // dept -> rank -> count
 		for _, row := range result.Rows {
 			dept := row["department"].(string)
 			rank := row["dept_rank"].(int)
-			
+
 			if deptRanks[dept] == nil {
 				deptRanks[dept] = make(map[int]int)
 			}
 			deptRanks[dept][rank]++
 		}
-		
+
 		// Each department should have exactly one person with rank 1
 		for dept, ranks := range deptRanks {
 			if ranks[1] != 1 {
@@ -74,14 +76,14 @@ func TestBasicWindowFunctions(t *testing.T) {
 	t.Run("RANK function", func(t *testing.T) {
 		query := "SELECT name, department, salary, RANK() OVER (PARTITION BY department ORDER BY salary DESC) as rank_num FROM employees"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Verify Lisa Davis has rank 1 in Engineering
 		found := false
 		for _, row := range result.Rows {
@@ -100,15 +102,15 @@ func TestBasicWindowFunctions(t *testing.T) {
 	t.Run("DENSE_RANK function", func(t *testing.T) {
 		query := "SELECT name, department, salary, DENSE_RANK() OVER (PARTITION BY department ORDER BY salary DESC) as dense_rank FROM employees"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
-		// Verify Lisa Davis has dense_rank 1 in Engineering  
+
+		// Verify Lisa Davis has dense_rank 1 in Engineering
 		found := false
 		for _, row := range result.Rows {
 			if name, exists := row["name"]; exists && name == "Lisa Davis" {
@@ -126,19 +128,19 @@ func TestBasicWindowFunctions(t *testing.T) {
 	t.Run("LAG function", func(t *testing.T) {
 		query := "SELECT name, department, salary, LAG(salary) OVER (PARTITION BY department ORDER BY salary DESC) as prev_salary FROM employees WHERE department = 'Engineering'"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Find Lisa Davis (highest salary) - should have prev_salary = nil
 		// Find second highest - should have prev_salary = Lisa's salary
 		lisaSalary := 0.0
 		secondHighestPrevSalary := 0.0
-		
+
 		for _, row := range result.Rows {
 			if name := row["name"].(string); name == "Lisa Davis" {
 				lisaSalary = row["salary"].(float64)
@@ -151,7 +153,7 @@ func TestBasicWindowFunctions(t *testing.T) {
 				}
 			}
 		}
-		
+
 		if lisaSalary > 0 && secondHighestPrevSalary > 0 && secondHighestPrevSalary != lisaSalary {
 			t.Errorf("Second highest employee should have prev_salary=%.0f (Lisa's salary), got %.0f", lisaSalary, secondHighestPrevSalary)
 		}
@@ -160,31 +162,31 @@ func TestBasicWindowFunctions(t *testing.T) {
 	t.Run("LEAD function", func(t *testing.T) {
 		query := "SELECT name, department, salary, LEAD(salary) OVER (PARTITION BY department ORDER BY salary DESC) as next_salary FROM employees WHERE department = 'Engineering'"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Find Lisa Davis (highest salary) - should have next_salary = second highest
 		var lisaNextSalary interface{}
 		var secondHighestSalary float64
-		
+
 		// First pass: find second highest salary
 		salaries := make([]float64, 0)
 		for _, row := range result.Rows {
 			salaries = append(salaries, row["salary"].(float64))
 		}
-		
+
 		// Sort to find second highest
 		for _, salary := range salaries {
 			if salary < 85000 && salary > secondHighestSalary { // Lisa has 85000
 				secondHighestSalary = salary
 			}
 		}
-		
+
 		// Second pass: check Lisa's next_salary
 		for _, row := range result.Rows {
 			if name := row["name"].(string); name == "Lisa Davis" {
@@ -192,7 +194,7 @@ func TestBasicWindowFunctions(t *testing.T) {
 				break
 			}
 		}
-		
+
 		if lisaNextSalary == nil {
 			t.Errorf("Lisa Davis should have next_salary, got nil")
 		} else if nextSal := lisaNextSalary.(float64); nextSal != secondHighestSalary {
@@ -213,23 +215,23 @@ func TestAdvancedWindowFunctions(t *testing.T) {
 		          LAG(name) OVER (PARTITION BY department ORDER BY salary DESC) as prev_employee
 		          FROM employees 
 		          WHERE department IN ('Engineering', 'Marketing')`
-		
+
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Verify we have results for both departments
 		depts := make(map[string]int)
 		for _, row := range result.Rows {
 			dept := row["department"].(string)
 			depts[dept]++
 		}
-		
+
 		if depts["Engineering"] == 0 || depts["Marketing"] == 0 {
 			t.Errorf("Should have results for both Engineering and Marketing departments")
 		}
@@ -238,14 +240,14 @@ func TestAdvancedWindowFunctions(t *testing.T) {
 	t.Run("Window function with different ORDER BY", func(t *testing.T) {
 		query := "SELECT name, department, salary, ROW_NUMBER() OVER (PARTITION BY department ORDER BY name ASC) as name_rank FROM employees"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Check that ranking by name works differently than by salary
 		if len(result.Rows) == 0 {
 			t.Errorf("Should have results for name-based ranking")
@@ -255,19 +257,19 @@ func TestAdvancedWindowFunctions(t *testing.T) {
 	t.Run("LAG with offset and default", func(t *testing.T) {
 		query := "SELECT name, salary, LAG(salary, 1, 0) OVER (ORDER BY salary DESC) as prev_salary FROM employees"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Check that LAG function runs without errors and produces some results
 		if len(result.Rows) == 0 {
 			t.Errorf("LAG query should return rows")
 		}
-		
+
 		// Check that the prev_salary column exists
 		hasLagColumn := false
 		for _, row := range result.Rows {
@@ -276,7 +278,7 @@ func TestAdvancedWindowFunctions(t *testing.T) {
 				break
 			}
 		}
-		
+
 		if !hasLagColumn {
 			t.Errorf("LAG query should add prev_salary column")
 		}
@@ -285,21 +287,21 @@ func TestAdvancedWindowFunctions(t *testing.T) {
 	t.Run("Global window function (no PARTITION BY)", func(t *testing.T) {
 		query := "SELECT name, salary, ROW_NUMBER() OVER (ORDER BY salary DESC) as global_rank FROM employees"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Should have 10 employees with ranks 1-10
 		ranks := make(map[int]bool)
 		for _, row := range result.Rows {
 			rank := row["global_rank"].(int)
 			ranks[rank] = true
 		}
-		
+
 		for i := 1; i <= 10; i++ {
 			if !ranks[i] {
 				t.Errorf("Missing global rank %d", i)
@@ -317,14 +319,14 @@ func TestWindowFunctionEdgeCases(t *testing.T) {
 		// Create a query that might result in empty partitions
 		query := "SELECT name, department, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary) as rank FROM employees WHERE department = 'NonExistent'"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Should return 0 rows but not error
 		if len(result.Rows) != 0 {
 			t.Errorf("Expected 0 rows for non-existent department, got %d", len(result.Rows))
@@ -334,14 +336,14 @@ func TestWindowFunctionEdgeCases(t *testing.T) {
 	t.Run("LAG/LEAD with column reference", func(t *testing.T) {
 		query := "SELECT name, department, salary, LAG(name) OVER (PARTITION BY department ORDER BY salary DESC) as prev_name FROM employees WHERE department = 'Engineering'"
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Check that LAG returns string values (names) correctly
 		hasStringResult := false
 		for _, row := range result.Rows {
@@ -352,7 +354,7 @@ func TestWindowFunctionEdgeCases(t *testing.T) {
 				}
 			}
 		}
-		
+
 		if !hasStringResult {
 			t.Errorf("LAG should return string values for name column")
 		}
@@ -361,7 +363,7 @@ func TestWindowFunctionEdgeCases(t *testing.T) {
 	t.Run("Window function performance with larger dataset", func(t *testing.T) {
 		// This is more of a smoke test for performance
 		query := "SELECT name, department, salary, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) as rank FROM employees"
-		
+
 		// Run the query multiple times to check for performance issues
 		for i := 0; i < 5; i++ {
 			result, err := engine.Execute(query)
@@ -384,14 +386,14 @@ func TestWindowFunctionDataTypes(t *testing.T) {
 	defer engine.Close()
 
 	tests := []struct {
-		name     string
-		query    string
-		checkFunc func(*testing.T, *QueryResult)
+		name      string
+		query     string
+		checkFunc func(*testing.T, *core.QueryResult)
 	}{
 		{
 			name:  "LAG with numeric values",
 			query: "SELECT name, salary, LAG(salary) OVER (ORDER BY salary) as prev_salary FROM employees",
-			checkFunc: func(t *testing.T, result *QueryResult) {
+			checkFunc: func(t *testing.T, result *core.QueryResult) {
 				for _, row := range result.Rows {
 					if prevSal := row["prev_salary"]; prevSal != nil {
 						if _, ok := prevSal.(float64); !ok {
@@ -404,7 +406,7 @@ func TestWindowFunctionDataTypes(t *testing.T) {
 		{
 			name:  "LAG with string values",
 			query: "SELECT name, department, LAG(department) OVER (ORDER BY name) as prev_dept FROM employees",
-			checkFunc: func(t *testing.T, result *QueryResult) {
+			checkFunc: func(t *testing.T, result *core.QueryResult) {
 				for _, row := range result.Rows {
 					if prevDept := row["prev_dept"]; prevDept != nil {
 						if _, ok := prevDept.(string); !ok {
@@ -417,7 +419,7 @@ func TestWindowFunctionDataTypes(t *testing.T) {
 		{
 			name:  "RANK with different data types in ORDER BY",
 			query: "SELECT name, age, RANK() OVER (ORDER BY age DESC) as age_rank FROM employees",
-			checkFunc: func(t *testing.T, result *QueryResult) {
+			checkFunc: func(t *testing.T, result *core.QueryResult) {
 				ranks := make([]int, 0)
 				for _, row := range result.Rows {
 					if rank := row["age_rank"]; rank != nil {
@@ -428,7 +430,7 @@ func TestWindowFunctionDataTypes(t *testing.T) {
 						}
 					}
 				}
-				
+
 				// Check that Mike Johnson (age 35) has rank 1 (highest age)
 				mikeRank := 0
 				for _, row := range result.Rows {
@@ -455,7 +457,7 @@ func TestWindowFunctionDataTypes(t *testing.T) {
 			if result.Error != "" {
 				t.Fatalf("Query error: %s", result.Error)
 			}
-			
+
 			tt.checkFunc(t, result)
 		})
 	}
@@ -500,17 +502,17 @@ func BenchmarkWindowFunctions(b *testing.B) {
 	}
 }
 
-// Helper function to convert QueryResult to string for debugging
-func debugQueryResult(result *QueryResult) string {
+// Helper function to convert core.QueryResult to string for debugging
+func debugQueryResult(result *core.QueryResult) string {
 	var parts []string
-	
+
 	// Add column headers
 	parts = append(parts, fmt.Sprintf("Columns: %v", result.Columns))
-	
+
 	// Add row data
 	for i, row := range result.Rows {
 		parts = append(parts, fmt.Sprintf("Row %d: %v", i, row))
 	}
-	
+
 	return strings.Join(parts, "\n")
 }

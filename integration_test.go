@@ -3,14 +3,16 @@ package main
 import (
 	"testing"
 	"time"
+
+	"bytedb/core"
 )
 
 // Integration tests that verify the entire system works end-to-end
 func TestEndToEndQueries(t *testing.T) {
 	// Generate test data
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	tests := []struct {
@@ -113,7 +115,7 @@ func TestEndToEndQueries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := engine.Execute(tt.sql)
-			
+
 			if err != nil {
 				t.Errorf("Unexpected error from Execute: %v", err)
 				return
@@ -143,8 +145,8 @@ func TestEndToEndQueries(t *testing.T) {
 // Test that verifies specific query results are correct
 func TestQueryResultAccuracy(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test engineering employees
@@ -152,7 +154,7 @@ func TestQueryResultAccuracy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -174,13 +176,13 @@ func TestQueryResultAccuracy(t *testing.T) {
 			t.Errorf("Row missing name column: %+v", row)
 			continue
 		}
-		
+
 		nameStr, ok := name.(string)
 		if !ok {
 			t.Errorf("Name is not a string: %v (%T)", name, name)
 			continue
 		}
-		
+
 		if !expectedEngineers[nameStr] {
 			t.Errorf("Unexpected engineer: %s", nameStr)
 		}
@@ -191,7 +193,7 @@ func TestQueryResultAccuracy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -209,17 +211,17 @@ func TestQueryResultAccuracy(t *testing.T) {
 	for _, row := range result.Rows {
 		name := row["name"].(string)
 		price := row["price"].(float64)
-		
+
 		expectedPrice, exists := expectedExpensive[name]
 		if !exists {
 			t.Errorf("Unexpected expensive product: %s", name)
 			continue
 		}
-		
+
 		if price != expectedPrice {
 			t.Errorf("Price mismatch for %s: expected %.2f, got %.2f", name, expectedPrice, price)
 		}
-		
+
 		if price <= 100 {
 			t.Errorf("Product %s should have price > 100, got %.2f", name, price)
 		}
@@ -229,8 +231,8 @@ func TestQueryResultAccuracy(t *testing.T) {
 // Test that verifies ORDER BY results are correctly sorted
 func TestOrderByFunctionality(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test ORDER BY salary DESC
@@ -238,7 +240,7 @@ func TestOrderByFunctionality(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute ORDER BY query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -251,9 +253,9 @@ func TestOrderByFunctionality(t *testing.T) {
 	for i := 1; i < len(result.Rows); i++ {
 		prevSalary := result.Rows[i-1]["salary"].(float64)
 		currSalary := result.Rows[i]["salary"].(float64)
-		
+
 		if prevSalary < currSalary {
-			t.Errorf("ORDER BY DESC failed: salary[%d]=%.2f should be >= salary[%d]=%.2f", 
+			t.Errorf("ORDER BY DESC failed: salary[%d]=%.2f should be >= salary[%d]=%.2f",
 				i-1, prevSalary, i, currSalary)
 		}
 	}
@@ -263,7 +265,7 @@ func TestOrderByFunctionality(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute ORDER BY ASC query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -272,9 +274,9 @@ func TestOrderByFunctionality(t *testing.T) {
 	for i := 1; i < len(result.Rows); i++ {
 		prevSalary := result.Rows[i-1]["salary"].(float64)
 		currSalary := result.Rows[i]["salary"].(float64)
-		
+
 		if prevSalary > currSalary {
-			t.Errorf("ORDER BY ASC failed: salary[%d]=%.2f should be <= salary[%d]=%.2f", 
+			t.Errorf("ORDER BY ASC failed: salary[%d]=%.2f should be <= salary[%d]=%.2f",
 				i-1, prevSalary, i, currSalary)
 		}
 	}
@@ -284,7 +286,7 @@ func TestOrderByFunctionality(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute multi-column ORDER BY query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -295,19 +297,19 @@ func TestOrderByFunctionality(t *testing.T) {
 		currDept := result.Rows[i]["department"].(string)
 		prevSalary := result.Rows[i-1]["salary"].(float64)
 		currSalary := result.Rows[i]["salary"].(float64)
-		
+
 		if prevDept < currDept {
 			// Previous department comes first alphabetically - correct
 			continue
 		} else if prevDept == currDept {
 			// Same department - salary should be in DESC order
 			if prevSalary < currSalary {
-				t.Errorf("Multi-column ORDER BY failed: in dept '%s', salary[%d]=%.2f should be >= salary[%d]=%.2f", 
+				t.Errorf("Multi-column ORDER BY failed: in dept '%s', salary[%d]=%.2f should be >= salary[%d]=%.2f",
 					currDept, i-1, prevSalary, i, currSalary)
 			}
 		} else {
 			// Previous department comes after current - this is wrong
-			t.Errorf("Multi-column ORDER BY failed: department '%s' should come before '%s'", 
+			t.Errorf("Multi-column ORDER BY failed: department '%s' should come before '%s'",
 				currDept, prevDept)
 		}
 	}
@@ -317,7 +319,7 @@ func TestOrderByFunctionality(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute ORDER BY with WHERE query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -328,9 +330,9 @@ func TestOrderByFunctionality(t *testing.T) {
 		if i > 0 {
 			prevSalary := result.Rows[i-1]["salary"].(float64)
 			currSalary := row["salary"].(float64)
-			
+
 			if prevSalary < currSalary {
-				t.Errorf("ORDER BY with WHERE failed: salary[%d]=%.2f should be >= salary[%d]=%.2f", 
+				t.Errorf("ORDER BY with WHERE failed: salary[%d]=%.2f should be >= salary[%d]=%.2f",
 					i-1, prevSalary, i, currSalary)
 			}
 		}
@@ -345,8 +347,8 @@ func TestOrderByFunctionality(t *testing.T) {
 // Test aggregate functions (COUNT, SUM, AVG, MIN, MAX)
 func TestAggregateFunctions(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test simple COUNT(*)
@@ -354,7 +356,7 @@ func TestAggregateFunctions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute COUNT(*) query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -373,7 +375,7 @@ func TestAggregateFunctions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute multiple aggregates query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -383,7 +385,7 @@ func TestAggregateFunctions(t *testing.T) {
 	}
 
 	row := result.Rows[0]
-	
+
 	// Verify results
 	expectedCount := 10.0
 	expectedSum := 710000.0 // Sum of all salaries
@@ -416,8 +418,8 @@ func TestAggregateFunctions(t *testing.T) {
 // Test GROUP BY functionality
 func TestGroupByFunctionality(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test GROUP BY with COUNT
@@ -425,7 +427,7 @@ func TestGroupByFunctionality(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute GROUP BY query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -465,7 +467,7 @@ func TestGroupByFunctionality(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute GROUP BY with multiple aggregates: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -493,7 +495,7 @@ func TestGroupByFunctionality(t *testing.T) {
 			break
 		}
 	}
-	
+
 	if !found {
 		t.Error("Engineering department not found in GROUP BY results")
 	}
@@ -502,8 +504,8 @@ func TestGroupByFunctionality(t *testing.T) {
 // Test aggregate functions with WHERE clause
 func TestAggregatesWithWhere(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test COUNT with WHERE
@@ -511,12 +513,12 @@ func TestAggregatesWithWhere(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute COUNT with WHERE: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
 
-	// Employees with salary > 70000: John Doe (75000), Mike Johnson (80000), 
+	// Employees with salary > 70000: John Doe (75000), Mike Johnson (80000),
 	// Lisa Davis (85000), Chris Anderson (78000), Maria Rodriguez (72000) = 5 employees
 	count := result.Rows[0]["count"].(float64)
 	if count != 5 {
@@ -528,7 +530,7 @@ func TestAggregatesWithWhere(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute GROUP BY with WHERE: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -536,7 +538,7 @@ func TestAggregatesWithWhere(t *testing.T) {
 	// Should exclude employees with salary <= 60000 (Sarah Wilson: 55000, Tom Miller: 62000 should be excluded)
 	// Actually Tom Miller (62000) should be included since 62000 > 60000
 	// So we exclude only Sarah Wilson (55000)
-	
+
 	deptCounts := make(map[string]float64)
 	for _, row := range result.Rows {
 		dept := row["department"].(string)
@@ -570,8 +572,8 @@ func TestAggregatesWithWhere(t *testing.T) {
 // Test IN operator functionality
 func TestInOperator(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test IN operator with string values
@@ -579,7 +581,7 @@ func TestInOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute IN query with strings: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -603,7 +605,7 @@ func TestInOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute IN query with numbers: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -626,7 +628,7 @@ func TestInOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute IN query with floats: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -649,7 +651,7 @@ func TestInOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute IN query with single value: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -671,7 +673,7 @@ func TestInOperator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute IN query with no matches: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -685,8 +687,8 @@ func TestInOperator(t *testing.T) {
 // Test IN operator with ORDER BY and other clauses
 func TestInOperatorWithOtherClauses(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test IN with ORDER BY
@@ -694,7 +696,7 @@ func TestInOperatorWithOtherClauses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute IN with ORDER BY: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -708,9 +710,9 @@ func TestInOperatorWithOtherClauses(t *testing.T) {
 	for i := 1; i < len(result.Rows); i++ {
 		prevSalary := result.Rows[i-1]["salary"].(float64)
 		currSalary := result.Rows[i]["salary"].(float64)
-		
+
 		if prevSalary < currSalary {
-			t.Errorf("ORDER BY DESC failed with IN: salary[%d]=%.0f should be >= salary[%d]=%.0f", 
+			t.Errorf("ORDER BY DESC failed with IN: salary[%d]=%.0f should be >= salary[%d]=%.0f",
 				i-1, prevSalary, i, currSalary)
 		}
 	}
@@ -720,7 +722,7 @@ func TestInOperatorWithOtherClauses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute IN with LIMIT: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -735,7 +737,7 @@ func TestInOperatorWithOtherClauses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute COUNT with IN: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -750,7 +752,7 @@ func TestInOperatorWithOtherClauses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute GROUP BY with IN: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -786,8 +788,8 @@ func TestInOperatorWithOtherClauses(t *testing.T) {
 // Test enhanced LIKE pattern matching
 func TestLikePatterns(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test prefix matching
@@ -795,7 +797,7 @@ func TestLikePatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute LIKE prefix query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -818,7 +820,7 @@ func TestLikePatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute LIKE substring query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -841,7 +843,7 @@ func TestLikePatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute LIKE single char query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -863,7 +865,7 @@ func TestLikePatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute LIKE exact match query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -877,7 +879,7 @@ func TestLikePatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute LIKE no match query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -891,7 +893,7 @@ func TestLikePatterns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute LIKE on products: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -912,8 +914,8 @@ func TestLikePatterns(t *testing.T) {
 // Test LIKE with other SQL clauses
 func TestLikeWithOtherClauses(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test LIKE with ORDER BY
@@ -921,7 +923,7 @@ func TestLikeWithOtherClauses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute LIKE with ORDER BY: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -935,9 +937,9 @@ func TestLikeWithOtherClauses(t *testing.T) {
 	for i := 1; i < len(result.Rows); i++ {
 		prevSalary := result.Rows[i-1]["salary"].(float64)
 		currSalary := result.Rows[i]["salary"].(float64)
-		
+
 		if prevSalary < currSalary {
-			t.Errorf("ORDER BY DESC failed with LIKE: salary[%d]=%.0f should be >= salary[%d]=%.0f", 
+			t.Errorf("ORDER BY DESC failed with LIKE: salary[%d]=%.0f should be >= salary[%d]=%.0f",
 				i-1, prevSalary, i, currSalary)
 		}
 	}
@@ -947,7 +949,7 @@ func TestLikeWithOtherClauses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute COUNT with LIKE: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -964,7 +966,7 @@ func TestLikeWithOtherClauses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute LIKE with LIMIT: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -983,7 +985,7 @@ func TestLikeWithOtherClauses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute LIKE with GROUP BY: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -1005,8 +1007,8 @@ func TestLikeWithOtherClauses(t *testing.T) {
 // Test column pruning functionality
 func TestColumnPruning(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test selecting specific columns
@@ -1014,7 +1016,7 @@ func TestColumnPruning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute column pruning query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -1032,7 +1034,7 @@ func TestColumnPruning(t *testing.T) {
 				t.Errorf("Unexpected column in result: %s", col)
 			}
 		}
-		
+
 		// Verify expected columns are present
 		if _, exists := row["name"]; !exists {
 			t.Error("Missing 'name' column in result")
@@ -1047,7 +1049,7 @@ func TestColumnPruning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute single column query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -1071,7 +1073,7 @@ func TestColumnPruning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute SELECT * query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -1087,7 +1089,7 @@ func TestColumnPruning(t *testing.T) {
 		if len(row) != len(expectedAllColumns) {
 			t.Errorf("Expected %d columns for SELECT *, got %d", len(expectedAllColumns), len(row))
 		}
-		
+
 		for _, col := range expectedAllColumns {
 			if _, exists := row[col]; !exists {
 				t.Errorf("Missing column '%s' in SELECT * result", col)
@@ -1100,7 +1102,7 @@ func TestColumnPruning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute column pruning with WHERE: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -1124,8 +1126,8 @@ func TestColumnPruning(t *testing.T) {
 // Test column pruning with aggregates and GROUP BY
 func TestColumnPruningWithAggregates(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test aggregate with specific column
@@ -1133,7 +1135,7 @@ func TestColumnPruningWithAggregates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute aggregate query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -1158,7 +1160,7 @@ func TestColumnPruningWithAggregates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute GROUP BY query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -1186,7 +1188,7 @@ func TestColumnPruningWithAggregates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute ORDER BY query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
@@ -1209,25 +1211,25 @@ func TestColumnPruningWithAggregates(t *testing.T) {
 // Test query result caching functionality
 func TestQueryCaching(t *testing.T) {
 	generateSampleData()
-	
+
 	// Create engine with custom cache configuration
-	cacheConfig := CacheConfig{
-		MaxMemoryMB: 10,                  // Small cache for testing
-		DefaultTTL:  1 * time.Minute,    // 1 minute TTL for testing
+	cacheConfig := core.CacheConfig{
+		MaxMemoryMB: 10,              // Small cache for testing
+		DefaultTTL:  1 * time.Minute, // 1 minute TTL for testing
 		Enabled:     true,
 	}
-	engine := NewQueryEngineWithCache("./data", cacheConfig)
+	engine := core.NewQueryEngineWithCache("./data", cacheConfig)
 	defer engine.Close()
 
 	// Test basic caching
 	query := "SELECT name, salary FROM employees WHERE department = 'Engineering' ORDER BY salary DESC;"
-	
+
 	// First execution should miss cache and execute query
 	result1, err := engine.Execute(query)
 	if err != nil {
 		t.Fatalf("Failed to execute first query: %v", err)
 	}
-	
+
 	if result1.Error != "" {
 		t.Fatalf("First query returned error: %s", result1.Error)
 	}
@@ -1249,7 +1251,7 @@ func TestQueryCaching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute second query: %v", err)
 	}
-	
+
 	if result2.Error != "" {
 		t.Fatalf("Second query returned error: %s", result2.Error)
 	}
@@ -1281,8 +1283,8 @@ func TestQueryCaching(t *testing.T) {
 // Test cache with different queries
 func TestCacheWithDifferentQueries(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	queries := []string{
@@ -1314,7 +1316,7 @@ func TestCacheWithDifferentQueries(t *testing.T) {
 
 		// Results should be identical
 		if len(result1.Rows) != len(result2.Rows) {
-			t.Errorf("Query '%s': cached result has different row count: %d vs %d", 
+			t.Errorf("Query '%s': cached result has different row count: %d vs %d",
 				query, len(result1.Rows), len(result2.Rows))
 		}
 	}
@@ -1339,18 +1341,18 @@ func TestCacheWithDifferentQueries(t *testing.T) {
 // Test cache TTL expiration
 func TestCacheTTLExpiration(t *testing.T) {
 	generateSampleData()
-	
+
 	// Create engine with very short TTL
-	cacheConfig := CacheConfig{
+	cacheConfig := core.CacheConfig{
 		MaxMemoryMB: 10,
 		DefaultTTL:  50 * time.Millisecond, // Very short TTL for testing
 		Enabled:     true,
 	}
-	engine := NewQueryEngineWithCache("./data", cacheConfig)
+	engine := core.NewQueryEngineWithCache("./data", cacheConfig)
 	defer engine.Close()
 
 	query := "SELECT COUNT(*) FROM employees;"
-	
+
 	// First execution
 	result1, err := engine.Execute(query)
 	if err != nil {
@@ -1388,12 +1390,12 @@ func TestCacheTTLExpiration(t *testing.T) {
 // Test cache enable/disable functionality
 func TestCacheEnableDisable(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	query := "SELECT name FROM employees LIMIT 2;"
-	
+
 	// Execute with cache enabled (default)
 	result1, err := engine.Execute(query)
 	if err != nil {
@@ -1437,14 +1439,14 @@ func TestCacheEnableDisable(t *testing.T) {
 // Test cache memory management
 func TestCacheMemoryManagement(t *testing.T) {
 	generateSampleData()
-	
+
 	// Create engine with very small cache to test eviction
-	cacheConfig := CacheConfig{
+	cacheConfig := core.CacheConfig{
 		MaxMemoryMB: 1, // Very small cache
 		DefaultTTL:  5 * time.Minute,
 		Enabled:     true,
 	}
-	engine := NewQueryEngineWithCache("./data", cacheConfig)
+	engine := core.NewQueryEngineWithCache("./data", cacheConfig)
 	defer engine.Close()
 
 	// Execute several different queries to fill up cache
@@ -1475,7 +1477,7 @@ func TestCacheMemoryManagement(t *testing.T) {
 	// Memory usage should be within limits
 	maxMemoryBytes := float64(cacheConfig.MaxMemoryMB)
 	if stats.GetMemoryUsageMB() > maxMemoryBytes*1.1 { // Allow 10% tolerance
-		t.Errorf("Cache memory usage (%.2f MB) exceeds limit (%.2f MB)", 
+		t.Errorf("Cache memory usage (%.2f MB) exceeds limit (%.2f MB)",
 			stats.GetMemoryUsageMB(), maxMemoryBytes)
 	}
 }
@@ -1483,8 +1485,8 @@ func TestCacheMemoryManagement(t *testing.T) {
 // Test cache clearing
 func TestCacheClear(t *testing.T) {
 	generateSampleData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Execute some queries to populate cache

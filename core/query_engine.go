@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"encoding/json"
@@ -36,15 +36,15 @@ type QueryResult struct {
 func NewQueryEngine(dataPath string) *QueryEngine {
 	// Default cache configuration
 	cacheConfig := CacheConfig{
-		MaxMemoryMB: 100,                  // 100MB default cache size
-		DefaultTTL:  5 * time.Minute,     // 5 minute default TTL
-		Enabled:     true,                 // Enable caching by default
+		MaxMemoryMB: 100,             // 100MB default cache size
+		DefaultTTL:  5 * time.Minute, // 5 minute default TTL
+		Enabled:     true,            // Enable caching by default
 	}
-	
+
 	planner := NewQueryPlanner()
 	planner.statsCollector.Initialize(dataPath)
 	optimizer := NewQueryOptimizer(planner)
-	
+
 	return &QueryEngine{
 		parser:      NewSQLParser(),
 		dataPath:    dataPath,
@@ -60,7 +60,7 @@ func NewQueryEngine(dataPath string) *QueryEngine {
 func (qe *QueryEngine) Close() {
 	qe.readersMu.Lock()
 	defer qe.readersMu.Unlock()
-	
+
 	for _, reader := range qe.openReaders {
 		reader.Close()
 	}
@@ -76,7 +76,7 @@ func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
 	if cachedResult, found := qe.cache.Get(sql); found {
 		return cachedResult, nil
 	}
-	
+
 	parsedQuery, err := qe.parser.Parse(sql)
 	if err != nil {
 		return &QueryResult{
@@ -109,19 +109,19 @@ func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
 			Error: "unsupported query type",
 		}
 	}
-	
+
 	// Cache successful results (not errors)
 	if result != nil && result.Error == "" {
 		qe.cache.Put(sql, result)
 	}
-	
+
 	return result, err
 }
 
 func (qe *QueryEngine) executeCTEQuery(query *ParsedQuery, cteRows []Row) (*QueryResult, error) {
 	// The CTE rows are our base data
 	rows := cteRows
-	
+
 	// Apply WHERE clause filtering if present
 	if len(query.Where) > 0 {
 		var filteredRows []Row
@@ -134,7 +134,7 @@ func (qe *QueryEngine) executeCTEQuery(query *ParsedQuery, cteRows []Row) (*Quer
 		}
 		rows = filteredRows
 	}
-	
+
 	// Handle aggregation
 	if query.IsAggregate {
 		// For CTE queries, we need to handle aggregation differently
@@ -145,21 +145,21 @@ func (qe *QueryEngine) executeCTEQuery(query *ParsedQuery, cteRows []Row) (*Quer
 		}
 		return result, nil
 	}
-	
+
 	// Apply ORDER BY
 	if len(query.OrderBy) > 0 {
 		rows = qe.sortRows(rows, query.OrderBy, nil)
 	}
-	
+
 	// Apply LIMIT
 	if query.Limit > 0 && len(rows) > query.Limit {
 		rows = rows[:query.Limit]
 	}
-	
+
 	// Select only requested columns
 	// For CTE results, we need to handle column selection manually
 	selectedRows := qe.selectCTEColumns(rows, query.Columns)
-	
+
 	return &QueryResult{
 		Columns: qe.getResultColumns(selectedRows, query.Columns),
 		Rows:    selectedRows,
@@ -184,18 +184,18 @@ func (qe *QueryEngine) evaluateCTECondition(condition WhereCondition, row Row) b
 	if condition.IsComplex {
 		switch condition.LogicalOp {
 		case "AND":
-			return qe.evaluateCTECondition(*condition.Left, row) && 
-				   qe.evaluateCTECondition(*condition.Right, row)
+			return qe.evaluateCTECondition(*condition.Left, row) &&
+				qe.evaluateCTECondition(*condition.Right, row)
 		case "OR":
-			return qe.evaluateCTECondition(*condition.Left, row) || 
-				   qe.evaluateCTECondition(*condition.Right, row)
+			return qe.evaluateCTECondition(*condition.Left, row) ||
+				qe.evaluateCTECondition(*condition.Right, row)
 		}
 	}
-	
+
 	// Get left side value (column or function)
 	var leftValue interface{}
 	var exists bool
-	
+
 	if condition.Function != nil {
 		// Evaluate function on left side
 		var err error
@@ -213,7 +213,7 @@ func (qe *QueryEngine) evaluateCTECondition(condition WhereCondition, row Row) b
 	} else {
 		return false
 	}
-	
+
 	// Get right side value (literal, column, or function)
 	var rightValue interface{}
 	if condition.ValueFunction != nil {
@@ -230,7 +230,7 @@ func (qe *QueryEngine) evaluateCTECondition(condition WhereCondition, row Row) b
 		// Literal value
 		rightValue = condition.Value
 	}
-	
+
 	// Simple comparison operators
 	switch condition.Operator {
 	case "=":
@@ -263,7 +263,7 @@ func (qe *QueryEngine) evaluateCTECondition(condition WhereCondition, row Row) b
 		}
 		return false
 	}
-	
+
 	return true
 }
 
@@ -272,7 +272,7 @@ func (qe *QueryEngine) selectCTEColumns(rows []Row, columns []Column) []Row {
 	if len(columns) == 0 || (len(columns) == 1 && columns[0].Name == "*") {
 		return rows
 	}
-	
+
 	// Select specific columns
 	selectedRows := make([]Row, len(rows))
 	for i, row := range rows {
@@ -280,7 +280,7 @@ func (qe *QueryEngine) selectCTEColumns(rows []Row, columns []Column) []Row {
 		for _, col := range columns {
 			var value interface{}
 			var err error
-			
+
 			// Handle different column types
 			if col.Function != nil {
 				// Evaluate function
@@ -301,7 +301,7 @@ func (qe *QueryEngine) selectCTEColumns(rows []Row, columns []Column) []Row {
 					value = val
 				}
 			}
-			
+
 			// Use alias if provided, otherwise use column name
 			key := col.Name
 			if col.Alias != "" {
@@ -313,7 +313,7 @@ func (qe *QueryEngine) selectCTEColumns(rows []Row, columns []Column) []Row {
 		}
 		selectedRows[i] = selectedRow
 	}
-	
+
 	return selectedRows
 }
 
@@ -322,7 +322,7 @@ func (qe *QueryEngine) applyCTEColumnAliases(rows []Row, originalColumns []strin
 	if len(aliasNames) == 0 || len(aliasNames) != len(originalColumns) {
 		return rows
 	}
-	
+
 	// Create mapping from original to alias names
 	columnMapping := make(map[string]string)
 	for i, originalCol := range originalColumns {
@@ -330,7 +330,7 @@ func (qe *QueryEngine) applyCTEColumnAliases(rows []Row, originalColumns []strin
 			columnMapping[originalCol] = aliasNames[i]
 		}
 	}
-	
+
 	// Apply the mapping to all rows
 	aliasedRows := make([]Row, len(rows))
 	for i, row := range rows {
@@ -345,7 +345,7 @@ func (qe *QueryEngine) applyCTEColumnAliases(rows []Row, originalColumns []strin
 		}
 		aliasedRows[i] = aliasedRow
 	}
-	
+
 	return aliasedRows
 }
 
@@ -361,7 +361,7 @@ func (qe *QueryEngine) executeSelectWithCTEs(query *ParsedQuery, parentCTEs map[
 			cteResults[name] = rows
 		}
 	}
-	
+
 	// Process CTEs if present
 	if len(query.CTEs) > 0 {
 		for _, cte := range query.CTEs {
@@ -371,28 +371,28 @@ func (qe *QueryEngine) executeSelectWithCTEs(query *ParsedQuery, parentCTEs map[
 			if err != nil {
 				return nil, fmt.Errorf("failed to execute CTE '%s': %w", cte.Name, err)
 			}
-			
+
 			// If the CTE has column aliases, apply them
 			rows := cteResult.Rows
 			if len(cte.ColumnNames) > 0 {
 				rows = qe.applyCTEColumnAliases(rows, cteResult.Columns, cte.ColumnNames)
 			}
-			
+
 			// Store the CTE results with aliased columns
 			cteResults[cte.Name] = rows
 		}
 	}
-	
+
 	// Check if the main query references a CTE
 	if cteRows, isCTE := cteResults[query.TableName]; isCTE {
 		return qe.executeCTEQuery(query, cteRows)
 	}
-	
+
 	// Check if this is a JOIN query
 	if query.HasJoins {
 		return qe.executeJoinQuery(query)
 	}
-	
+
 	// Try optimized execution first
 	if optimizedResult := qe.executeOptimized(query); optimizedResult != nil {
 		return optimizedResult, nil
@@ -409,7 +409,7 @@ func (qe *QueryEngine) executeSelectWithCTEs(query *ParsedQuery, parentCTEs map[
 
 	// Determine which columns are required for this query
 	requiredColumns := query.GetRequiredColumns()
-	
+
 	// Read data with column pruning optimization
 	var rows []Row
 	if len(requiredColumns) > 0 {
@@ -430,7 +430,7 @@ func (qe *QueryEngine) executeSelectWithCTEs(query *ParsedQuery, parentCTEs map[
 			rows, err = reader.ReadAll()
 		}
 	}
-	
+
 	if err != nil {
 		return &QueryResult{
 			Query: query.RawSQL,
@@ -440,17 +440,17 @@ func (qe *QueryEngine) executeSelectWithCTEs(query *ParsedQuery, parentCTEs map[
 
 	// Apply WHERE clause filtering first
 	rows = reader.FilterRowsWithEngine(rows, query.Where, qe)
-	
+
 	// Handle aggregate queries
 	if query.IsAggregate {
 		return qe.executeAggregate(query, rows, reader)
 	}
-	
+
 	// Handle window functions
 	if query.HasWindowFuncs {
 		rows = qe.executeWindowFunctions(query, rows, reader)
 	}
-	
+
 	// Regular non-aggregate query processing
 	if reader.hasColumnSubqueries(query.Columns) {
 		rows = reader.SelectColumnsWithEngine(rows, query.Columns, qe)
@@ -487,7 +487,7 @@ func (qe *QueryEngine) executeJoinQuery(query *ParsedQuery) (*QueryResult, error
 			Error: fmt.Sprintf("Failed to read left table %s: %v", query.TableName, err),
 		}, nil
 	}
-	
+
 	leftRows, err := leftReader.ReadAll()
 	if err != nil {
 		return &QueryResult{
@@ -495,10 +495,10 @@ func (qe *QueryEngine) executeJoinQuery(query *ParsedQuery) (*QueryResult, error
 			Error: fmt.Sprintf("Failed to read data from %s: %v", query.TableName, err),
 		}, nil
 	}
-	
+
 	// Add table prefixes to left table rows
 	leftRows = qe.prefixRowColumns(leftRows, query.TableAlias, query.TableName)
-	
+
 	// Process each JOIN sequentially
 	joinedRows := leftRows
 	for _, joinClause := range query.Joins {
@@ -509,7 +509,7 @@ func (qe *QueryEngine) executeJoinQuery(query *ParsedQuery) (*QueryResult, error
 				Error: fmt.Sprintf("Failed to read right table %s: %v", joinClause.TableName, err),
 			}, nil
 		}
-		
+
 		rightRows, err := rightReader.ReadAll()
 		if err != nil {
 			return &QueryResult{
@@ -517,19 +517,19 @@ func (qe *QueryEngine) executeJoinQuery(query *ParsedQuery) (*QueryResult, error
 				Error: fmt.Sprintf("Failed to read data from %s: %v", joinClause.TableName, err),
 			}, nil
 		}
-		
+
 		// Add table prefixes to right table rows
 		rightRows = qe.prefixRowColumns(rightRows, joinClause.TableAlias, joinClause.TableName)
-		
+
 		// Perform the JOIN
 		joinedRows = qe.performJoin(joinedRows, rightRows, joinClause)
 	}
-	
+
 	// Apply WHERE clause filtering
 	if len(query.Where) > 0 {
 		joinedRows = qe.filterJoinedRowsWithEngine(joinedRows, query.Where)
 	}
-	
+
 	// Handle aggregate queries
 	if query.IsAggregate {
 		// For now, aggregates with JOINs are not fully supported
@@ -538,24 +538,24 @@ func (qe *QueryEngine) executeJoinQuery(query *ParsedQuery) (*QueryResult, error
 			Error: "Aggregate functions with JOINs are not yet supported",
 		}, nil
 	}
-	
+
 	// Select specific columns and apply aliases
 	resultRows := qe.selectJoinColumns(joinedRows, query.Columns)
-	
+
 	// Apply ORDER BY (complex due to qualified column names)
 	// For now, basic ordering without table qualification
 	if len(query.OrderBy) > 0 {
 		resultRows = qe.sortJoinedRows(resultRows, query.OrderBy)
 	}
-	
+
 	// Apply LIMIT
 	if query.Limit > 0 && len(resultRows) > query.Limit {
 		resultRows = resultRows[:query.Limit]
 	}
-	
+
 	// Get result column names
 	columns := qe.getJoinResultColumns(resultRows, query.Columns)
-	
+
 	return &QueryResult{
 		Columns: columns,
 		Rows:    resultRows,
@@ -569,12 +569,12 @@ func (qe *QueryEngine) prefixRowColumns(rows []Row, tableAlias, tableName string
 	if len(rows) == 0 {
 		return rows
 	}
-	
+
 	prefix := tableAlias
 	if prefix == "" {
 		prefix = tableName
 	}
-	
+
 	prefixedRows := make([]Row, len(rows))
 	for i, row := range rows {
 		prefixedRow := make(Row)
@@ -584,14 +584,14 @@ func (qe *QueryEngine) prefixRowColumns(rows []Row, tableAlias, tableName string
 		}
 		prefixedRows[i] = prefixedRow
 	}
-	
+
 	return prefixedRows
 }
 
 // performJoin executes the actual JOIN operation using nested loop algorithm
 func (qe *QueryEngine) performJoin(leftRows, rightRows []Row, joinClause JoinClause) []Row {
 	var result []Row
-	
+
 	switch joinClause.Type {
 	case INNER_JOIN:
 		result = qe.performInnerJoin(leftRows, rightRows, joinClause.Condition)
@@ -604,22 +604,22 @@ func (qe *QueryEngine) performJoin(leftRows, rightRows []Row, joinClause JoinCla
 	default:
 		result = qe.performInnerJoin(leftRows, rightRows, joinClause.Condition)
 	}
-	
+
 	return result
 }
 
 // performInnerJoin implements INNER JOIN logic
 func (qe *QueryEngine) performInnerJoin(leftRows, rightRows []Row, condition JoinCondition) []Row {
 	var result []Row
-	
+
 	leftColName := condition.LeftTable + "." + condition.LeftColumn
 	rightColName := condition.RightTable + "." + condition.RightColumn
-	
+
 	for _, leftRow := range leftRows {
 		for _, rightRow := range rightRows {
 			leftValue, leftExists := leftRow[leftColName]
 			rightValue, rightExists := rightRow[rightColName]
-			
+
 			if leftExists && rightExists && qe.valuesMatch(leftValue, rightValue, condition.Operator) {
 				// Combine rows
 				combinedRow := make(Row)
@@ -633,24 +633,24 @@ func (qe *QueryEngine) performInnerJoin(leftRows, rightRows []Row, condition Joi
 			}
 		}
 	}
-	
+
 	return result
 }
 
-// performLeftJoin implements LEFT JOIN logic  
+// performLeftJoin implements LEFT JOIN logic
 func (qe *QueryEngine) performLeftJoin(leftRows, rightRows []Row, condition JoinCondition) []Row {
 	var result []Row
-	
+
 	leftColName := condition.LeftTable + "." + condition.LeftColumn
 	rightColName := condition.RightTable + "." + condition.RightColumn
-	
+
 	for _, leftRow := range leftRows {
 		matched := false
-		
+
 		for _, rightRow := range rightRows {
 			leftValue, leftExists := leftRow[leftColName]
 			rightValue, rightExists := rightRow[rightColName]
-			
+
 			if leftExists && rightExists && qe.valuesMatch(leftValue, rightValue, condition.Operator) {
 				// Combine rows
 				combinedRow := make(Row)
@@ -664,7 +664,7 @@ func (qe *QueryEngine) performLeftJoin(leftRows, rightRows []Row, condition Join
 				matched = true
 			}
 		}
-		
+
 		if !matched {
 			// Include left row with NULL values for right table columns
 			combinedRow := make(Row)
@@ -681,24 +681,24 @@ func (qe *QueryEngine) performLeftJoin(leftRows, rightRows []Row, condition Join
 			result = append(result, combinedRow)
 		}
 	}
-	
+
 	return result
 }
 
 // performRightJoin implements RIGHT JOIN logic
 func (qe *QueryEngine) performRightJoin(leftRows, rightRows []Row, condition JoinCondition) []Row {
 	var result []Row
-	
+
 	leftColName := condition.LeftTable + "." + condition.LeftColumn
 	rightColName := condition.RightTable + "." + condition.RightColumn
-	
+
 	for _, rightRow := range rightRows {
 		matched := false
-		
+
 		for _, leftRow := range leftRows {
 			leftValue, leftExists := leftRow[leftColName]
 			rightValue, rightExists := rightRow[rightColName]
-			
+
 			if leftExists && rightExists && qe.valuesMatch(leftValue, rightValue, condition.Operator) {
 				// Combine rows
 				combinedRow := make(Row)
@@ -712,7 +712,7 @@ func (qe *QueryEngine) performRightJoin(leftRows, rightRows []Row, condition Joi
 				matched = true
 			}
 		}
-		
+
 		if !matched {
 			// Include right row with NULL values for left table columns
 			combinedRow := make(Row)
@@ -729,7 +729,7 @@ func (qe *QueryEngine) performRightJoin(leftRows, rightRows []Row, condition Joi
 			result = append(result, combinedRow)
 		}
 	}
-	
+
 	return result
 }
 
@@ -738,18 +738,18 @@ func (qe *QueryEngine) performFullOuterJoin(leftRows, rightRows []Row, condition
 	var result []Row
 	leftColName := condition.LeftTable + "." + condition.LeftColumn
 	rightColName := condition.RightTable + "." + condition.RightColumn
-	
+
 	// Track which right rows have been matched to avoid duplicates
 	rightMatched := make(map[int]bool)
-	
+
 	// First pass: process all left rows (like LEFT JOIN)
 	for _, leftRow := range leftRows {
 		leftMatched := false
-		
+
 		for rightIdx, rightRow := range rightRows {
 			leftValue, leftExists := leftRow[leftColName]
 			rightValue, rightExists := rightRow[rightColName]
-			
+
 			if leftExists && rightExists && qe.valuesMatch(leftValue, rightValue, condition.Operator) {
 				// Combine rows
 				combinedRow := make(Row)
@@ -764,7 +764,7 @@ func (qe *QueryEngine) performFullOuterJoin(leftRows, rightRows []Row, condition
 				rightMatched[rightIdx] = true
 			}
 		}
-		
+
 		if !leftMatched {
 			// Include left row with NULL values for right table columns
 			combinedRow := make(Row)
@@ -780,7 +780,7 @@ func (qe *QueryEngine) performFullOuterJoin(leftRows, rightRows []Row, condition
 			result = append(result, combinedRow)
 		}
 	}
-	
+
 	// Second pass: add unmatched right rows
 	for rightIdx, rightRow := range rightRows {
 		if !rightMatched[rightIdx] {
@@ -798,7 +798,7 @@ func (qe *QueryEngine) performFullOuterJoin(leftRows, rightRows []Row, condition
 			result = append(result, combinedRow)
 		}
 	}
-	
+
 	return result
 }
 
@@ -806,7 +806,7 @@ func (qe *QueryEngine) performFullOuterJoin(leftRows, rightRows []Row, condition
 func (qe *QueryEngine) valuesMatch(leftValue, rightValue interface{}, operator string) bool {
 	// Create a dummy reader for comparison logic
 	dummyReader := &ParquetReader{}
-	
+
 	switch operator {
 	case "=":
 		return dummyReader.CompareValues(leftValue, rightValue) == 0
@@ -834,14 +834,14 @@ func (qe *QueryEngine) filterJoinedRowsWithEngine(rows []Row, conditions []Where
 	if len(conditions) == 0 {
 		return rows
 	}
-	
+
 	var filtered []Row
 	for _, row := range rows {
 		if qe.rowMatchesConditionsWithEngine(row, conditions) {
 			filtered = append(filtered, row)
 		}
 	}
-	
+
 	return filtered
 }
 
@@ -852,18 +852,18 @@ func (qe *QueryEngine) rowMatchesConditions(row Row, conditions []WhereCondition
 
 func (qe *QueryEngine) rowMatchesConditionsWithEngine(row Row, conditions []WhereCondition) bool {
 	dummyReader := &ParquetReader{}
-	
+
 	for _, condition := range conditions {
 		columnName := condition.Column
 		if condition.TableName != "" {
 			columnName = condition.TableName + "." + condition.Column
 		}
-		
+
 		_, exists := row[columnName]
 		if !exists && condition.Subquery == nil {
 			return false
 		}
-		
+
 		if !dummyReader.matchesConditionWithEngine(row, WhereCondition{
 			Column:    columnName,
 			Operator:  condition.Operator,
@@ -874,7 +874,7 @@ func (qe *QueryEngine) rowMatchesConditionsWithEngine(row Row, conditions []Wher
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -883,7 +883,7 @@ func (qe *QueryEngine) selectJoinColumns(rows []Row, columns []Column) []Row {
 	if len(rows) == 0 {
 		return rows
 	}
-	
+
 	// Check if we need to select all columns
 	hasWildcard := false
 	for _, col := range columns {
@@ -892,16 +892,16 @@ func (qe *QueryEngine) selectJoinColumns(rows []Row, columns []Column) []Row {
 			break
 		}
 	}
-	
+
 	if hasWildcard {
 		return rows // Return all columns
 	}
-	
+
 	// Select specific columns
 	var result []Row
 	for _, row := range rows {
 		newRow := make(Row)
-		
+
 		for _, col := range columns {
 			var sourceColumnName string
 			if col.TableName != "" {
@@ -916,7 +916,7 @@ func (qe *QueryEngine) selectJoinColumns(rows []Row, columns []Column) []Row {
 					}
 				}
 			}
-			
+
 			if value, exists := row[sourceColumnName]; exists {
 				resultColumnName := col.Name
 				if col.Alias != "" {
@@ -925,10 +925,10 @@ func (qe *QueryEngine) selectJoinColumns(rows []Row, columns []Column) []Row {
 				newRow[resultColumnName] = value
 			}
 		}
-		
+
 		result = append(result, newRow)
 	}
-	
+
 	return result
 }
 
@@ -944,12 +944,12 @@ func (qe *QueryEngine) getJoinResultColumns(rows []Row, queryColumns []Column) [
 	if len(rows) == 0 {
 		return []string{}
 	}
-	
+
 	var columns []string
 	for key := range rows[0] {
 		columns = append(columns, key)
 	}
-	
+
 	return columns
 }
 
@@ -965,21 +965,21 @@ func (qe *QueryEngine) getReader(tableName string) (*ParquetReader, error) {
 	// Need to create new reader - use write lock
 	qe.readersMu.Lock()
 	defer qe.readersMu.Unlock()
-	
+
 	// Double-check pattern - another goroutine might have created it
 	if reader, exists := qe.openReaders[tableName]; exists {
 		return reader, nil
 	}
 
 	var filePath string
-	
+
 	// Check if this table is registered as an HTTP table
 	if httpURL, exists := qe.httpTables[tableName]; exists {
 		filePath = httpURL
 	} else {
 		filePath = filepath.Join(qe.dataPath, tableName+".parquet")
 	}
-	
+
 	reader, err := NewParquetReader(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open table %s: %w", tableName, err)
@@ -1001,7 +1001,7 @@ func (qe *QueryEngine) executeSimpleAggregate(query *ParsedQuery, rows []Row, re
 	// Simple aggregate without GROUP BY - single result row
 	resultRow := make(Row)
 	var columns []string
-	
+
 	for _, agg := range query.Aggregates {
 		value, err := qe.calculateAggregate(agg, rows)
 		if err != nil {
@@ -1013,7 +1013,7 @@ func (qe *QueryEngine) executeSimpleAggregate(query *ParsedQuery, rows []Row, re
 		resultRow[agg.Alias] = value
 		columns = append(columns, agg.Alias)
 	}
-	
+
 	// Add non-aggregate columns (these should be constants in valid SQL)
 	for _, col := range query.Columns {
 		if col.Name != "*" {
@@ -1026,15 +1026,15 @@ func (qe *QueryEngine) executeSimpleAggregate(query *ParsedQuery, rows []Row, re
 			}
 		}
 	}
-	
+
 	result := []Row{resultRow}
-	
+
 	// Apply ORDER BY and LIMIT
 	result = qe.sortRows(result, query.OrderBy, reader)
 	if query.Limit > 0 && len(result) > query.Limit {
 		result = result[:query.Limit]
 	}
-	
+
 	return &QueryResult{
 		Columns: columns,
 		Rows:    result,
@@ -1047,28 +1047,28 @@ func (qe *QueryEngine) executeGroupedAggregate(query *ParsedQuery, rows []Row, r
 	// Group rows by GROUP BY columns
 	groups := make(map[string][]Row)
 	var columns []string
-	
+
 	// Add GROUP BY columns to result columns
 	for _, groupCol := range query.GroupBy {
 		columns = append(columns, groupCol)
 	}
-	
+
 	// Add aggregate columns to result columns
 	for _, agg := range query.Aggregates {
 		columns = append(columns, agg.Alias)
 	}
-	
+
 	// Group the rows
 	for _, row := range rows {
 		groupKey := qe.buildGroupKey(row, query.GroupBy)
 		groups[groupKey] = append(groups[groupKey], row)
 	}
-	
+
 	// Calculate aggregates for each group
 	var result []Row
 	for _, groupRows := range groups {
 		resultRow := make(Row)
-		
+
 		// Add GROUP BY column values
 		if len(groupRows) > 0 {
 			for _, groupCol := range query.GroupBy {
@@ -1077,7 +1077,7 @@ func (qe *QueryEngine) executeGroupedAggregate(query *ParsedQuery, rows []Row, r
 				}
 			}
 		}
-		
+
 		// Calculate aggregates for this group
 		for _, agg := range query.Aggregates {
 			value, err := qe.calculateAggregate(agg, groupRows)
@@ -1089,16 +1089,16 @@ func (qe *QueryEngine) executeGroupedAggregate(query *ParsedQuery, rows []Row, r
 			}
 			resultRow[agg.Alias] = value
 		}
-		
+
 		result = append(result, resultRow)
 	}
-	
+
 	// Apply ORDER BY and LIMIT
 	result = qe.sortRows(result, query.OrderBy, reader)
 	if query.Limit > 0 && len(result) > query.Limit {
 		result = result[:query.Limit]
 	}
-	
+
 	return &QueryResult{
 		Columns: columns,
 		Rows:    result,
@@ -1133,7 +1133,7 @@ func (qe *QueryEngine) calculateAggregate(agg AggregateFunction, rows []Row) (in
 			}
 			return float64(count), nil
 		}
-		
+
 	case "SUM":
 		if agg.Column == "*" {
 			return nil, fmt.Errorf("SUM(*) is not supported")
@@ -1152,7 +1152,7 @@ func (qe *QueryEngine) calculateAggregate(agg AggregateFunction, rows []Row) (in
 			return nil, nil // SQL standard: SUM of empty set is NULL
 		}
 		return sum, nil
-		
+
 	case "AVG":
 		if agg.Column == "*" {
 			return nil, fmt.Errorf("AVG(*) is not supported")
@@ -1171,7 +1171,7 @@ func (qe *QueryEngine) calculateAggregate(agg AggregateFunction, rows []Row) (in
 			return nil, nil // SQL standard: AVG of empty set is NULL
 		}
 		return sum / float64(count), nil
-		
+
 	case "MIN":
 		if agg.Column == "*" {
 			return nil, fmt.Errorf("MIN(*) is not supported")
@@ -1192,7 +1192,7 @@ func (qe *QueryEngine) calculateAggregate(agg AggregateFunction, rows []Row) (in
 			}
 		}
 		return min, nil
-		
+
 	case "MAX":
 		if agg.Column == "*" {
 			return nil, fmt.Errorf("MAX(*) is not supported")
@@ -1212,7 +1212,7 @@ func (qe *QueryEngine) calculateAggregate(agg AggregateFunction, rows []Row) (in
 			}
 		}
 		return max, nil
-		
+
 	default:
 		return nil, fmt.Errorf("unsupported aggregate function: %s", agg.Function)
 	}
@@ -1271,7 +1271,7 @@ func (qe *QueryEngine) compareRows(row1, row2 Row, orderBy []OrderByColumn, read
 
 		// Compare values using the same logic as WHERE clause filtering
 		comparison := reader.CompareValues(val1, val2)
-		
+
 		if comparison != 0 {
 			if orderCol.Direction == "DESC" {
 				return comparison > 0
@@ -1281,7 +1281,7 @@ func (qe *QueryEngine) compareRows(row1, row2 Row, orderBy []OrderByColumn, read
 		}
 		// If values are equal, continue to next ORDER BY column
 	}
-	
+
 	// All ORDER BY columns are equal
 	return false
 }
@@ -1293,14 +1293,14 @@ func (qe *QueryEngine) evaluateQueryColumns(rows []Row, queryColumns []Column) [
 	}
 
 	result := make([]Row, len(rows))
-	
+
 	for i, row := range rows {
 		newRow := make(Row)
-		
+
 		for _, col := range queryColumns {
 			var value interface{}
 			var err error
-			
+
 			// Check if this is a function call
 			if col.Function != nil {
 				value, err = qe.functions.EvaluateFunction(col.Function, row)
@@ -1330,7 +1330,7 @@ func (qe *QueryEngine) evaluateQueryColumns(rows []Row, queryColumns []Column) [
 					value = row[col.Name]
 				}
 			}
-			
+
 			// Set the value with appropriate key
 			if col.Alias != "" {
 				newRow[col.Alias] = value
@@ -1347,10 +1347,10 @@ func (qe *QueryEngine) evaluateQueryColumns(rows []Row, queryColumns []Column) [
 				newRow[col.Name] = value
 			}
 		}
-		
+
 		result[i] = newRow
 	}
-	
+
 	return result
 }
 
@@ -1367,7 +1367,7 @@ func (qe *QueryEngine) getResultColumns(rows []Row, queryColumns []Column) []str
 		}
 		return columns
 	}
-	
+
 	if len(rows) == 0 {
 		return []string{}
 	}
@@ -1420,10 +1420,10 @@ func (qe *QueryEngine) ExecuteToTable(sql string) (string, error) {
 	}
 
 	var output strings.Builder
-	
+
 	output.WriteString(strings.Join(result.Columns, "\t"))
 	output.WriteString("\n")
-	
+
 	for _, row := range result.Rows {
 		var values []string
 		for _, col := range result.Columns {
@@ -1436,9 +1436,9 @@ func (qe *QueryEngine) ExecuteToTable(sql string) (string, error) {
 		output.WriteString(strings.Join(values, "\t"))
 		output.WriteString("\n")
 	}
-	
+
 	output.WriteString(fmt.Sprintf("\n(%d rows)", result.Count))
-	
+
 	return output.String(), nil
 }
 
@@ -1450,14 +1450,14 @@ func (qe *QueryEngine) GetTableInfo(tableName string) (string, error) {
 
 	schema := reader.GetSchema()
 	var info strings.Builder
-	
+
 	info.WriteString(fmt.Sprintf("Table: %s\n", tableName))
 	info.WriteString("Columns:\n")
-	
+
 	for _, field := range schema.Fields() {
 		info.WriteString(fmt.Sprintf("  - %s (%s)\n", field.Name(), field.Type()))
 	}
-	
+
 	return info.String(), nil
 }
 
@@ -1470,7 +1470,7 @@ func NewQueryEngineWithCache(dataPath string, cacheConfig CacheConfig) *QueryEng
 	planner := NewQueryPlanner()
 	planner.statsCollector.Initialize(dataPath)
 	optimizer := NewQueryOptimizer(planner)
-	
+
 	return &QueryEngine{
 		parser:      NewSQLParser(),
 		dataPath:    dataPath,
@@ -1522,7 +1522,7 @@ func (qe *QueryEngine) hasOnlyConstantColumns(query *ParsedQuery) bool {
 	if len(query.Columns) == 0 {
 		return false
 	}
-	
+
 	for _, col := range query.Columns {
 		if col.Name == "*" {
 			return false // Wildcard is not a constant
@@ -1535,7 +1535,7 @@ func (qe *QueryEngine) hasOnlyConstantColumns(query *ParsedQuery) bool {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -1562,14 +1562,14 @@ func (qe *QueryEngine) ExecuteSubquery(query *ParsedQuery) (*QueryResult, error)
 	// and infinite recursion issues
 	// Mark as subquery to avoid optimization issues
 	query.IsSubquery = true
-	
+
 	switch query.Type {
 	case SELECT:
 		// Handle constant-only queries (no FROM clause)
 		if query.TableName == "" && qe.hasOnlyConstantColumns(query) {
 			return qe.executeConstantQuery(query)
 		}
-		
+
 		if query.HasJoins {
 			return qe.executeJoinQuery(query)
 		} else {
@@ -1585,12 +1585,12 @@ func (qe *QueryEngine) ExecuteSubquery(query *ParsedQuery) (*QueryResult, error)
 
 // ExecuteCorrelatedSubquery implements the SubqueryExecutor interface for correlated subqueries
 func (qe *QueryEngine) ExecuteCorrelatedSubquery(query *ParsedQuery, outerRow Row) (*QueryResult, error) {
-	
+
 	if !query.IsCorrelated {
 		// If not correlated, use regular execution
 		return qe.ExecuteSubquery(query)
 	}
-	
+
 	// Execute correlated subquery with outer row context
 	switch query.Type {
 	case SELECT:
@@ -1598,7 +1598,7 @@ func (qe *QueryEngine) ExecuteCorrelatedSubquery(query *ParsedQuery, outerRow Ro
 		if query.TableName == "" && qe.hasOnlyConstantColumns(query) {
 			return qe.executeConstantQuery(query)
 		}
-		
+
 		if query.HasJoins {
 			return qe.executeCorrelatedJoinQuery(query, outerRow)
 		} else {
@@ -1617,20 +1617,20 @@ func (qe *QueryEngine) executeConstantQuery(query *ParsedQuery) (*QueryResult, e
 	// Create a single row with constant values
 	row := make(Row)
 	var columns []string
-	
+
 	for _, col := range query.Columns {
 		// Parse the constant value
 		value := qe.parseConstantValue(col.Name)
-		
+
 		columnName := col.Name
 		if col.Alias != "" {
 			columnName = col.Alias
 		}
-		
+
 		row[columnName] = value
 		columns = append(columns, columnName)
 	}
-	
+
 	return &QueryResult{
 		Columns: columns,
 		Rows:    []Row{row},
@@ -1643,11 +1643,11 @@ func (qe *QueryEngine) executeConstantQuery(query *ParsedQuery) (*QueryResult, e
 func (qe *QueryEngine) executeNoTableQuery(query *ParsedQuery) (*QueryResult, error) {
 	// Create a single empty row for function evaluation
 	row := make(Row)
-	
+
 	// Process columns using selectCTEColumns which handles functions
 	rows := []Row{row}
 	rows = qe.selectCTEColumns(rows, query.Columns)
-	
+
 	// Extract column names
 	var columns []string
 	if len(rows) > 0 {
@@ -1656,7 +1656,7 @@ func (qe *QueryEngine) executeNoTableQuery(query *ParsedQuery) (*QueryResult, er
 		}
 		sort.Strings(columns)
 	}
-	
+
 	return &QueryResult{
 		Columns: columns,
 		Rows:    rows,
@@ -1721,17 +1721,17 @@ func (qe *QueryEngine) executeCorrelatedSelect(query *ParsedQuery, outerRow Row)
 	} else {
 		result = reader.SelectColumns(filteredRows, query.Columns)
 	}
-	
+
 	// Apply aggregations if needed (delegate to regular executeSelect for now)
 	if query.IsAggregate {
 		return qe.executeAggregate(query, result, reader)
 	}
-	
+
 	// Apply ordering
 	if len(query.OrderBy) > 0 {
 		result = qe.sortRows(result, query.OrderBy, reader)
 	}
-	
+
 	// Apply limit
 	if query.Limit > 0 && len(result) > query.Limit {
 		result = result[:query.Limit]
@@ -1754,7 +1754,7 @@ func (qe *QueryEngine) executeCorrelatedJoinQuery(query *ParsedQuery, outerRow R
 
 // matchesCorrelatedWhereConditions checks if a row matches WHERE conditions with outer row context
 func (qe *QueryEngine) matchesCorrelatedWhereConditions(row Row, conditions []WhereCondition, outerRow Row) bool {
-	
+
 	for _, condition := range conditions {
 		if !qe.matchesCorrelatedCondition(row, condition, outerRow) {
 			return false
@@ -1763,29 +1763,29 @@ func (qe *QueryEngine) matchesCorrelatedWhereConditions(row Row, conditions []Wh
 	return true
 }
 
-// matchesCorrelatedCondition checks if a row matches a single WHERE condition with outer row context  
+// matchesCorrelatedCondition checks if a row matches a single WHERE condition with outer row context
 func (qe *QueryEngine) matchesCorrelatedCondition(row Row, condition WhereCondition, outerRow Row) bool {
 	// Handle complex logical conditions (AND/OR)
 	if condition.IsComplex {
 		switch condition.LogicalOp {
 		case "AND":
-			return qe.matchesCorrelatedCondition(row, *condition.Left, outerRow) && 
-				   qe.matchesCorrelatedCondition(row, *condition.Right, outerRow)
+			return qe.matchesCorrelatedCondition(row, *condition.Left, outerRow) &&
+				qe.matchesCorrelatedCondition(row, *condition.Right, outerRow)
 		case "OR":
-			return qe.matchesCorrelatedCondition(row, *condition.Left, outerRow) || 
-				   qe.matchesCorrelatedCondition(row, *condition.Right, outerRow)
+			return qe.matchesCorrelatedCondition(row, *condition.Left, outerRow) ||
+				qe.matchesCorrelatedCondition(row, *condition.Right, outerRow)
 		default:
 			return false
 		}
 	}
-	
+
 	var leftValue interface{}
-	
+
 	// Determine the left value - could be from current row or outer row
 	if condition.TableName != "" {
 		// This is a qualified column reference - need to determine if it refers to outer or inner table
 		// For correlated subqueries, we need to be more careful about which table the column refers to
-		
+
 		// Check if this table alias refers to the outer query (we need outer query table info for this)
 		// For now, use a simple heuristic: if the qualified key exists in outer row, use it
 		qualifiedKey := condition.TableName + "." + condition.Column
@@ -1799,15 +1799,15 @@ func (qe *QueryEngine) matchesCorrelatedCondition(row Row, condition WhereCondit
 	} else {
 		leftValue = row[condition.Column]
 	}
-	
+
 	// Handle subquery conditions
 	if condition.Subquery != nil {
 		return qe.matchesCorrelatedSubqueryCondition(leftValue, condition, outerRow)
 	}
-	
+
 	// Create a dummy reader for comparison operations
 	dummyReader := &ParquetReader{}
-	
+
 	// Determine the right value - could be a constant or column reference
 	var rightValue interface{}
 	if condition.ValueColumn != "" {
@@ -1830,7 +1830,7 @@ func (qe *QueryEngine) matchesCorrelatedCondition(row Row, condition WhereCondit
 		// Regular constant value
 		rightValue = condition.Value
 	}
-	
+
 	// Handle regular conditions
 	switch condition.Operator {
 	case "=":
@@ -1855,7 +1855,7 @@ func (qe *QueryEngine) matchesCorrelatedCondition(row Row, condition WhereCondit
 	case "LIKE":
 		return dummyReader.matchesLike(leftValue, rightValue)
 	}
-	
+
 	return false
 }
 
@@ -1864,17 +1864,17 @@ func (qe *QueryEngine) matchesCorrelatedSubqueryCondition(leftValue interface{},
 	// Execute subquery with correlation context
 	var result *QueryResult
 	var err error
-	
+
 	if condition.Subquery.IsCorrelated {
 		result, err = qe.ExecuteCorrelatedSubquery(condition.Subquery, outerRow)
 	} else {
 		result, err = qe.ExecuteSubquery(condition.Subquery)
 	}
-	
+
 	if err != nil || result.Error != "" {
 		return false
 	}
-	
+
 	switch condition.Operator {
 	case "IN":
 		for _, row := range result.Rows {
@@ -1904,7 +1904,7 @@ func (qe *QueryEngine) matchesCorrelatedSubqueryCondition(leftValue interface{},
 		}
 		return false
 	}
-	
+
 	return false
 }
 
@@ -1922,12 +1922,12 @@ func (qe *QueryEngine) executeWindowFunctions(query *ParsedQuery, rows []Row, re
 	if len(query.WindowFuncs) == 0 {
 		return rows
 	}
-	
+
 	// Process each window function
 	for _, winFunc := range query.WindowFuncs {
 		rows = qe.executeWindowFunction(winFunc, rows, reader)
 	}
-	
+
 	return rows
 }
 
@@ -1954,20 +1954,20 @@ func (qe *QueryEngine) executeWindowFunction(winFunc WindowFunction, rows []Row,
 func (qe *QueryEngine) executeRowNumber(winFunc WindowFunction, rows []Row, reader *ParquetReader) []Row {
 	// Group rows by partition if PARTITION BY is specified
 	partitions := qe.partitionRows(rows, winFunc.WindowSpec.PartitionBy)
-	
+
 	// Process each partition
 	for _, partition := range partitions {
 		// Sort partition by ORDER BY if specified
 		if len(winFunc.WindowSpec.OrderBy) > 0 {
 			partition = qe.sortRows(partition, winFunc.WindowSpec.OrderBy, reader)
 		}
-		
+
 		// Assign row numbers within this partition
 		for i, row := range partition {
 			row[winFunc.Alias] = i + 1 // ROW_NUMBER starts at 1
 		}
 	}
-	
+
 	return rows
 }
 
@@ -1977,9 +1977,9 @@ func (qe *QueryEngine) partitionRows(rows []Row, partitionBy []string) [][]Row {
 		// No partitioning, return all rows as a single partition
 		return [][]Row{rows}
 	}
-	
+
 	partitionMap := make(map[string][]Row)
-	
+
 	for _, row := range rows {
 		// Create a key from the partition columns
 		var keyParts []string
@@ -1991,16 +1991,16 @@ func (qe *QueryEngine) partitionRows(rows []Row, partitionBy []string) [][]Row {
 			}
 		}
 		key := strings.Join(keyParts, "|")
-		
+
 		partitionMap[key] = append(partitionMap[key], row)
 	}
-	
+
 	// Convert map to slice
 	var partitions [][]Row
 	for _, partition := range partitionMap {
 		partitions = append(partitions, partition)
 	}
-	
+
 	return partitions
 }
 
@@ -2010,7 +2010,7 @@ func (qe *QueryEngine) compareRowsForRanking(row1, row2 Row, orderBy []OrderByCo
 	for _, col := range orderBy {
 		val1, exists1 := row1[col.Column]
 		val2, exists2 := row2[col.Column]
-		
+
 		// Handle missing values
 		if !exists1 && !exists2 {
 			continue
@@ -2029,7 +2029,7 @@ func (qe *QueryEngine) compareRowsForRanking(row1, row2 Row, orderBy []OrderByCo
 				return 1
 			}
 		}
-		
+
 		// Compare values based on type
 		cmp := qe.compareValues(val1, val2)
 		if cmp != 0 {
@@ -2054,40 +2054,60 @@ func (qe *QueryEngine) compareValues(val1, val2 interface{}) int {
 	if val2 == nil {
 		return 1
 	}
-	
+
 	// Convert to comparable types
 	switch v1 := val1.(type) {
 	case int:
 		if v2, ok := val2.(int); ok {
-			if v1 < v2 { return -1 }
-			if v1 > v2 { return 1 }
+			if v1 < v2 {
+				return -1
+			}
+			if v1 > v2 {
+				return 1
+			}
 			return 0
 		}
 	case int64:
 		if v2, ok := val2.(int64); ok {
-			if v1 < v2 { return -1 }
-			if v1 > v2 { return 1 }
+			if v1 < v2 {
+				return -1
+			}
+			if v1 > v2 {
+				return 1
+			}
 			return 0
 		}
 	case float64:
 		if v2, ok := val2.(float64); ok {
-			if v1 < v2 { return -1 }
-			if v1 > v2 { return 1 }
+			if v1 < v2 {
+				return -1
+			}
+			if v1 > v2 {
+				return 1
+			}
 			return 0
 		}
 	case string:
 		if v2, ok := val2.(string); ok {
-			if v1 < v2 { return -1 }
-			if v1 > v2 { return 1 }
+			if v1 < v2 {
+				return -1
+			}
+			if v1 > v2 {
+				return 1
+			}
 			return 0
 		}
 	}
-	
+
 	// Fallback to string comparison
 	str1 := fmt.Sprintf("%v", val1)
 	str2 := fmt.Sprintf("%v", val2)
-	if str1 < str2 { return -1 }
-	if str1 > str2 { return 1 }
+	if str1 < str2 {
+		return -1
+	}
+	if str1 > str2 {
+		return 1
+	}
 	return 0
 }
 
@@ -2095,14 +2115,14 @@ func (qe *QueryEngine) compareValues(val1, val2 interface{}) int {
 func (qe *QueryEngine) executeRank(winFunc WindowFunction, rows []Row, reader *ParquetReader) []Row {
 	// Group rows by partition if PARTITION BY is specified
 	partitions := qe.partitionRows(rows, winFunc.WindowSpec.PartitionBy)
-	
+
 	// Process each partition
 	for _, partition := range partitions {
 		// Sort partition by ORDER BY if specified
 		if len(winFunc.WindowSpec.OrderBy) > 0 {
 			partition = qe.sortRows(partition, winFunc.WindowSpec.OrderBy, reader)
 		}
-		
+
 		// Assign ranks within this partition
 		currentRank := 1
 		for i, row := range partition {
@@ -2114,7 +2134,7 @@ func (qe *QueryEngine) executeRank(winFunc WindowFunction, rows []Row, reader *P
 			row[winFunc.Alias] = currentRank
 		}
 	}
-	
+
 	return rows
 }
 
@@ -2122,14 +2142,14 @@ func (qe *QueryEngine) executeRank(winFunc WindowFunction, rows []Row, reader *P
 func (qe *QueryEngine) executeDenseRank(winFunc WindowFunction, rows []Row, reader *ParquetReader) []Row {
 	// Group rows by partition if PARTITION BY is specified
 	partitions := qe.partitionRows(rows, winFunc.WindowSpec.PartitionBy)
-	
+
 	// Process each partition
 	for _, partition := range partitions {
 		// Sort partition by ORDER BY if specified
 		if len(winFunc.WindowSpec.OrderBy) > 0 {
 			partition = qe.sortRows(partition, winFunc.WindowSpec.OrderBy, reader)
 		}
-		
+
 		// Assign dense ranks within this partition
 		currentRank := 1
 		for i, row := range partition {
@@ -2141,7 +2161,7 @@ func (qe *QueryEngine) executeDenseRank(winFunc WindowFunction, rows []Row, read
 			row[winFunc.Alias] = currentRank
 		}
 	}
-	
+
 	return rows
 }
 
@@ -2152,7 +2172,7 @@ func (qe *QueryEngine) executeLag(winFunc WindowFunction, rows []Row, reader *Pa
 	column := winFunc.Column
 	offset := 1
 	var defaultValue interface{}
-	
+
 	if len(winFunc.Arguments) > 0 {
 		if offsetVal, ok := winFunc.Arguments[0].(int); ok {
 			offset = offsetVal
@@ -2161,17 +2181,17 @@ func (qe *QueryEngine) executeLag(winFunc WindowFunction, rows []Row, reader *Pa
 	if len(winFunc.Arguments) > 1 {
 		defaultValue = winFunc.Arguments[1]
 	}
-	
+
 	// Group rows by partition if PARTITION BY is specified
 	partitions := qe.partitionRows(rows, winFunc.WindowSpec.PartitionBy)
-	
+
 	// Process each partition
 	for _, partition := range partitions {
 		// Sort partition by ORDER BY if specified
 		if len(winFunc.WindowSpec.OrderBy) > 0 {
 			partition = qe.sortRows(partition, winFunc.WindowSpec.OrderBy, reader)
 		}
-		
+
 		// Apply LAG within this partition
 		for i, row := range partition {
 			prevIndex := i - offset
@@ -2188,7 +2208,7 @@ func (qe *QueryEngine) executeLag(winFunc WindowFunction, rows []Row, reader *Pa
 			}
 		}
 	}
-	
+
 	return rows
 }
 
@@ -2199,7 +2219,7 @@ func (qe *QueryEngine) executeLead(winFunc WindowFunction, rows []Row, reader *P
 	column := winFunc.Column
 	offset := 1
 	var defaultValue interface{}
-	
+
 	if len(winFunc.Arguments) > 0 {
 		if offsetVal, ok := winFunc.Arguments[0].(int); ok {
 			offset = offsetVal
@@ -2208,17 +2228,17 @@ func (qe *QueryEngine) executeLead(winFunc WindowFunction, rows []Row, reader *P
 	if len(winFunc.Arguments) > 1 {
 		defaultValue = winFunc.Arguments[1]
 	}
-	
+
 	// Group rows by partition if PARTITION BY is specified
 	partitions := qe.partitionRows(rows, winFunc.WindowSpec.PartitionBy)
-	
+
 	// Process each partition
 	for _, partition := range partitions {
 		// Sort partition by ORDER BY if specified
 		if len(winFunc.WindowSpec.OrderBy) > 0 {
 			partition = qe.sortRows(partition, winFunc.WindowSpec.OrderBy, reader)
 		}
-		
+
 		// Apply LEAD within this partition
 		for i, row := range partition {
 			nextIndex := i + offset
@@ -2235,7 +2255,7 @@ func (qe *QueryEngine) executeLead(winFunc WindowFunction, rows []Row, reader *P
 			}
 		}
 	}
-	
+
 	return rows
 }
 
@@ -2247,7 +2267,7 @@ func (qe *QueryEngine) executeExplain(query *ParsedQuery) (*QueryResult, error) 
 			Error: "no query to explain",
 		}, nil
 	}
-	
+
 	// Create query plan
 	plan, err := qe.planner.CreatePlan(query.ExplainQuery, qe)
 	if err != nil {
@@ -2256,28 +2276,28 @@ func (qe *QueryEngine) executeExplain(query *ParsedQuery) (*QueryResult, error) 
 			Error: fmt.Sprintf("failed to create query plan: %v", err),
 		}, nil
 	}
-	
+
 	// If ANALYZE is requested, execute the query and collect actual statistics
 	if query.ExplainOptions.Analyze {
 		// Execute the query and measure time
 		startTime := time.Now()
 		result, err := qe.executeSelect(query.ExplainQuery)
 		elapsed := time.Since(startTime).Milliseconds()
-		
+
 		if err != nil {
 			return &QueryResult{
 				Query: query.RawSQL,
 				Error: fmt.Sprintf("failed to analyze query: %v", err),
 			}, nil
 		}
-		
+
 		// Update plan with actual statistics
 		if plan.Root != nil {
 			plan.Root.ActualRows = int64(result.Count)
 			plan.Root.ActualTime = float64(elapsed)
 		}
 	}
-	
+
 	// Format the output based on options
 	var output string
 	switch query.ExplainOptions.Format {
@@ -2288,7 +2308,7 @@ func (qe *QueryEngine) executeExplain(query *ParsedQuery) (*QueryResult, error) 
 	default:
 		output = qe.formatPlanAsText(plan, query.ExplainOptions)
 	}
-	
+
 	// Return the plan as a single row result
 	return &QueryResult{
 		Columns: []string{"QUERY PLAN"},
@@ -2305,15 +2325,15 @@ func (qe *QueryEngine) formatPlanAsText(plan *QueryPlan, options *ExplainOptions
 	if plan == nil || plan.Root == nil {
 		return "No query plan available"
 	}
-	
+
 	var result strings.Builder
 	result.WriteString("Query Plan:\n")
 	result.WriteString(plan.Root.StringWithOptions(0, options.Costs))
-	
+
 	if options.Verbose {
 		result.WriteString("\nNote: Verbose output not fully implemented yet\n")
 	}
-	
+
 	return result.String()
 }
 
@@ -2322,13 +2342,13 @@ func (qe *QueryEngine) formatPlanAsJSON(plan *QueryPlan, options *ExplainOptions
 	if plan == nil || plan.Root == nil {
 		return "{\"error\": \"No query plan available\"}"
 	}
-	
+
 	planMap := qe.planNodeToMap(plan.Root, options)
 	jsonBytes, err := json.MarshalIndent(planMap, "", "  ")
 	if err != nil {
 		return fmt.Sprintf("{\"error\": \"Failed to marshal plan: %v\"}", err)
 	}
-	
+
 	return string(jsonBytes)
 }
 
@@ -2342,20 +2362,20 @@ func (qe *QueryEngine) formatPlanAsYAML(plan *QueryPlan, options *ExplainOptions
 // planNodeToMap converts a plan node to a map for JSON serialization
 func (qe *QueryEngine) planNodeToMap(node *PlanNode, options *ExplainOptions) map[string]interface{} {
 	result := make(map[string]interface{})
-	
+
 	result["node_type"] = string(node.Type)
-	
+
 	if options.Costs {
 		result["cost"] = node.Cost
 		result["rows"] = node.Rows
 		result["width"] = node.Width
 	}
-	
+
 	if node.ActualRows > 0 || node.ActualTime > 0 {
 		result["actual_rows"] = node.ActualRows
 		result["actual_time_ms"] = node.ActualTime
 	}
-	
+
 	// Add operation-specific fields
 	switch node.Type {
 	case PlanNodeScan:
@@ -2380,7 +2400,7 @@ func (qe *QueryEngine) planNodeToMap(node *PlanNode, options *ExplainOptions) ma
 	case PlanNodeCTE:
 		result["cte_name"] = node.CTEName
 	}
-	
+
 	// Add children
 	if len(node.Children) > 0 {
 		var children []map[string]interface{}
@@ -2389,7 +2409,7 @@ func (qe *QueryEngine) planNodeToMap(node *PlanNode, options *ExplainOptions) ma
 		}
 		result["children"] = children
 	}
-	
+
 	return result
 }
 
@@ -2405,7 +2425,7 @@ func (qe *QueryEngine) executeUnionWithCTEs(query *ParsedQuery, parentCTEs map[s
 			Error: "UNION query has no queries to union",
 		}, nil
 	}
-	
+
 	// Initialize CTE results with parent CTEs if provided
 	cteResults := make(map[string][]Row)
 	if parentCTEs != nil {
@@ -2413,7 +2433,7 @@ func (qe *QueryEngine) executeUnionWithCTEs(query *ParsedQuery, parentCTEs map[s
 			cteResults[name] = rows
 		}
 	}
-	
+
 	// Process CTEs if present
 	if len(query.CTEs) > 0 {
 		for _, cte := range query.CTEs {
@@ -2422,31 +2442,31 @@ func (qe *QueryEngine) executeUnionWithCTEs(query *ParsedQuery, parentCTEs map[s
 			if err != nil {
 				return nil, fmt.Errorf("failed to execute CTE '%s': %w", cte.Name, err)
 			}
-			
+
 			// If the CTE has column aliases, apply them
 			rows := cteResult.Rows
 			if len(cte.ColumnNames) > 0 {
 				rows = qe.applyCTEColumnAliases(rows, cteResult.Columns, cte.ColumnNames)
 			}
-			
+
 			// Store the CTE results with aliased columns
 			cteResults[cte.Name] = rows
 		}
 	}
-	
+
 	// Execute all queries in the UNION
 	var allResults []*QueryResult
 	var allRows []Row
 	var commonColumns []string
-	
+
 	// Execute each query
 	for i, unionQuery := range query.UnionQueries {
 		var result *QueryResult
 		var err error
-		
+
 		// Pass CTEs to each union query
 		unionQuery.Query.CTEs = query.CTEs
-		
+
 		// Execute the query
 		if unionQuery.Query.Type == SELECT {
 			result, err = qe.executeSelectWithCTEs(unionQuery.Query, cteResults)
@@ -2456,21 +2476,21 @@ func (qe *QueryEngine) executeUnionWithCTEs(query *ParsedQuery, parentCTEs map[s
 				Error: fmt.Sprintf("UNION query %d is not a SELECT", i+1),
 			}, nil
 		}
-		
+
 		if err != nil {
 			return &QueryResult{
 				Query: query.RawSQL,
 				Error: fmt.Sprintf("failed to execute UNION query %d: %v", i+1, err),
 			}, nil
 		}
-		
+
 		if result.Error != "" {
 			return &QueryResult{
 				Query: query.RawSQL,
 				Error: fmt.Sprintf("UNION query %d error: %s", i+1, result.Error),
 			}, nil
 		}
-		
+
 		// Check column compatibility
 		if i == 0 {
 			commonColumns = result.Columns
@@ -2490,11 +2510,11 @@ func (qe *QueryEngine) executeUnionWithCTEs(query *ParsedQuery, parentCTEs map[s
 				}, nil
 			}
 		}
-		
+
 		allResults = append(allResults, result)
 		allRows = append(allRows, result.Rows...)
 	}
-	
+
 	// Handle UNION vs UNION ALL
 	var finalRows []Row
 	// Check if any UNION (not ALL) exists - if so, we need to deduplicate
@@ -2505,7 +2525,7 @@ func (qe *QueryEngine) executeUnionWithCTEs(query *ParsedQuery, parentCTEs map[s
 			break
 		}
 	}
-	
+
 	if needsDedupe {
 		// UNION - remove duplicates
 		finalRows = qe.removeDuplicateRows(allRows, commonColumns)
@@ -2513,17 +2533,17 @@ func (qe *QueryEngine) executeUnionWithCTEs(query *ParsedQuery, parentCTEs map[s
 		// UNION ALL - keep all rows including duplicates
 		finalRows = allRows
 	}
-	
+
 	// Apply final ORDER BY if present
 	if len(query.OrderBy) > 0 {
 		finalRows = qe.sortUnionRows(finalRows, query.OrderBy, commonColumns)
 	}
-	
+
 	// Apply final LIMIT if present
 	if query.Limit > 0 && len(finalRows) > query.Limit {
 		finalRows = finalRows[:query.Limit]
 	}
-	
+
 	return &QueryResult{
 		Columns: commonColumns,
 		Rows:    finalRows,
@@ -2547,7 +2567,7 @@ func (qe *QueryEngine) hasUnionAll(query *ParsedQuery) bool {
 func (qe *QueryEngine) removeDuplicateRows(rows []Row, columns []string) []Row {
 	seen := make(map[string]bool)
 	var uniqueRows []Row
-	
+
 	for _, row := range rows {
 		// Create a key from all column values
 		key := qe.createRowKey(row, columns)
@@ -2556,7 +2576,7 @@ func (qe *QueryEngine) removeDuplicateRows(rows []Row, columns []string) []Row {
 			uniqueRows = append(uniqueRows, row)
 		}
 	}
-	
+
 	return uniqueRows
 }
 
@@ -2576,13 +2596,13 @@ func (qe *QueryEngine) sortUnionRows(rows []Row, orderBy []OrderByColumn, column
 		for _, ob := range orderBy {
 			// Find the column in the row
 			colName := ob.Column
-			
+
 			// Get values from both rows
 			val1 := rows[i][colName]
 			val2 := rows[j][colName]
-			
+
 			cmp := qe.compareValues(val1, val2)
-			
+
 			if cmp != 0 {
 				if ob.Direction == "DESC" {
 					return cmp > 0
@@ -2592,6 +2612,6 @@ func (qe *QueryEngine) sortUnionRows(rows []Row, orderBy []OrderByColumn, column
 		}
 		return false
 	})
-	
+
 	return rows
 }

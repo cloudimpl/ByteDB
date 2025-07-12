@@ -1,10 +1,12 @@
 package main
 
+import "bytedb/core"
+
 // Fixed test data that never changes
 // This ensures all tests are deterministic and don't break when data generation changes
 
 // Fixed employee test data
-var TestEmployees = []Employee{
+var TestEmployees = []core.Employee{
 	{1, "John Doe", "Engineering", 75000.0, 30, "2020-01-15"},
 	{2, "Jane Smith", "Marketing", 65000.0, 28, "2019-03-22"},
 	{3, "Mike Johnson", "Engineering", 80000.0, 35, "2018-07-10"},
@@ -18,7 +20,7 @@ var TestEmployees = []Employee{
 }
 
 // Fixed product test data
-var TestProducts = []Product{
+var TestProducts = []core.Product{
 	{1, "Laptop", "Electronics", 999.99, true, "TechCorp"},
 	{2, "Mouse", "Electronics", 29.99, true, "TechCorp"},
 	{3, "Keyboard", "Electronics", 89.99, false, "TechCorp"},
@@ -32,7 +34,7 @@ var TestProducts = []Product{
 }
 
 // Fixed department test data
-var TestDepartments = []Department{
+var TestDepartments = []core.Department{
 	{"Engineering", "Lisa Davis", 1000000.0, "Building A", 4},
 	{"Marketing", "Jane Smith", 500000.0, "Building B", 2},
 	{"HR", "Sarah Wilson", 300000.0, "Building C", 1},
@@ -52,22 +54,22 @@ const (
 	TestEmployeesInResearch    = 0 // No employees
 
 	// Salary ranges
-	TestMinSalary             = 55000.0  // Sarah Wilson (HR)
-	TestMaxSalary             = 85000.0  // Lisa Davis (Engineering)
-	TestAvgSalaryEngineering  = 79500.0  // (75000 + 80000 + 85000 + 78000) / 4
-	TestEmployeesOver70k      = 7        // All except Jane(65k), Sarah(55k), Tom(62k)
-	TestEmployeesOver80k      = 2        // Lisa(85k), Mike(80k)
-	
+	TestMinSalary            = 55000.0 // Sarah Wilson (HR)
+	TestMaxSalary            = 85000.0 // Lisa Davis (Engineering)
+	TestAvgSalaryEngineering = 79500.0 // (75000 + 80000 + 85000 + 78000) / 4
+	TestEmployeesOver70k     = 7       // All except Jane(65k), Sarah(55k), Tom(62k)
+	TestEmployeesOver80k     = 2       // Lisa(85k), Mike(80k)
+
 	// Product counts and prices
-	TestProductsCount         = 10
-	TestProductsOver100       = 3        // Laptop(999.99), Monitor(299.99), Phone(699.99)
-	TestProductsOver500       = 2        // Laptop(999.99), Phone(699.99)
-	TestCheapestProduct       = 0.99     // Eraser
-	TestMostExpensiveProduct  = 999.99   // Laptop
-	
+	TestProductsCount        = 10
+	TestProductsOver100      = 3      // Laptop(999.99), Monitor(299.99), Phone(699.99)
+	TestProductsOver500      = 2      // Laptop(999.99), Phone(699.99)
+	TestCheapestProduct      = 0.99   // Eraser
+	TestMostExpensiveProduct = 999.99 // Laptop
+
 	// Department facts
-	TestDepartmentsCount      = 6
-	TestDeptsBudgetOver200k   = 6        // All departments
-	TestDeptsBudgetOver500k   = 4        // Engineering, Marketing, Sales, Finance
-	TestDeptsWithEmployees    = 5        // All except Research
+	TestDepartmentsCount    = 6
+	TestDeptsBudgetOver200k = 6 // All departments
+	TestDeptsBudgetOver500k = 4 // Engineering, Marketing, Sales, Finance
+	TestDeptsWithEmployees  = 5 // All except Research
 )

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"bytedb/core"
 )
 
 // QueryOptimizerDemo demonstrates the query optimizer benefits
@@ -13,7 +15,7 @@ func QueryOptimizerDemo() {
 	fmt.Println()
 
 	// Create engine with optimization
-	engine := NewQueryEngine("./data")
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	demos := []struct {
@@ -32,7 +34,7 @@ func QueryOptimizerDemo() {
 			explanation: "Column pruning reduces I/O by reading only required columns instead of all columns.",
 		},
 		{
-			name:        "Predicate Pushdown Optimization", 
+			name:        "Predicate Pushdown Optimization",
 			description: "Pushes filtering to the storage layer",
 			queries: []string{
 				"SELECT * FROM employees WHERE salary > 80000",
@@ -79,7 +81,7 @@ func QueryOptimizerDemo() {
 
 		for j, query := range demo.queries {
 			fmt.Printf("\nQuery %d: %s\n", j+1, strings.TrimSpace(query))
-			
+
 			// Execute query and measure performance
 			start := time.Now()
 			result, err := engine.Execute(query)
@@ -96,7 +98,7 @@ func QueryOptimizerDemo() {
 			}
 
 			// Display results
-			fmt.Printf("✅ Success: %d rows, %d columns in %v\n", 
+			fmt.Printf("✅ Success: %d rows, %d columns in %v\n",
 				result.Count, len(result.Columns), duration)
 
 			// Show column names
@@ -154,7 +156,7 @@ func PerformanceComparisonDemo() {
 	fmt.Println(strings.Repeat("=", 50))
 	fmt.Println()
 
-	engine := NewQueryEngine("./data")
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	testQueries := []struct {
@@ -168,7 +170,7 @@ func PerformanceComparisonDemo() {
 			"Reading only 2 columns instead of all 6 columns",
 		},
 		{
-			"Selective Filtering", 
+			"Selective Filtering",
 			"SELECT * FROM employees WHERE salary > 80000",
 			"Early filtering reduces processing overhead",
 		},
@@ -203,7 +205,7 @@ func PerformanceComparisonDemo() {
 			start := time.Now()
 			result, err := engine.Execute(test.query)
 			duration := time.Since(start)
-			
+
 			if err == nil && result.Error == "" {
 				totalDuration += duration
 			}
@@ -211,14 +213,14 @@ func PerformanceComparisonDemo() {
 
 		avgDuration := totalDuration / iterations
 		fmt.Printf("   ⏱️  Average Execution Time: %v\n", avgDuration)
-		
+
 		// Get optimization stats
 		if stats, err := engine.GetOptimizationStats(test.query); err == nil {
 			if improvement, ok := stats["improvement_percent"].(float64); ok && improvement > 0 {
 				fmt.Printf("   📈 Optimization Improvement: %.1f%%\n", improvement)
 			}
 		}
-		
+
 		fmt.Println()
 	}
 }
@@ -230,36 +232,36 @@ func OptimizationRulesDemo() {
 	fmt.Println()
 
 	// Create a query planner
-	planner := NewQueryPlanner()
-	_ = NewQueryOptimizer(planner) // optimizer for completeness
+	planner := core.NewQueryPlanner()
+	_ = core.NewQueryOptimizer(planner) // optimizer for completeness
 
 	rules := []struct {
 		name        string
-		rule        OptimizationRule
+		rule        core.OptimizationRule
 		description string
 		example     string
 	}{
 		{
 			"Predicate Pushdown",
-			&PredicatePushdownRule{},
+			&core.PredicatePushdownRule{},
 			"Moves WHERE conditions closer to data source",
 			"WHERE salary > 70000 is applied during table scan",
 		},
 		{
-			"Column Pruning", 
-			&ColumnPruningRule{},
+			"Column Pruning",
+			&core.ColumnPruningRule{},
 			"Eliminates unnecessary columns from scan operations",
 			"SELECT name, salary only reads those 2 columns",
 		},
 		{
 			"Join Order Optimization",
-			&JoinOrderOptimizationRule{},
+			&core.JoinOrderOptimizationRule{},
 			"Reorders joins to minimize intermediate result sizes",
 			"Smaller table becomes the build side of hash join",
 		},
 		{
 			"Constant Folding",
-			&ConstantFoldingRule{},
+			&core.ConstantFoldingRule{},
 			"Simplifies constant expressions at compile time",
 			"WHERE 1 = 1 becomes WHERE TRUE",
 		},
@@ -270,21 +272,21 @@ func OptimizationRulesDemo() {
 		fmt.Printf("   Description: %s\n", ruleDemo.description)
 		fmt.Printf("   Example: %s\n", ruleDemo.example)
 		fmt.Printf("   Rule Cost: %d\n", ruleDemo.rule.Cost())
-		
+
 		// Create a dummy plan to test the rule
 		plan := createSamplePlan()
 		optimizedPlan, changed := ruleDemo.rule.Apply(plan)
-		
+
 		if changed {
 			fmt.Printf("   ✅ Rule applied successfully\n")
 		} else {
 			fmt.Printf("   ℹ️  Rule not applicable to sample plan\n")
 		}
-		
+
 		if optimizedPlan != nil {
 			fmt.Printf("   📊 Plan nodes after optimization: %d\n", countPlanNodes(optimizedPlan.Root))
 		}
-		
+
 		fmt.Println()
 	}
 
@@ -313,7 +315,7 @@ func HTTPOptimizationDemo() {
 			"SELECT name, salary downloads only 2 columns worth of data",
 		},
 		{
-			"Predicate Pushdown", 
+			"Predicate Pushdown",
 			"Minimizes HTTP range requests",
 			"WHERE salary > 80000 reads fewer row groups over network",
 		},
@@ -349,16 +351,16 @@ func min(a, b int) int {
 	return b
 }
 
-func createSamplePlan() *QueryPlan {
-	return &QueryPlan{
-		Root: &PlanNode{
-			Type: PlanNodeFilter,
-			Filter: []WhereCondition{
+func createSamplePlan() *core.QueryPlan {
+	return &core.QueryPlan{
+		Root: &core.PlanNode{
+			Type: core.PlanNodeFilter,
+			Filter: []core.WhereCondition{
 				{Column: "salary", Operator: ">", Value: 70000},
 			},
-			Children: []*PlanNode{
+			Children: []*core.PlanNode{
 				{
-					Type:      PlanNodeScan,
+					Type:      core.PlanNodeScan,
 					TableName: "employees",
 					Columns:   []string{"*"},
 				},
@@ -367,11 +369,11 @@ func createSamplePlan() *QueryPlan {
 	}
 }
 
-func countPlanNodes(node *PlanNode) int {
+func countPlanNodes(node *core.PlanNode) int {
 	if node == nil {
 		return 0
 	}
-	
+
 	count := 1
 	for _, child := range node.Children {
 		count += countPlanNodes(child)
@@ -387,7 +389,7 @@ func RunOptimizerDemo() {
 
 	// Run all demos
 	QueryOptimizerDemo()
-	PerformanceComparisonDemo() 
+	PerformanceComparisonDemo()
 	OptimizationRulesDemo()
 	HTTPOptimizationDemo()
 

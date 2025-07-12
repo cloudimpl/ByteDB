@@ -16,7 +16,20 @@
       "Bash(find:*)",
       "Bash(./migrate_tests.sh:*)",
       "Bash(grep:*)",
-      "Bash(true)"
+      "Bash(true)",
+      "Bash(PATH=$PATH:~/go/bin protoc --go_out=. --go-grpc_out=. proto/distributed.proto)",
+      "Bash(chmod:*)",
+      "Bash(./build.sh)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
+      "Bash(./cmd/build_coordinator.sh:*)",
+      "Bash(./distributed_summary.sh:*)",
+      "Bash(for file in *_test.go)",
+      "Bash(do if grep -q \"NewQueryEngine\\|NewSQLParser\\|NewTestQueryEngine\" \"$file\")",
+      "Bash(! grep -q \"bytedb/core\" \"$file\")",
+      "Bash(then echo \"$file\")",
+      "Bash(fi)",
+      "Bash(done)"
     ],
     "deny": []
   }

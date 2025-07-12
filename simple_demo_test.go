@@ -15,9 +15,9 @@ func TestSimpleOptimizerDemo(t *testing.T) {
 		t.Log("")
 
 		demos := []struct {
-			name     string
-			query    string
-			benefit  string
+			name    string
+			query   string
+			benefit string
 		}{
 			{
 				"Column Pruning",
@@ -30,7 +30,7 @@ func TestSimpleOptimizerDemo(t *testing.T) {
 				"Efficient function evaluation with predicate pushdown",
 			},
 			{
-				"JOIN Optimization", 
+				"JOIN Optimization",
 				"SELECT e.name, d.manager FROM employees e JOIN departments d ON e.department = d.name LIMIT 3",
 				"Optimized join order and execution strategy",
 			},
@@ -57,7 +57,7 @@ func TestSimpleOptimizerDemo(t *testing.T) {
 				continue
 			}
 
-			t.Logf("   ✅ Success: %d rows, %d columns in %v", 
+			t.Logf("   ✅ Success: %d rows, %d columns in %v",
 				result.Count, len(result.Columns), duration)
 			t.Logf("   📊 Columns: %v", result.Columns)
 			t.Logf("   💡 Benefit: %s", demo.benefit)
@@ -99,10 +99,10 @@ func TestOptimizationBenefitsComparison(t *testing.T) {
 		defer engine.Close()
 
 		testCases := []struct {
-			name          string
-			query         string
-			expectedCols  int
-			optimization  string
+			name         string
+			query        string
+			expectedCols int
+			optimization string
 		}{
 			{
 				"Column Pruning Test",

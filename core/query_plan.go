@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -29,39 +29,39 @@ type QueryPlan struct {
 
 // PlanNode represents a single operation in the query plan
 type PlanNode struct {
-	Type        PlanNodeType
-	Children    []*PlanNode
-	Cost        float64 // Estimated cost of this operation
-	Rows        int64   // Estimated number of rows
-	Width       int     // Estimated average row width in bytes
-	ActualRows  int64   // Actual rows (for EXPLAIN ANALYZE)
-	ActualTime  float64 // Actual execution time in ms (for EXPLAIN ANALYZE)
-	
+	Type       PlanNodeType
+	Children   []*PlanNode
+	Cost       float64 // Estimated cost of this operation
+	Rows       int64   // Estimated number of rows
+	Width      int     // Estimated average row width in bytes
+	ActualRows int64   // Actual rows (for EXPLAIN ANALYZE)
+	ActualTime float64 // Actual execution time in ms (for EXPLAIN ANALYZE)
+
 	// Operation-specific fields
-	TableName        string            // For Scan nodes
-	Columns          []string          // For Project nodes
-	Filter           []WhereCondition  // For Filter nodes
-	FilterConditions []WhereCondition  // For optimized filter pushdown
-	JoinType    JoinType          // For Join nodes
-	JoinCond    JoinCondition     // For Join nodes
-	GroupBy     []string          // For Aggregate nodes
-	OrderBy     []OrderByColumn   // For Sort nodes
-	LimitCount  int               // For Limit nodes
-	WindowFuncs []WindowFunction  // For Window nodes
-	CTEName     string            // For CTE nodes
-	
+	TableName        string           // For Scan nodes
+	Columns          []string         // For Project nodes
+	Filter           []WhereCondition // For Filter nodes
+	FilterConditions []WhereCondition // For optimized filter pushdown
+	JoinType         JoinType         // For Join nodes
+	JoinCond         JoinCondition    // For Join nodes
+	GroupBy          []string         // For Aggregate nodes
+	OrderBy          []OrderByColumn  // For Sort nodes
+	LimitCount       int              // For Limit nodes
+	WindowFuncs      []WindowFunction // For Window nodes
+	CTEName          string           // For CTE nodes
+
 	// Statistics and metadata
-	Statistics  *NodeStatistics
+	Statistics *NodeStatistics
 }
 
 // NodeStatistics contains statistical information about a plan node
 type NodeStatistics struct {
-	TableRows      int64              // Total rows in table
-	DistinctValues map[string]int64   // Distinct values per column
+	TableRows      int64                  // Total rows in table
+	DistinctValues map[string]int64       // Distinct values per column
 	MinValues      map[string]interface{} // Min values per column
 	MaxValues      map[string]interface{} // Max values per column
-	NullCount      map[string]int64   // Null count per column
-	Selectivity    float64            // Estimated selectivity of filters
+	NullCount      map[string]int64       // Null count per column
+	Selectivity    float64                // Estimated selectivity of filters
 }
 
 // String returns a string representation of the query plan
@@ -81,10 +81,10 @@ func (pn *PlanNode) String(indent int) string {
 func (pn *PlanNode) StringWithOptions(indent int, showCosts bool) string {
 	prefix := strings.Repeat("  ", indent)
 	var result strings.Builder
-	
+
 	// Node type and basic info
 	result.WriteString(fmt.Sprintf("%s-> %s", prefix, pn.Type))
-	
+
 	// Add operation-specific details
 	switch pn.Type {
 	case PlanNodeScan:
@@ -113,24 +113,24 @@ func (pn *PlanNode) StringWithOptions(indent int, showCosts bool) string {
 	case PlanNodeCTE:
 		result.WriteString(fmt.Sprintf(" %s", pn.CTEName))
 	}
-	
+
 	// Add cost information if requested
 	if showCosts {
 		result.WriteString(fmt.Sprintf(" (cost=%.2f rows=%d width=%d)", pn.Cost, pn.Rows, pn.Width))
 	}
-	
+
 	// Add actual execution stats if available
 	if pn.ActualRows > 0 || pn.ActualTime > 0 {
 		result.WriteString(fmt.Sprintf(" (actual rows=%d time=%.3fms)", pn.ActualRows, pn.ActualTime))
 	}
-	
+
 	result.WriteString("\n")
-	
+
 	// Recursively print children
 	for _, child := range pn.Children {
-		result.WriteString(child.StringWithOptions(indent + 1, showCosts))
+		result.WriteString(child.StringWithOptions(indent+1, showCosts))
 	}
-	
+
 	return result.String()
 }
 
@@ -171,7 +171,7 @@ func getJoinTypeName(jt JoinType) string {
 // EstimateCost estimates the cost of executing this node
 func (pn *PlanNode) EstimateCost() float64 {
 	baseCost := 0.0
-	
+
 	switch pn.Type {
 	case PlanNodeScan:
 		// Base cost for scanning a table
@@ -180,19 +180,19 @@ func (pn *PlanNode) EstimateCost() float64 {
 			// Adjust based on actual table size
 			baseCost = float64(pn.Statistics.TableRows) * 0.01
 		}
-		
+
 	case PlanNodeFilter:
 		// Cost of evaluating conditions
 		if len(pn.Children) > 0 {
 			baseCost = pn.Children[0].Cost + float64(pn.Children[0].Rows)*0.001*float64(len(pn.Filter))
 		}
-		
+
 	case PlanNodeProject:
 		// Cost of selecting specific columns
 		if len(pn.Children) > 0 {
 			baseCost = pn.Children[0].Cost + float64(pn.Children[0].Rows)*0.0001*float64(len(pn.Columns))
 		}
-		
+
 	case PlanNodeAggregate:
 		// Cost of aggregation
 		if len(pn.Children) > 0 {
@@ -203,7 +203,7 @@ func (pn *PlanNode) EstimateCost() float64 {
 			}
 			baseCost = pn.Children[0].Cost + groupCost + float64(pn.Children[0].Rows)*0.005
 		}
-		
+
 	case PlanNodeSort:
 		// Cost of sorting (n log n)
 		if len(pn.Children) > 0 {
@@ -212,13 +212,13 @@ func (pn *PlanNode) EstimateCost() float64 {
 				baseCost = pn.Children[0].Cost + rows*logBase2(rows)*0.01
 			}
 		}
-		
+
 	case PlanNodeJoin:
 		// Cost of join operation
 		if len(pn.Children) >= 2 {
 			leftRows := float64(pn.Children[0].Rows)
 			rightRows := float64(pn.Children[1].Rows)
-			
+
 			switch pn.JoinType {
 			case INNER_JOIN:
 				// Nested loop join cost approximation
@@ -231,13 +231,13 @@ func (pn *PlanNode) EstimateCost() float64 {
 				baseCost = pn.Children[0].Cost + pn.Children[1].Cost + leftRows*rightRows*0.002
 			}
 		}
-		
+
 	case PlanNodeLimit:
 		// Minimal cost for limit
 		if len(pn.Children) > 0 {
 			baseCost = pn.Children[0].Cost + 0.001
 		}
-		
+
 	case PlanNodeWindow:
 		// Cost of window functions
 		if len(pn.Children) > 0 {
@@ -245,20 +245,20 @@ func (pn *PlanNode) EstimateCost() float64 {
 			// Window functions require sorting and computation
 			baseCost = pn.Children[0].Cost + rows*logBase2(rows)*0.02*float64(len(pn.WindowFuncs))
 		}
-		
+
 	case PlanNodeCTE:
 		// Cost of materializing CTE
 		if len(pn.Children) > 0 {
 			baseCost = pn.Children[0].Cost * 1.1 // 10% overhead for materialization
 		}
-		
+
 	case PlanNodeSubquery:
 		// Cost of subquery execution
 		if len(pn.Children) > 0 {
 			baseCost = pn.Children[0].Cost * 1.2 // 20% overhead for subquery
 		}
 	}
-	
+
 	pn.Cost = baseCost
 	return baseCost
 }
@@ -271,7 +271,7 @@ func (pn *PlanNode) EstimateRows(parentRows int64) int64 {
 			return pn.Statistics.TableRows
 		}
 		return 1000 // Default estimate
-		
+
 	case PlanNodeFilter:
 		// Apply selectivity estimate
 		if pn.Statistics != nil && pn.Statistics.Selectivity > 0 {
@@ -283,11 +283,11 @@ func (pn *PlanNode) EstimateRows(parentRows int64) int64 {
 			reduction *= 0.5
 		}
 		return int64(float64(parentRows) * reduction)
-		
+
 	case PlanNodeProject:
 		// Project doesn't change row count
 		return parentRows
-		
+
 	case PlanNodeAggregate:
 		if len(pn.GroupBy) > 0 {
 			// Estimate based on distinct values
@@ -305,22 +305,22 @@ func (pn *PlanNode) EstimateRows(parentRows int64) int64 {
 		}
 		// No GROUP BY means single row result
 		return 1
-		
+
 	case PlanNodeSort:
 		// Sort doesn't change row count
 		return parentRows
-		
+
 	case PlanNodeLimit:
 		if int64(pn.LimitCount) < parentRows {
 			return int64(pn.LimitCount)
 		}
 		return parentRows
-		
+
 	case PlanNodeJoin:
 		if len(pn.Children) >= 2 {
 			leftRows := pn.Children[0].Rows
 			rightRows := pn.Children[1].Rows
-			
+
 			switch pn.JoinType {
 			case INNER_JOIN:
 				// Estimate based on selectivity
@@ -334,7 +334,7 @@ func (pn *PlanNode) EstimateRows(parentRows int64) int64 {
 			}
 		}
 		return parentRows
-		
+
 	default:
 		return parentRows
 	}

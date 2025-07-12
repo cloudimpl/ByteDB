@@ -3,10 +3,12 @@ package main
 import (
 	"fmt"
 	"testing"
+
+	"bytedb/core"
 )
 
 func TestJoinParser(t *testing.T) {
-	parser := NewSQLParser()
+	parser := core.NewSQLParser()
 
 	tests := []struct {
 		name        string
@@ -53,48 +55,48 @@ func TestJoinParser(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			query, err := parser.Parse(test.sql)
-			
+
 			if test.expectError && err == nil {
 				t.Errorf("Expected error but got none")
 				return
 			}
-			
+
 			if !test.expectError && err != nil {
 				t.Errorf("Unexpected error: %v", err)
 				return
 			}
-			
+
 			if test.expectError {
 				return // Skip further tests for error cases
 			}
-			
+
 			// Check basic table info
 			if query.TableName != test.tableName {
 				t.Errorf("Expected table name %s, got %s", test.tableName, query.TableName)
 			}
-			
+
 			if query.TableAlias != test.tableAlias {
 				t.Errorf("Expected table alias %s, got %s", test.tableAlias, query.TableAlias)
 			}
-			
+
 			// Check JOIN presence
 			if test.expectJoins != query.HasJoins {
 				t.Errorf("Expected HasJoins=%v, got %v", test.expectJoins, query.HasJoins)
 			}
-			
+
 			if test.expectJoins {
 				if len(query.Joins) == 0 {
 					t.Errorf("Expected JOIN clauses but found none")
 				} else {
 					// Check first JOIN
 					join := query.Joins[0]
-					fmt.Printf("JOIN: %s %s ON %s.%s = %s.%s\n", 
-						joinTypeToString(join.Type), join.TableName, 
+					fmt.Printf("JOIN: %s %s ON %s.%s = %s.%s\n",
+						joinTypeToString(join.Type), join.TableName,
 						join.Condition.LeftTable, join.Condition.LeftColumn,
 						join.Condition.RightTable, join.Condition.RightColumn)
 				}
 			}
-			
+
 			// Check qualified column parsing
 			for _, col := range query.Columns {
 				if col.TableName != "" {
@@ -103,22 +105,22 @@ func TestJoinParser(t *testing.T) {
 					fmt.Printf("Unqualified column: %s (alias: %s)\n", col.Name, col.Alias)
 				}
 			}
-			
+
 			// Print full query structure for debugging
 			fmt.Printf("Parsed query structure:\n%s\n", query.String())
 		})
 	}
 }
 
-func joinTypeToString(jt JoinType) string {
+func joinTypeToString(jt core.JoinType) string {
 	switch jt {
-	case INNER_JOIN:
+	case core.INNER_JOIN:
 		return "INNER JOIN"
-	case LEFT_JOIN:
+	case core.LEFT_JOIN:
 		return "LEFT JOIN"
-	case RIGHT_JOIN:
+	case core.RIGHT_JOIN:
 		return "RIGHT JOIN"
-	case FULL_OUTER_JOIN:
+	case core.FULL_OUTER_JOIN:
 		return "FULL OUTER JOIN"
 	default:
 		return "UNKNOWN JOIN"

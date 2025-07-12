@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"bytedb/core"
 	"github.com/parquet-go/parquet-go"
 )
 
@@ -23,14 +24,14 @@ type Customer struct {
 
 // Test with yet another different schema
 type Order struct {
-	OrderID      string  `parquet:"order_id"`
-	CustomerRef  int64   `parquet:"customer_ref"`
-	Amount       float64 `parquet:"amount"`
-	Currency     string  `parquet:"currency"`
-	Status       string  `parquet:"status"`
-	CreatedAt    string  `parquet:"created_at"`
-	ShippedAt    string  `parquet:"shipped_at,optional"`
-	Items        int32   `parquet:"items"`
+	OrderID     string  `parquet:"order_id"`
+	CustomerRef int64   `parquet:"customer_ref"`
+	Amount      float64 `parquet:"amount"`
+	Currency    string  `parquet:"currency"`
+	Status      string  `parquet:"status"`
+	CreatedAt   string  `parquet:"created_at"`
+	ShippedAt   string  `parquet:"shipped_at,optional"`
+	Items       int32   `parquet:"items"`
 }
 
 // generateCustomerData creates a test file with a customer schema
@@ -94,8 +95,8 @@ func TestGenericSchemaCustomers(t *testing.T) {
 
 	// Generate test data
 	generateCustomerData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test basic SELECT on customer data
@@ -103,7 +104,7 @@ func TestGenericSchemaCustomers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute customer query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Customer query returned error: %s", result.Error)
 	}
@@ -133,7 +134,7 @@ func TestGenericSchemaCustomers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute customer aggregate query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Customer aggregate query returned error: %s", result.Error)
 	}
@@ -144,7 +145,7 @@ func TestGenericSchemaCustomers(t *testing.T) {
 	}
 
 	// Test schema introspection
-	reader, err := NewParquetReader("./data/customers.parquet")
+	reader, err := core.NewParquetReader("./data/customers.parquet")
 	if err != nil {
 		t.Fatalf("Failed to create customer reader: %v", err)
 	}
@@ -186,8 +187,8 @@ func TestGenericSchemaOrders(t *testing.T) {
 
 	// Generate test data
 	generateOrderData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test basic SELECT on order data
@@ -195,7 +196,7 @@ func TestGenericSchemaOrders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute order query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Order query returned error: %s", result.Error)
 	}
@@ -210,7 +211,7 @@ func TestGenericSchemaOrders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute IN query on orders: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Order IN query returned error: %s", result.Error)
 	}
@@ -225,7 +226,7 @@ func TestGenericSchemaOrders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute order aggregate query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Order aggregate query returned error: %s", result.Error)
 	}
@@ -240,7 +241,7 @@ func TestGenericSchemaOrders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute ORDER BY on orders: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Order ORDER BY query returned error: %s", result.Error)
 	}
@@ -268,8 +269,8 @@ func TestGenericSchemaDataTypes(t *testing.T) {
 	// Generate both test data files
 	generateCustomerData()
 	generateOrderData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test boolean field operations
@@ -277,7 +278,7 @@ func TestGenericSchemaDataTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute boolean query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Boolean query returned error: %s", result.Error)
 	}
@@ -292,7 +293,7 @@ func TestGenericSchemaDataTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute customer_id query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Customer_id query returned error: %s", result.Error)
 	}
@@ -301,13 +302,13 @@ func TestGenericSchemaDataTypes(t *testing.T) {
 	if len(result.Rows) != 3 {
 		t.Errorf("Expected 3 customers with ID > 1002, got %d", len(result.Rows))
 	}
-	
+
 	// Test age comparison with different numeric type (int32 vs int literal)
 	result, err = engine.Execute("SELECT customer_id, age FROM customers WHERE age < 30;")
 	if err != nil {
 		t.Fatalf("Failed to execute age query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Age query returned error: %s", result.Error)
 	}
@@ -322,7 +323,7 @@ func TestGenericSchemaDataTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute LIKE query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("LIKE query returned error: %s", result.Error)
 	}
@@ -337,7 +338,7 @@ func TestGenericSchemaDataTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute column pruning query: %v", err)
 	}
-	
+
 	if result.Error != "" {
 		t.Fatalf("Column pruning query returned error: %s", result.Error)
 	}
@@ -348,11 +349,11 @@ func TestGenericSchemaDataTypes(t *testing.T) {
 		if len(row) != 2 {
 			t.Errorf("Expected 2 columns in pruned result, got %d", len(row))
 		}
-		
+
 		if _, exists := row["customer_id"]; !exists {
 			t.Error("Missing customer_id column in pruned result")
 		}
-		
+
 		if _, exists := row["is_active"]; !exists {
 			t.Error("Missing is_active column in pruned result")
 		}
@@ -367,19 +368,19 @@ func TestGenericSchemaPerformance(t *testing.T) {
 	}
 
 	generateCustomerData()
-	
-	engine := NewQueryEngine("./data")
+
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	// Test cache effectiveness with generic schema
 	query := "SELECT region, COUNT(*) FROM customers GROUP BY region;"
-	
+
 	// First execution (cache miss)
 	result1, err := engine.Execute(query)
 	if err != nil {
 		t.Fatalf("Failed to execute first query: %v", err)
 	}
-	
+
 	if result1.Error != "" {
 		t.Fatalf("First query returned error: %s", result1.Error)
 	}
@@ -389,7 +390,7 @@ func TestGenericSchemaPerformance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to execute second query: %v", err)
 	}
-	
+
 	if result2.Error != "" {
 		t.Fatalf("Second query returned error: %s", result2.Error)
 	}

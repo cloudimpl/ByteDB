@@ -252,7 +252,7 @@ func TestDateFunctions(t *testing.T) {
 			DATE_PART('month', hire_date) as month,
 			DATE_PART('day', hire_date) as day
 		FROM employees WHERE id = 1`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -343,7 +343,7 @@ func TestMixedFunctions(t *testing.T) {
 			CONCAT(UPPER(name), ' (', DATE_PART('year', hire_date), ')') as info
 		FROM employees 
 		WHERE id = 1`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -367,7 +367,7 @@ func TestMixedFunctions(t *testing.T) {
 		FROM employees 
 		GROUP BY department
 		HAVING AVG(LENGTH(name)) > 10`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -380,7 +380,7 @@ func TestMixedFunctions(t *testing.T) {
 		for _, row := range result.Rows {
 			avgLength := row["avg_name_length"].(float64)
 			if avgLength <= 10 {
-				t.Errorf("Department %s has avg name length %.2f, which is not > 10", 
+				t.Errorf("Department %s has avg name length %.2f, which is not > 10",
 					row["department"], avgLength)
 			}
 		}
@@ -392,7 +392,7 @@ func TestMixedFunctions(t *testing.T) {
 		FROM employees e1
 		JOIN employees e2 ON SUBSTRING(e1.department, 1, 3) = SUBSTRING(e2.department, 1, 3)
 		WHERE e1.id = 1 AND e2.id != 1`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -419,7 +419,7 @@ func TestMixedFunctions(t *testing.T) {
 		FROM name_lengths
 		WHERE name_len > 10
 		ORDER BY name_len DESC`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -449,7 +449,7 @@ func TestFunctionEdgeCases(t *testing.T) {
 			UPPER(NULL) as upper_null,
 			LENGTH(NULL) as length_null,
 			CONCAT('Hello', NULL, 'World') as concat_null`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)

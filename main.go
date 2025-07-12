@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"bytedb/core"
 )
 
 func main() {
@@ -15,7 +17,7 @@ func main() {
 	}
 
 	dataPath := os.Args[1]
-	engine := NewQueryEngine(dataPath)
+	engine := core.NewQueryEngine(dataPath)
 	defer engine.Close()
 
 	fmt.Println("ByteDB - Simple SQL Query Engine for Parquet Files")
@@ -23,30 +25,30 @@ func main() {
 	fmt.Println()
 
 	scanner := bufio.NewScanner(os.Stdin)
-	
+
 	for {
 		fmt.Print("bytedb> ")
-		
+
 		if !scanner.Scan() {
 			break
 		}
-		
+
 		input := strings.TrimSpace(scanner.Text())
-		
+
 		if input == "" {
 			continue
 		}
-		
+
 		if input == "exit" || input == "quit" {
 			fmt.Println("Goodbye!")
 			break
 		}
-		
+
 		if input == "help" {
 			printHelp()
 			continue
 		}
-		
+
 		if strings.HasPrefix(input, "\\d ") {
 			tableName := strings.TrimSpace(input[3:])
 			info, err := engine.GetTableInfo(tableName)
@@ -57,7 +59,7 @@ func main() {
 			}
 			continue
 		}
-		
+
 		if input == "\\l" {
 			tables, err := engine.ListTables()
 			if err != nil {
@@ -70,7 +72,7 @@ func main() {
 			}
 			continue
 		}
-		
+
 		if strings.HasPrefix(input, "\\json ") {
 			sql := strings.TrimSpace(input[6:])
 			result, err := engine.ExecuteToJSON(sql)
@@ -81,7 +83,7 @@ func main() {
 			}
 			continue
 		}
-		
+
 		result, err := engine.ExecuteToTable(input)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
@@ -89,7 +91,7 @@ func main() {
 			fmt.Println(result)
 		}
 	}
-	
+
 	if err := scanner.Err(); err != nil {
 		fmt.Printf("Error reading input: %v\n", err)
 	}

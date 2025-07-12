@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -22,7 +22,7 @@ func NewQueryOptimizer(planner *QueryPlanner) *QueryOptimizer {
 type OptimizationRule interface {
 	Name() string
 	Apply(plan *QueryPlan) (*QueryPlan, bool) // returns optimized plan and whether changes were made
-	Cost() int                                 // relative cost of applying this rule
+	Cost() int                                // relative cost of applying this rule
 }
 
 // PredicatePushdownRule pushes WHERE conditions down to scan nodes
@@ -185,7 +185,7 @@ func (r *JoinOrderOptimizationRule) optimizeJoinOrder(node *PlanNode, changed *b
 	if node.Type == PlanNodeJoin && len(node.Children) >= 2 {
 		// Simple heuristic: put smaller table on the right (build side)
 		left, right := node.Children[0], node.Children[1]
-		
+
 		// If left table is smaller than right table, swap them
 		// to ensure smaller table is on the right (build side)
 		if r.estimateRows(left) < r.estimateRows(right) {
@@ -245,9 +245,9 @@ func (r *ConstantFoldingRule) foldConstants(node *PlanNode, changed *bool) {
 
 func (r *ConstantFoldingRule) isConstantExpression(condition WhereCondition) bool {
 	// Check if both sides are constants
-	return condition.Column == "" && condition.Function == nil && 
-		   strings.Contains(condition.Operator, "=") && 
-		   condition.Value != nil
+	return condition.Column == "" && condition.Function == nil &&
+		strings.Contains(condition.Operator, "=") &&
+		condition.Value != nil
 }
 
 func (r *ConstantFoldingRule) evaluateConstant(condition WhereCondition) *WhereCondition {
@@ -281,16 +281,16 @@ func (opt *QueryOptimizer) Optimize(plan *QueryPlan) *QueryPlan {
 
 	optimizedPlan := plan
 	maxIterations := 5 // Prevent infinite loops
-	
+
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		overallChanged := false
-		
+
 		for _, rule := range rules {
 			newPlan, changed := rule.Apply(optimizedPlan)
 			optimizedPlan = newPlan
 			overallChanged = overallChanged || changed
 		}
-		
+
 		// If no rules made changes, we're done
 		if !overallChanged {
 			break
@@ -303,26 +303,26 @@ func (opt *QueryOptimizer) Optimize(plan *QueryPlan) *QueryPlan {
 // GetOptimizationStats returns statistics about applied optimizations
 func (opt *QueryOptimizer) GetOptimizationStats(originalPlan, optimizedPlan *QueryPlan) map[string]interface{} {
 	stats := make(map[string]interface{})
-	
+
 	// Count node types in original vs optimized
 	originalCounts := opt.countNodeTypes(originalPlan.Root)
 	optimizedCounts := opt.countNodeTypes(optimizedPlan.Root)
-	
+
 	stats["original_nodes"] = originalCounts
 	stats["optimized_nodes"] = optimizedCounts
-	
+
 	// Calculate estimated performance improvement
 	originalCost := opt.estimatePlanCost(originalPlan.Root)
 	optimizedCost := opt.estimatePlanCost(optimizedPlan.Root)
-	
+
 	stats["original_cost"] = originalCost
 	stats["optimized_cost"] = optimizedCost
-	
+
 	if originalCost > 0 {
 		improvement := float64(originalCost-optimizedCost) / float64(originalCost) * 100
 		stats["improvement_percent"] = improvement
 	}
-	
+
 	return stats
 }
 
@@ -336,9 +336,9 @@ func (opt *QueryOptimizer) countNode(node *PlanNode, counts map[string]int) {
 	if node == nil {
 		return
 	}
-	
+
 	counts[string(node.Type)]++
-	
+
 	for _, child := range node.Children {
 		opt.countNode(child, counts)
 	}
@@ -348,9 +348,9 @@ func (opt *QueryOptimizer) estimatePlanCost(node *PlanNode) int64 {
 	if node == nil {
 		return 0
 	}
-	
+
 	cost := node.Rows // Base cost is the number of rows processed
-	
+
 	// Add costs for different operations
 	switch node.Type {
 	case PlanNodeScan:
@@ -364,11 +364,11 @@ func (opt *QueryOptimizer) estimatePlanCost(node *PlanNode) int64 {
 	case PlanNodeAggregate:
 		cost *= 2 // Aggregation requires grouping
 	}
-	
+
 	// Add costs from children
 	for _, child := range node.Children {
 		cost += opt.estimatePlanCost(child)
 	}
-	
+
 	return cost
 }

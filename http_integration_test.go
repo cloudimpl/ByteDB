@@ -7,6 +7,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"bytedb/core"
 )
 
 func TestHTTPIntegration(t *testing.T) {
@@ -67,7 +69,7 @@ func TestHTTPIntegration(t *testing.T) {
 
 	// Test 1: Basic HTTP table registration and querying
 	t.Run("Basic HTTP Query", func(t *testing.T) {
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		// Register HTTP URL for employees table
@@ -100,7 +102,7 @@ func TestHTTPIntegration(t *testing.T) {
 			if i >= 3 { // Only print first 3 rows
 				break
 			}
-			t.Logf("Row %d: name=%s, department=%s, salary=%v", 
+			t.Logf("Row %d: name=%s, department=%s, salary=%v",
 				i+1, row["name"], row["department"], row["salary"])
 		}
 
@@ -114,7 +116,7 @@ func TestHTTPIntegration(t *testing.T) {
 
 	// Test 2: Multiple HTTP tables
 	t.Run("Multiple HTTP Tables", func(t *testing.T) {
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		// Register multiple HTTP tables
@@ -154,14 +156,14 @@ func TestHTTPIntegration(t *testing.T) {
 			if i >= 2 { // Only print first 2 rows
 				break
 			}
-			t.Logf("Row %d: name=%s, department=%s, manager=%s, budget=%v", 
+			t.Logf("Row %d: name=%s, department=%s, manager=%s, budget=%v",
 				i+1, row["name"], row["department"], row["manager"], row["budget"])
 		}
 	})
 
 	// Test 3: Aggregation on HTTP tables
 	t.Run("Aggregation on HTTP Tables", func(t *testing.T) {
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		// Register HTTP table
@@ -205,7 +207,7 @@ func TestHTTPIntegration(t *testing.T) {
 
 	// Test 4: Functions with HTTP tables
 	t.Run("Functions with HTTP Tables", func(t *testing.T) {
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		// Register HTTP table
@@ -251,7 +253,7 @@ func TestHTTPIntegration(t *testing.T) {
 
 	// Test 5: Performance test with larger query
 	t.Run("Performance Test", func(t *testing.T) {
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		// Register HTTP table
@@ -294,7 +296,7 @@ func TestHTTPIntegration(t *testing.T) {
 
 	// Test 6: Mixed local and HTTP tables
 	t.Run("Mixed Local and HTTP Tables", func(t *testing.T) {
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		// Register only employees as HTTP, keep products as local
@@ -333,7 +335,7 @@ func TestHTTPIntegration(t *testing.T) {
 }
 
 func TestHTTPTableManagement(t *testing.T) {
-	engine := NewQueryEngine("./data")
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	t.Run("Register and Unregister HTTP Table", func(t *testing.T) {
@@ -342,7 +344,7 @@ func TestHTTPTableManagement(t *testing.T) {
 
 		// Try to query it (should fail due to non-existent HTTP URL)
 		result1, err1 := engine.Execute("SELECT * FROM test_table LIMIT 1")
-		
+
 		// Check if we got an error either in err or result.Error
 		hasError1 := err1 != nil || (result1 != nil && result1.Error != "")
 		if !hasError1 {
@@ -361,7 +363,7 @@ func TestHTTPTableManagement(t *testing.T) {
 
 		// Now it should try local file and give different error
 		result2, err2 := engine.Execute("SELECT * FROM test_table LIMIT 1")
-		
+
 		// Check if we got an error either in err or result.Error
 		hasError2 := err2 != nil || (result2 != nil && result2.Error != "")
 		if !hasError2 {

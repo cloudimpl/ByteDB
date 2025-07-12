@@ -3,47 +3,49 @@ package main
 import (
 	"encoding/json"
 	"testing"
+
+	"bytedb/core"
 )
 
 func TestSQLParser(t *testing.T) {
-	parser := NewSQLParser()
+	parser := core.NewSQLParser()
 
 	tests := []struct {
 		name     string
 		sql      string
-		expected ParsedQuery
+		expected core.ParsedQuery
 		hasError bool
 	}{
 		{
 			name: "SELECT * with LIMIT",
 			sql:  "SELECT * FROM employees LIMIT 3;",
-			expected: ParsedQuery{
-				Type:      SELECT,
+			expected: core.ParsedQuery{
+				Type:      core.SELECT,
 				TableName: "employees",
-				Columns:   []Column{{Name: "*", Alias: ""}},
-				Where:     []WhereCondition{},
+				Columns:   []core.Column{{Name: "*", Alias: ""}},
+				Where:     []core.WhereCondition{},
 				Limit:     3,
 			},
 		},
 		{
 			name: "SELECT specific columns",
 			sql:  "SELECT name, salary FROM employees;",
-			expected: ParsedQuery{
-				Type:      SELECT,
+			expected: core.ParsedQuery{
+				Type:      core.SELECT,
 				TableName: "employees",
-				Columns:   []Column{{Name: "name", Alias: ""}, {Name: "salary", Alias: ""}},
-				Where:     []WhereCondition{},
+				Columns:   []core.Column{{Name: "name", Alias: ""}, {Name: "salary", Alias: ""}},
+				Where:     []core.WhereCondition{},
 				Limit:     0,
 			},
 		},
 		{
 			name: "SELECT with WHERE clause - string",
 			sql:  "SELECT * FROM employees WHERE department = 'Engineering';",
-			expected: ParsedQuery{
-				Type:      SELECT,
+			expected: core.ParsedQuery{
+				Type:      core.SELECT,
 				TableName: "employees",
-				Columns:   []Column{{Name: "*", Alias: ""}},
-				Where: []WhereCondition{
+				Columns:   []core.Column{{Name: "*", Alias: ""}},
+				Where: []core.WhereCondition{
 					{Column: "department", Operator: "=", Value: "Engineering"},
 				},
 				Limit: 0,
@@ -52,11 +54,11 @@ func TestSQLParser(t *testing.T) {
 		{
 			name: "SELECT with WHERE clause - numeric",
 			sql:  "SELECT name, price FROM products WHERE price > 100;",
-			expected: ParsedQuery{
-				Type:      SELECT,
+			expected: core.ParsedQuery{
+				Type:      core.SELECT,
 				TableName: "products",
-				Columns:   []Column{{Name: "name", Alias: ""}, {Name: "price", Alias: ""}},
-				Where: []WhereCondition{
+				Columns:   []core.Column{{Name: "name", Alias: ""}, {Name: "price", Alias: ""}},
+				Where: []core.WhereCondition{
 					{Column: "price", Operator: ">", Value: int64(100)},
 				},
 				Limit: 0,
@@ -67,14 +69,14 @@ func TestSQLParser(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := parser.Parse(tt.sql)
-			
+
 			if tt.hasError {
 				if err == nil {
 					t.Errorf("Expected error but got none")
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("Unexpected error: %v", err)
 				return
@@ -83,15 +85,15 @@ func TestSQLParser(t *testing.T) {
 			if result.Type != tt.expected.Type {
 				t.Errorf("Type mismatch: got %v, want %v", result.Type, tt.expected.Type)
 			}
-			
+
 			if result.TableName != tt.expected.TableName {
 				t.Errorf("TableName mismatch: got %s, want %s", result.TableName, tt.expected.TableName)
 			}
-			
+
 			if len(result.Columns) != len(tt.expected.Columns) {
 				t.Errorf("Columns length mismatch: got %d, want %d", len(result.Columns), len(tt.expected.Columns))
 			}
-			
+
 			if result.Limit != tt.expected.Limit {
 				t.Errorf("Limit mismatch: got %d, want %d", result.Limit, tt.expected.Limit)
 			}
@@ -102,7 +104,7 @@ func TestSQLParser(t *testing.T) {
 func TestParquetReader(t *testing.T) {
 	// Setup test data
 	generateSampleData()
-	
+
 	tests := []struct {
 		name      string
 		file      string
@@ -135,13 +137,13 @@ func TestParquetReader(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader, err := NewParquetReader(tt.file)
+			reader, err := core.NewParquetReader(tt.file)
 			if err != nil {
 				t.Fatalf("Failed to create reader: %v", err)
 			}
 			defer reader.Close()
 
-			var rows []Row
+			var rows []core.Row
 			if tt.limit > 0 {
 				rows, err = reader.ReadWithLimit(tt.limit)
 			} else {
@@ -167,22 +169,22 @@ func TestParquetReader(t *testing.T) {
 
 func TestWhereClauseFiltering(t *testing.T) {
 	generateSampleData()
-	
+
 	tests := []struct {
 		name         string
 		file         string
-		conditions   []WhereCondition
+		conditions   []core.WhereCondition
 		expectedRows int
-		checkFunc    func([]Row) bool
+		checkFunc    func([]core.Row) bool
 	}{
 		{
 			name: "Filter employees by department",
 			file: "./data/employees.parquet",
-			conditions: []WhereCondition{
+			conditions: []core.WhereCondition{
 				{Column: "department", Operator: "=", Value: "Engineering"},
 			},
 			expectedRows: 4,
-			checkFunc: func(rows []Row) bool {
+			checkFunc: func(rows []core.Row) bool {
 				for _, row := range rows {
 					if row["department"] != "Engineering" {
 						return false
@@ -194,11 +196,11 @@ func TestWhereClauseFiltering(t *testing.T) {
 		{
 			name: "Filter employees by salary greater than",
 			file: "./data/employees.parquet",
-			conditions: []WhereCondition{
+			conditions: []core.WhereCondition{
 				{Column: "salary", Operator: ">", Value: 75000},
 			},
 			expectedRows: 3, // Mike Johnson (80000), Lisa Davis (85000), Chris Anderson (78000)
-			checkFunc: func(rows []Row) bool {
+			checkFunc: func(rows []core.Row) bool {
 				for _, row := range rows {
 					salary, ok := row["salary"].(float64)
 					if !ok || salary <= 75000 {
@@ -211,11 +213,11 @@ func TestWhereClauseFiltering(t *testing.T) {
 		{
 			name: "Filter products by price greater than",
 			file: "./data/products.parquet",
-			conditions: []WhereCondition{
+			conditions: []core.WhereCondition{
 				{Column: "price", Operator: ">", Value: 100},
 			},
 			expectedRows: 3, // Laptop (999.99), Monitor (299.99), Desk Chair (199.99)
-			checkFunc: func(rows []Row) bool {
+			checkFunc: func(rows []core.Row) bool {
 				for _, row := range rows {
 					price, ok := row["price"].(float64)
 					if !ok || price <= 100 {
@@ -228,11 +230,11 @@ func TestWhereClauseFiltering(t *testing.T) {
 		{
 			name: "Filter products by price greater than or equal",
 			file: "./data/products.parquet",
-			conditions: []WhereCondition{
+			conditions: []core.WhereCondition{
 				{Column: "price", Operator: ">=", Value: 199.99},
 			},
 			expectedRows: 3, // Laptop, Monitor, Desk Chair
-			checkFunc: func(rows []Row) bool {
+			checkFunc: func(rows []core.Row) bool {
 				for _, row := range rows {
 					price, ok := row["price"].(float64)
 					if !ok || price < 199.99 {
@@ -245,11 +247,11 @@ func TestWhereClauseFiltering(t *testing.T) {
 		{
 			name: "Filter products by price less than",
 			file: "./data/products.parquet",
-			conditions: []WhereCondition{
+			conditions: []core.WhereCondition{
 				{Column: "price", Operator: "<", Value: 30},
 			},
 			expectedRows: 5, // Mouse (29.99), Notebook (12.99), Pen Set (24.99), Coffee Mug (15.99), Water Bottle (19.99)
-			checkFunc: func(rows []Row) bool {
+			checkFunc: func(rows []core.Row) bool {
 				for _, row := range rows {
 					price, ok := row["price"].(float64)
 					if !ok || price >= 30 {
@@ -263,7 +265,7 @@ func TestWhereClauseFiltering(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader, err := NewParquetReader(tt.file)
+			reader, err := core.NewParquetReader(tt.file)
 			if err != nil {
 				t.Fatalf("Failed to create reader: %v", err)
 			}
@@ -278,7 +280,7 @@ func TestWhereClauseFiltering(t *testing.T) {
 
 			if len(filteredRows) != tt.expectedRows {
 				t.Errorf("Expected %d rows, got %d", tt.expectedRows, len(filteredRows))
-				
+
 				// Debug info
 				t.Logf("All rows count: %d", len(allRows))
 				t.Logf("Conditions: %+v", tt.conditions)
@@ -296,7 +298,7 @@ func TestWhereClauseFiltering(t *testing.T) {
 
 func TestQueryEngine(t *testing.T) {
 	generateSampleData()
-	engine := NewQueryEngine("./data")
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	tests := []struct {
@@ -304,14 +306,14 @@ func TestQueryEngine(t *testing.T) {
 		sql          string
 		expectedRows int
 		hasError     bool
-		checkFunc    func(*QueryResult) bool
+		checkFunc    func(*core.QueryResult) bool
 	}{
 		{
 			name:         "SELECT * with limit",
 			sql:          "SELECT * FROM employees LIMIT 3;",
 			expectedRows: 3,
 			hasError:     false,
-			checkFunc: func(result *QueryResult) bool {
+			checkFunc: func(result *core.QueryResult) bool {
 				return len(result.Columns) > 0 && result.Count == 3
 			},
 		},
@@ -320,7 +322,7 @@ func TestQueryEngine(t *testing.T) {
 			sql:          "SELECT name, salary FROM employees;",
 			expectedRows: 10,
 			hasError:     false,
-			checkFunc: func(result *QueryResult) bool {
+			checkFunc: func(result *core.QueryResult) bool {
 				// Check that we only get the requested columns
 				for _, row := range result.Rows {
 					if len(row) > 2 {
@@ -341,7 +343,7 @@ func TestQueryEngine(t *testing.T) {
 			sql:          "SELECT name FROM employees WHERE department = 'Engineering';",
 			expectedRows: 4,
 			hasError:     false,
-			checkFunc: func(result *QueryResult) bool {
+			checkFunc: func(result *core.QueryResult) bool {
 				for _, row := range result.Rows {
 					if len(row) != 1 {
 						return false
@@ -358,30 +360,30 @@ func TestQueryEngine(t *testing.T) {
 			sql:          "SELECT name, price FROM products WHERE price > 100;",
 			expectedRows: 3,
 			hasError:     false,
-			checkFunc: func(result *QueryResult) bool {
+			checkFunc: func(result *core.QueryResult) bool {
 				expectedNames := map[string]bool{
 					"Laptop":  true,
 					"Monitor": true,
 					"Phone":   true,
 				}
-				
+
 				if len(result.Rows) != 3 {
 					return false
 				}
-				
+
 				for _, row := range result.Rows {
 					name, hasName := row["name"]
 					price, hasPrice := row["price"]
-					
+
 					if !hasName || !hasPrice {
 						return false
 					}
-					
+
 					nameStr, ok := name.(string)
 					if !ok || !expectedNames[nameStr] {
 						return false
 					}
-					
+
 					priceFloat, ok := price.(float64)
 					if !ok || priceFloat <= 100 {
 						return false
@@ -395,7 +397,7 @@ func TestQueryEngine(t *testing.T) {
 			sql:          "SELECT * FROM nonexistent;",
 			expectedRows: 0,
 			hasError:     false, // Returns result with error field
-			checkFunc: func(result *QueryResult) bool {
+			checkFunc: func(result *core.QueryResult) bool {
 				return result.Error != "" && result.Count == 0
 			},
 		},
@@ -404,7 +406,7 @@ func TestQueryEngine(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := engine.Execute(tt.sql)
-			
+
 			if err != nil {
 				t.Errorf("Unexpected error from Execute: %v", err)
 				return
@@ -439,7 +441,7 @@ func TestQueryEngine(t *testing.T) {
 
 func TestJSONOutput(t *testing.T) {
 	generateSampleData()
-	engine := NewQueryEngine("./data")
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	sql := "SELECT name, price FROM products WHERE price > 500;"
@@ -448,7 +450,7 @@ func TestJSONOutput(t *testing.T) {
 		t.Fatalf("Failed to execute to JSON: %v", err)
 	}
 
-	var result QueryResult
+	var result core.QueryResult
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
 		t.Fatalf("Failed to unmarshal JSON: %v", err)
 	}
@@ -467,15 +469,15 @@ func TestJSONOutput(t *testing.T) {
 	for _, row := range result.Rows {
 		name, hasName := row["name"]
 		price, hasPrice := row["price"]
-		
+
 		if !hasName || !hasPrice {
 			t.Errorf("Missing required columns in row: %+v", row)
 		}
-		
+
 		if priceFloat, ok := price.(float64); !ok || priceFloat <= 500 {
 			t.Errorf("Price should be > 500, got %v", price)
 		}
-		
+
 		if nameStr, ok := name.(string); !ok || nameStr == "" {
 			t.Errorf("Name should be non-empty string, got %v", name)
 		}
@@ -483,8 +485,8 @@ func TestJSONOutput(t *testing.T) {
 }
 
 func TestNumericTypeComparison(t *testing.T) {
-	reader := &ParquetReader{}
-	
+	reader := &core.ParquetReader{}
+
 	tests := []struct {
 		name     string
 		a        interface{}

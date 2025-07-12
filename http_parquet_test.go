@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+
+	"bytedb/core"
 )
 
 func TestHTTPParquetReader(t *testing.T) {
@@ -13,7 +15,7 @@ func TestHTTPParquetReader(t *testing.T) {
 	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if it's a range request
 		rangeHeader := r.Header.Get("Range")
-		
+
 		// Read the local test file
 		localFile := "./data/employees.parquet"
 		file, err := os.Open(localFile)
@@ -46,16 +48,16 @@ func TestHTTPParquetReader(t *testing.T) {
 	defer testServer.Close()
 
 	t.Run("HTTP URL detection", func(t *testing.T) {
-		if !isHTTPURL("http://example.com/file.parquet") {
+		if !core.IsHTTPURL("http://example.com/file.parquet") {
 			t.Error("Expected http:// URL to be detected as HTTP")
 		}
-		if !isHTTPURL("https://example.com/file.parquet") {
+		if !core.IsHTTPURL("https://example.com/file.parquet") {
 			t.Error("Expected https:// URL to be detected as HTTP")
 		}
-		if isHTTPURL("/local/path/file.parquet") {
+		if core.IsHTTPURL("/local/path/file.parquet") {
 			t.Error("Expected local path to not be detected as HTTP")
 		}
-		if isHTTPURL("file.parquet") {
+		if core.IsHTTPURL("file.parquet") {
 			t.Error("Expected relative path to not be detected as HTTP")
 		}
 	})
@@ -67,9 +69,9 @@ func TestHTTPParquetReader(t *testing.T) {
 
 		// Test HTTP URL
 		httpURL := testServer.URL + "/employees.parquet"
-		
+
 		// Create HTTP parquet reader
-		reader, err := NewParquetReader(httpURL)
+		reader, err := core.NewParquetReader(httpURL)
 		if err != nil {
 			t.Fatalf("Failed to create HTTP parquet reader: %v", err)
 		}
@@ -97,7 +99,7 @@ func TestHTTPParquetReader(t *testing.T) {
 
 	t.Run("HTTP Parquet query execution", func(t *testing.T) {
 		// Create a fresh query engine
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		// Register the HTTP URL for the employees table
@@ -121,7 +123,7 @@ func TestHTTPParquetReader(t *testing.T) {
 		}
 
 		t.Logf("Successfully executed query on HTTP Parquet file, got %d rows", result.Count)
-		
+
 		// Verify column names
 		expectedColumns := []string{"name", "department"}
 		if len(result.Columns) != len(expectedColumns) {
@@ -138,13 +140,13 @@ func TestHTTPParquetReader(t *testing.T) {
 }
 
 func TestHTTPTableRegistration(t *testing.T) {
-	engine := NewQueryEngine("./data")
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	t.Run("Register and query HTTP table", func(t *testing.T) {
 		// Register a mock HTTP table
 		engine.RegisterHTTPTable("test_table", "http://example.com/test.parquet")
-		
+
 		// The actual query will fail since the URL doesn't exist, but we can test registration
 		// by checking that the getReader method attempts to use the HTTP URL
 	})
@@ -153,14 +155,14 @@ func TestHTTPTableRegistration(t *testing.T) {
 		// Register then unregister
 		engine.RegisterHTTPTable("temp_table", "http://example.com/temp.parquet")
 		engine.UnregisterHTTPTable("temp_table")
-		
+
 		// After unregistration, it should fall back to local file path
 	})
 }
 
 func TestHTTPParquetErrors(t *testing.T) {
 	t.Run("Invalid HTTP URL", func(t *testing.T) {
-		_, err := NewParquetReader("http://nonexistent.example.com/file.parquet")
+		_, err := core.NewParquetReader("http://nonexistent.example.com/file.parquet")
 		if err == nil {
 			t.Error("Expected error for non-existent HTTP URL")
 		}
@@ -174,7 +176,7 @@ func TestHTTPParquetErrors(t *testing.T) {
 		}))
 		defer testServer.Close()
 
-		_, err := NewParquetReader(testServer.URL + "/notparquet.txt")
+		_, err := core.NewParquetReader(testServer.URL + "/notparquet.txt")
 		if err == nil {
 			t.Error("Expected error when trying to read non-parquet content")
 		}

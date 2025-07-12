@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -21,13 +21,13 @@ const (
 )
 
 type Column struct {
-	Name         string
-	Alias        string
-	TableName    string         // For qualified columns like "e.name"
-	Subquery     *ParsedQuery   // For subquery columns like (SELECT COUNT(*) FROM ...)
-	WindowFunc   *WindowFunction // For window function columns like ROW_NUMBER() OVER (...)
-	CaseExpr     *CaseExpression // For CASE expressions like CASE WHEN ... THEN ... END
-	Function     *FunctionCall  // For function calls like UPPER(name), CONCAT(first, ' ', last)
+	Name       string
+	Alias      string
+	TableName  string          // For qualified columns like "e.name"
+	Subquery   *ParsedQuery    // For subquery columns like (SELECT COUNT(*) FROM ...)
+	WindowFunc *WindowFunction // For window function columns like ROW_NUMBER() OVER (...)
+	CaseExpr   *CaseExpression // For CASE expressions like CASE WHEN ... THEN ... END
+	Function   *FunctionCall   // For function calls like UPPER(name), CONCAT(first, ' ', last)
 }
 
 type WhereCondition struct {
@@ -37,28 +37,28 @@ type WhereCondition struct {
 	ValueList []interface{} // List of values for IN operator
 	TableName string        // For qualified columns like "e.department"
 	Subquery  *ParsedQuery  // For subquery conditions like IN (SELECT ...), EXISTS (SELECT ...)
-	
+
 	// For column-to-column comparisons (e.g., e2.department = e.department)
-	ValueColumn     string // Column name on right side for column comparisons
-	ValueTableName  string // Table name for right side column in qualified comparisons
-	
+	ValueColumn    string // Column name on right side for column comparisons
+	ValueTableName string // Table name for right side column in qualified comparisons
+
 	// For BETWEEN operator
 	ValueFrom interface{} // Start value for BETWEEN
 	ValueTo   interface{} // End value for BETWEEN
-	
+
 	// For CASE expressions in WHERE clauses
 	CaseExpr      *CaseExpression // For CASE expressions on left side
 	ValueCaseExpr *CaseExpression // For CASE expressions on right side
-	
+
 	// For function calls in WHERE clauses
 	Function      *FunctionCall // For function calls on left side
 	ValueFunction *FunctionCall // For function calls on right side
-	
+
 	// For complex logical operations
-	LogicalOp string              // "AND", "OR", ""
-	Left      *WhereCondition     // Left side of logical operation
-	Right     *WhereCondition     // Right side of logical operation
-	IsComplex bool                // True if this is a compound condition
+	LogicalOp string          // "AND", "OR", ""
+	Left      *WhereCondition // Left side of logical operation
+	Right     *WhereCondition // Right side of logical operation
+	IsComplex bool            // True if this is a compound condition
 }
 
 type JoinType int
@@ -102,45 +102,45 @@ type AggregateFunction struct {
 }
 
 type WindowFunction struct {
-	Function    string            // "ROW_NUMBER", "RANK", "DENSE_RANK", "LAG", "LEAD", etc.
-	Column      string            // Column name for LAG/LEAD, empty for ROW_NUMBER/RANK
-	Arguments   []interface{}     // Arguments for functions like LAG(column, offset, default)
-	Alias       string            // Optional alias for the result
-	WindowSpec  WindowSpecification // OVER clause specification
+	Function   string              // "ROW_NUMBER", "RANK", "DENSE_RANK", "LAG", "LEAD", etc.
+	Column     string              // Column name for LAG/LEAD, empty for ROW_NUMBER/RANK
+	Arguments  []interface{}       // Arguments for functions like LAG(column, offset, default)
+	Alias      string              // Optional alias for the result
+	WindowSpec WindowSpecification // OVER clause specification
 }
 
 type WindowSpecification struct {
-	PartitionBy []string          // PARTITION BY columns
-	OrderBy     []OrderByColumn   // ORDER BY columns within the window
-	FrameStart  string           // Frame start specification (for future use)
-	FrameEnd    string           // Frame end specification (for future use)
+	PartitionBy []string        // PARTITION BY columns
+	OrderBy     []OrderByColumn // ORDER BY columns within the window
+	FrameStart  string          // Frame start specification (for future use)
+	FrameEnd    string          // Frame end specification (for future use)
 }
 
 type CaseExpression struct {
-	WhenClauses []WhenClause    // WHEN condition THEN result pairs
+	WhenClauses []WhenClause     // WHEN condition THEN result pairs
 	ElseClause  *ExpressionValue // ELSE result (optional)
-	Alias       string          // Optional alias for the CASE expression
+	Alias       string           // Optional alias for the CASE expression
 }
 
 type WhenClause struct {
-	Condition WhereCondition   // WHEN condition
-	Result    ExpressionValue  // THEN result
+	Condition WhereCondition  // WHEN condition
+	Result    ExpressionValue // THEN result
 }
 
 type ExpressionValue struct {
-	Type        string      // "literal", "column", "subquery", "case"
-	LiteralValue interface{} // For literal values (string, int, float, bool)
-	ColumnName  string      // For column references
-	TableName   string      // For qualified column references
-	Subquery    *ParsedQuery // For subquery expressions
-	CaseExpr    *CaseExpression // For nested CASE expressions
+	Type         string          // "literal", "column", "subquery", "case"
+	LiteralValue interface{}     // For literal values (string, int, float, bool)
+	ColumnName   string          // For column references
+	TableName    string          // For qualified column references
+	Subquery     *ParsedQuery    // For subquery expressions
+	CaseExpr     *CaseExpression // For nested CASE expressions
 }
 
 type CTE struct {
-	Name         string       // CTE name
-	Query        *ParsedQuery // The CTE's query
-	ColumnNames  []string     // Optional column name list
-	IsRecursive  bool         // For RECURSIVE CTEs (future enhancement)
+	Name        string       // CTE name
+	Query       *ParsedQuery // The CTE's query
+	ColumnNames []string     // Optional column name list
+	IsRecursive bool         // For RECURSIVE CTEs (future enhancement)
 }
 
 type UnionQuery struct {
@@ -149,30 +149,30 @@ type UnionQuery struct {
 }
 
 type ParsedQuery struct {
-	Type        QueryType
-	TableName   string
-	TableAlias  string
-	Columns     []Column
-	Aggregates  []AggregateFunction
-	WindowFuncs []WindowFunction
-	GroupBy     []string
-	Where       []WhereCondition
-	OrderBy     []OrderByColumn
-	Joins       []JoinClause
-	Limit       int
-	RawSQL      string
-	IsAggregate bool // True if query contains aggregate functions
-	HasJoins    bool // True if query contains JOIN clauses
-	HasWindowFuncs bool // True if query contains window functions
-	IsCorrelated bool // True if subquery references outer query columns
+	Type              QueryType
+	TableName         string
+	TableAlias        string
+	Columns           []Column
+	Aggregates        []AggregateFunction
+	WindowFuncs       []WindowFunction
+	GroupBy           []string
+	Where             []WhereCondition
+	OrderBy           []OrderByColumn
+	Joins             []JoinClause
+	Limit             int
+	RawSQL            string
+	IsAggregate       bool     // True if query contains aggregate functions
+	HasJoins          bool     // True if query contains JOIN clauses
+	HasWindowFuncs    bool     // True if query contains window functions
+	IsCorrelated      bool     // True if subquery references outer query columns
 	CorrelatedColumns []string // List of outer query columns referenced
-	CTEs        []CTE // Common Table Expressions (WITH clauses)
-	IsSubquery  bool // True if this query is being executed as a subquery
-	
+	CTEs              []CTE    // Common Table Expressions (WITH clauses)
+	IsSubquery        bool     // True if this query is being executed as a subquery
+
 	// EXPLAIN specific fields
 	ExplainOptions *ExplainOptions // Options for EXPLAIN command
 	ExplainQuery   *ParsedQuery    // The query being explained
-	
+
 	// UNION specific fields
 	UnionQueries []UnionQuery // List of queries to union
 	HasUnion     bool         // True if query contains UNION/UNION ALL
@@ -200,11 +200,11 @@ func (p *SQLParser) Parse(sql string) (*ParsedQuery, error) {
 	if selectStmt := stmt.GetSelectStmt(); selectStmt != nil {
 		return p.parseSelect(selectStmt, query)
 	}
-	
+
 	if explainStmt := stmt.GetExplainStmt(); explainStmt != nil {
 		return p.parseExplain(explainStmt, query)
 	}
-	
+
 	query.Type = UNSUPPORTED
 	return query, fmt.Errorf("unsupported statement type")
 }
@@ -215,7 +215,7 @@ func (p *SQLParser) parseFromClause(fromClause []*pg_query.Node, query *ParsedQu
 	}
 
 	fromNode := fromClause[0]
-	
+
 	// Check if it's a simple table reference or a JOIN
 	if rangeVar := fromNode.GetRangeVar(); rangeVar != nil {
 		// Simple table reference: FROM table_name [alias]
@@ -225,18 +225,18 @@ func (p *SQLParser) parseFromClause(fromClause []*pg_query.Node, query *ParsedQu
 		}
 		return nil
 	}
-	
+
 	// Check if it's a JOIN expression
 	if joinExpr := fromNode.GetJoinExpr(); joinExpr != nil {
 		return p.parseJoinExpression(joinExpr, query)
 	}
-	
+
 	return fmt.Errorf("unsupported FROM clause type")
 }
 
 func (p *SQLParser) parseJoinExpression(joinExpr *pg_query.JoinExpr, query *ParsedQuery) error {
 	query.HasJoins = true
-	
+
 	// Parse left side (main table)
 	if leftNode := joinExpr.Larg; leftNode != nil {
 		if rangeVar := leftNode.GetRangeVar(); rangeVar != nil {
@@ -246,7 +246,7 @@ func (p *SQLParser) parseJoinExpression(joinExpr *pg_query.JoinExpr, query *Pars
 			}
 		}
 	}
-	
+
 	// Parse right side (joined table)
 	var joinClause JoinClause
 	if rightNode := joinExpr.Rarg; rightNode != nil {
@@ -257,7 +257,7 @@ func (p *SQLParser) parseJoinExpression(joinExpr *pg_query.JoinExpr, query *Pars
 			}
 		}
 	}
-	
+
 	// Parse JOIN type
 	switch joinExpr.Jointype {
 	case pg_query.JoinType_JOIN_INNER:
@@ -271,7 +271,7 @@ func (p *SQLParser) parseJoinExpression(joinExpr *pg_query.JoinExpr, query *Pars
 	default:
 		joinClause.Type = INNER_JOIN // Default to INNER JOIN
 	}
-	
+
 	// Parse ON condition
 	if joinExpr.Quals != nil {
 		err := p.parseJoinCondition(joinExpr.Quals, &joinClause, query)
@@ -279,7 +279,7 @@ func (p *SQLParser) parseJoinExpression(joinExpr *pg_query.JoinExpr, query *Pars
 			return fmt.Errorf("failed to parse JOIN condition: %w", err)
 		}
 	}
-	
+
 	query.Joins = append(query.Joins, joinClause)
 	return nil
 }
@@ -290,14 +290,14 @@ func (p *SQLParser) parseJoinCondition(quals *pg_query.Node, joinClause *JoinCla
 		condition := JoinCondition{
 			Operator: "=", // Default to equality
 		}
-		
+
 		// Get operator
 		if len(aExpr.Name) > 0 {
 			if str := aExpr.Name[0].GetString_(); str != nil {
 				condition.Operator = str.Sval
 			}
 		}
-		
+
 		// Parse left expression (e.g., e.department)
 		if lexpr := aExpr.Lexpr; lexpr != nil {
 			if columnRef := lexpr.GetColumnRef(); columnRef != nil {
@@ -317,7 +317,7 @@ func (p *SQLParser) parseJoinCondition(quals *pg_query.Node, joinClause *JoinCla
 				}
 			}
 		}
-		
+
 		// Parse right expression (e.g., d.name)
 		if rexpr := aExpr.Rexpr; rexpr != nil {
 			if columnRef := rexpr.GetColumnRef(); columnRef != nil {
@@ -337,11 +337,11 @@ func (p *SQLParser) parseJoinCondition(quals *pg_query.Node, joinClause *JoinCla
 				}
 			}
 		}
-		
+
 		joinClause.Condition = condition
 		return nil
 	}
-	
+
 	return fmt.Errorf("unsupported JOIN condition type")
 }
 
@@ -352,7 +352,7 @@ func (p *SQLParser) parseWithClause(withClause *pg_query.WithClause, query *Pars
 				Name:        commonTableExpr.Ctename,
 				IsRecursive: withClause.Recursive,
 			}
-			
+
 			// Parse optional column names
 			if commonTableExpr.Aliascolnames != nil {
 				for _, colNode := range commonTableExpr.Aliascolnames {
@@ -361,7 +361,7 @@ func (p *SQLParser) parseWithClause(withClause *pg_query.WithClause, query *Pars
 					}
 				}
 			}
-			
+
 			// Parse the CTE query
 			if commonTableExpr.Ctequery != nil {
 				if selectStmt := commonTableExpr.Ctequery.GetSelectStmt(); selectStmt != nil {
@@ -375,11 +375,11 @@ func (p *SQLParser) parseWithClause(withClause *pg_query.WithClause, query *Pars
 					cte.Query = cteQuery
 				}
 			}
-			
+
 			query.CTEs = append(query.CTEs, cte)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -433,11 +433,11 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 	if stmt.Op != pg_query.SetOperation_SETOP_NONE {
 		query.HasUnion = true
 		query.Type = UNION
-		
+
 		// For UNION queries, we need to parse left and right separately
 		var leftQuery *ParsedQuery
 		var rightQuery *ParsedQuery
-		
+
 		// Parse left side
 		if stmt.Larg != nil {
 			leftQuery = &ParsedQuery{}
@@ -460,7 +460,7 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 				CTEs:        query.CTEs,
 			}
 		}
-		
+
 		// Parse right side
 		if stmt.Rarg != nil {
 			rightQuery = &ParsedQuery{}
@@ -469,7 +469,7 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 				return nil, fmt.Errorf("failed to parse UNION right side: %w", err)
 			}
 		}
-		
+
 		// Clear the current query and set it up as a UNION
 		query.TableName = ""
 		query.TableAlias = ""
@@ -479,7 +479,7 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 		query.GroupBy = nil
 		query.Where = nil
 		query.Joins = nil
-		
+
 		// Add both sides to UnionQueries
 		if leftQuery != nil {
 			if leftQuery.HasUnion {
@@ -493,7 +493,7 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 				})
 			}
 		}
-		
+
 		if rightQuery != nil {
 			if rightQuery.HasUnion {
 				// Right side is also a UNION, add all its queries
@@ -509,7 +509,7 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 				})
 			}
 		}
-		
+
 		// ORDER BY and LIMIT apply to the entire UNION result
 		// These are already parsed into query.OrderBy and query.Limit
 	}
@@ -523,10 +523,10 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 func (p *SQLParser) parseExplain(stmt *pg_query.ExplainStmt, query *ParsedQuery) (*ParsedQuery, error) {
 	query.Type = EXPLAIN
 	query.ExplainOptions = &ExplainOptions{
-		Costs: true, // Default to showing costs
+		Costs:  true,              // Default to showing costs
 		Format: ExplainFormatText, // Default format
 	}
-	
+
 	// Parse EXPLAIN options
 	for _, option := range stmt.Options {
 		if defElem := option.GetDefElem(); defElem != nil {
@@ -563,7 +563,7 @@ func (p *SQLParser) parseExplain(stmt *pg_query.ExplainStmt, query *ParsedQuery)
 			}
 		}
 	}
-	
+
 	// Parse the query being explained
 	if stmt.Query != nil {
 		explainedQuery := &ParsedQuery{}
@@ -578,7 +578,7 @@ func (p *SQLParser) parseExplain(stmt *pg_query.ExplainStmt, query *ParsedQuery)
 		}
 		query.ExplainQuery = explainedQuery
 	}
-	
+
 	return query, nil
 }
 
@@ -590,17 +590,17 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 				condition := WhereCondition{
 					IsComplex: true,
 				}
-				
+
 				if boolExpr.Boolop == pg_query.BoolExprType_AND_EXPR {
 					condition.LogicalOp = "AND"
 				} else {
 					condition.LogicalOp = "OR"
 				}
-				
+
 				// Parse left and right conditions recursively
 				condition.Left = p.parseWhereCondition(boolExpr.Args[0])
 				condition.Right = p.parseWhereCondition(boolExpr.Args[1])
-				
+
 				// For more than 2 args, chain them with the same operator
 				if len(boolExpr.Args) > 2 {
 					for i := 2; i < len(boolExpr.Args); i++ {
@@ -614,7 +614,7 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 						}
 					}
 				}
-				
+
 				query.Where = append(query.Where, condition)
 				return
 			}
@@ -672,24 +672,24 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 // parseWhereCondition parses a single WHERE condition node
 func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 	condition := &WhereCondition{}
-	
+
 	// Handle nested BoolExpr (for parenthesized expressions)
 	if boolExpr := node.GetBoolExpr(); boolExpr != nil {
 		// Handle AND/OR expressions
 		if boolExpr.Boolop == pg_query.BoolExprType_AND_EXPR || boolExpr.Boolop == pg_query.BoolExprType_OR_EXPR {
 			if len(boolExpr.Args) >= 2 {
 				condition.IsComplex = true
-				
+
 				if boolExpr.Boolop == pg_query.BoolExprType_AND_EXPR {
 					condition.LogicalOp = "AND"
 				} else {
 					condition.LogicalOp = "OR"
 				}
-				
+
 				// Parse left and right conditions recursively
 				condition.Left = p.parseWhereCondition(boolExpr.Args[0])
 				condition.Right = p.parseWhereCondition(boolExpr.Args[1])
-				
+
 				// For more than 2 args, chain them with the same operator
 				if len(boolExpr.Args) > 2 {
 					for i := 2; i < len(boolExpr.Args); i++ {
@@ -703,13 +703,13 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 						}
 					}
 				}
-				
+
 				return condition
 			}
 		}
 		return condition
 	}
-	
+
 	if aExpr := node.GetAExpr(); aExpr != nil {
 		// Handle BETWEEN expressions
 		if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_BETWEEN || aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_NOT_BETWEEN {
@@ -718,7 +718,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 			} else {
 				condition.Operator = "NOT BETWEEN"
 			}
-			
+
 			// Get column name from left expression
 			if lexpr := aExpr.Lexpr; lexpr != nil {
 				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
@@ -738,7 +738,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 					}
 				}
 			}
-			
+
 			// Get BETWEEN values from right expression (should be a list)
 			if rexpr := aExpr.Rexpr; rexpr != nil {
 				if aList := rexpr.GetList(); aList != nil && len(aList.Items) >= 2 {
@@ -746,7 +746,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 					if aConst := aList.Items[0].GetAConst(); aConst != nil {
 						condition.ValueFrom = p.parseConstantNode(aConst)
 					}
-					// Parse second value (TO) 
+					// Parse second value (TO)
 					if aConst := aList.Items[1].GetAConst(); aConst != nil {
 						condition.ValueTo = p.parseConstantNode(aConst)
 					}
@@ -754,11 +754,11 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 			}
 			return condition
 		}
-		
+
 		// Handle IN expressions
 		if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_IN {
 			condition.Operator = "IN"
-			
+
 			// Get column name from left expression
 			if lexpr := aExpr.Lexpr; lexpr != nil {
 				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
@@ -783,7 +783,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 					}
 				}
 			}
-			
+
 			// Get list of values from right expression
 			if rexpr := aExpr.Rexpr; rexpr != nil {
 				if aList := rexpr.GetList(); aList != nil {
@@ -802,7 +802,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 			}
 			return condition
 		}
-		
+
 		// Handle NULL checks
 		if len(aExpr.Name) > 0 {
 			if str := aExpr.Name[0].GetString_(); str != nil {
@@ -815,7 +815,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 							if nullTest.Nulltesttype == pg_query.NullTestType_IS_NOT_NULL {
 								condition.Operator = "IS NOT NULL"
 							}
-							
+
 							// Get column from left expression
 							if lexpr := aExpr.Lexpr; lexpr != nil {
 								if columnRef := lexpr.GetColumnRef(); columnRef != nil {
@@ -839,7 +839,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 						}
 					}
 				}
-				
+
 				// Regular operators (=, !=, <, <=, >, >=, LIKE)
 				if operator == "~~" {
 					condition.Operator = "LIKE"
@@ -848,7 +848,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 				}
 			}
 		}
-		
+
 		// Get column name or function from left expression
 		if lexpr := aExpr.Lexpr; lexpr != nil {
 			if columnRef := lexpr.GetColumnRef(); columnRef != nil {
@@ -873,7 +873,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 				}
 			}
 		}
-		
+
 		// Get value from right expression
 		if rexpr := aExpr.Rexpr; rexpr != nil {
 			if aConst := rexpr.GetAConst(); aConst != nil {
@@ -906,7 +906,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 				}
 			}
 		}
-		
+
 		return condition
 	} else if subLink := node.GetSubLink(); subLink != nil {
 		// Handle EXISTS subqueries
@@ -942,7 +942,7 @@ func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
 		}
 		return condition
 	}
-	
+
 	return condition
 }
 
@@ -964,21 +964,21 @@ func (p *SQLParser) parseSubquery(subLink *pg_query.SubLink) *ParsedQuery {
 	if subLink.Subselect == nil {
 		return nil
 	}
-	
+
 	// Parse the subquery directly from the AST node
 	if selectStmt := subLink.Subselect.GetSelectStmt(); selectStmt != nil {
 		subquery := &ParsedQuery{
-			Type:        SELECT,
-			IsAggregate: false,
-			HasJoins:    false,
+			Type:         SELECT,
+			IsAggregate:  false,
+			HasJoins:     false,
 			IsCorrelated: false,
 		}
-		
+
 		// Parse the subquery components
 		p.parseSelectStatement(selectStmt, subquery)
 		return subquery
 	}
-	
+
 	return nil
 }
 
@@ -988,7 +988,7 @@ func (p *SQLParser) parseSubqueryWithOuter(subLink *pg_query.SubLink, outerQuery
 	if subquery == nil {
 		return nil
 	}
-	
+
 	// Detect correlation by checking if subquery references outer query tables
 	p.detectCorrelation(subquery, outerQuery)
 	return subquery
@@ -997,7 +997,7 @@ func (p *SQLParser) parseSubqueryWithOuter(subLink *pg_query.SubLink, outerQuery
 // detectCorrelation checks if subquery references outer query tables/aliases
 func (p *SQLParser) detectCorrelation(subquery *ParsedQuery, outerQuery *ParsedQuery) {
 	outerTables := make(map[string]bool)
-	
+
 	// Add outer query table names and aliases
 	if outerQuery.TableName != "" {
 		outerTables[outerQuery.TableName] = true
@@ -1005,7 +1005,7 @@ func (p *SQLParser) detectCorrelation(subquery *ParsedQuery, outerQuery *ParsedQ
 	if outerQuery.TableAlias != "" {
 		outerTables[outerQuery.TableAlias] = true
 	}
-	
+
 	// Add JOIN table names and aliases
 	for _, join := range outerQuery.Joins {
 		if join.TableName != "" {
@@ -1015,12 +1015,12 @@ func (p *SQLParser) detectCorrelation(subquery *ParsedQuery, outerQuery *ParsedQ
 			outerTables[join.TableAlias] = true
 		}
 	}
-	
+
 	// Check subquery WHERE conditions for references to outer tables (including nested complex conditions)
 	for _, condition := range subquery.Where {
 		p.checkConditionForCorrelation(condition, outerTables, subquery)
 	}
-	
+
 	// Check subquery columns for references to outer tables
 	for _, column := range subquery.Columns {
 		if column.TableName != "" && outerTables[column.TableName] {
@@ -1037,27 +1037,27 @@ func (p *SQLParser) parseSelectStatement(selectStmt *pg_query.SelectStmt, query 
 			p.parseColumnTarget(resTarget, query)
 		}
 	}
-	
+
 	// Parse FROM clause
 	if len(selectStmt.FromClause) > 0 {
 		p.parseFromClause([]*pg_query.Node{selectStmt.FromClause[0]}, query)
 	}
-	
+
 	// Parse WHERE clause
 	if selectStmt.WhereClause != nil {
 		p.parseWhere(selectStmt.WhereClause, query)
 	}
-	
+
 	// Parse GROUP BY
 	if len(selectStmt.GroupClause) > 0 {
 		p.parseGroupBy(selectStmt.GroupClause, query)
 	}
-	
+
 	// Parse ORDER BY
 	if len(selectStmt.SortClause) > 0 {
 		p.parseOrderBy(selectStmt.SortClause, query)
 	}
-	
+
 	// Parse LIMIT
 	if selectStmt.LimitCount != nil {
 		if aConst := selectStmt.LimitCount.GetAConst(); aConst != nil {
@@ -1078,7 +1078,7 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 				// Add to both WindowFuncs collection and as a Column with WindowFunc
 				query.WindowFuncs = append(query.WindowFuncs, *winFunc)
 				query.HasWindowFuncs = true
-				
+
 				// Also add as a column for result set handling
 				column := Column{
 					WindowFunc: winFunc,
@@ -1093,7 +1093,7 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 				return
 			}
 		}
-		
+
 		// Otherwise check if it's an aggregate function
 		agg := p.parseAggregateFunction(funcCall, resTarget.Name)
 		if agg != nil {
@@ -1101,7 +1101,7 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 			query.IsAggregate = true
 			return
 		}
-		
+
 		// Otherwise it's a regular function call (string/date/math functions)
 		if fn := p.parseFunctionCall(funcCall); fn != nil {
 			column := Column{
@@ -1117,10 +1117,10 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 			return
 		}
 	}
-	
+
 	// Regular column
 	column := Column{}
-	
+
 	// Get column name
 	if columnRef := resTarget.Val.GetColumnRef(); columnRef != nil {
 		if len(columnRef.Fields) > 0 {
@@ -1130,7 +1130,7 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 				column.Name = "*"
 			}
 		}
-		
+
 		// Handle qualified column names (table.column)
 		if len(columnRef.Fields) > 1 {
 			if str := columnRef.Fields[1].GetString_(); str != nil {
@@ -1173,14 +1173,14 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 			}
 		}
 	}
-	
+
 	// Get alias
 	if resTarget.Name != "" {
 		column.Alias = resTarget.Name
 	} else if column.Name == "" {
 		column.Name = "column"
 	}
-	
+
 	query.Columns = append(query.Columns, column)
 }
 
@@ -1210,12 +1210,12 @@ func (p *SQLParser) parseAggregateFunction(funcCall *pg_query.FuncCall, alias st
 	if len(funcCall.Funcname) == 0 {
 		return nil
 	}
-	
+
 	funcName := ""
 	if str := funcCall.Funcname[0].GetString_(); str != nil {
 		funcName = strings.ToUpper(str.Sval)
 	}
-	
+
 	// Check if it's a supported aggregate function
 	supportedFuncs := map[string]bool{
 		"COUNT": true,
@@ -1224,16 +1224,16 @@ func (p *SQLParser) parseAggregateFunction(funcCall *pg_query.FuncCall, alias st
 		"MIN":   true,
 		"MAX":   true,
 	}
-	
+
 	if !supportedFuncs[funcName] {
 		return nil
 	}
-	
+
 	agg := &AggregateFunction{
 		Function: funcName,
 		Alias:    alias,
 	}
-	
+
 	// Parse function arguments
 	if len(funcCall.Args) == 0 {
 		// Functions like COUNT() without arguments
@@ -1252,7 +1252,7 @@ func (p *SQLParser) parseAggregateFunction(funcCall *pg_query.FuncCall, alias st
 			agg.Column = "*"
 		}
 	}
-	
+
 	// If no alias provided, generate one
 	if agg.Alias == "" {
 		if agg.Column == "*" {
@@ -1261,7 +1261,7 @@ func (p *SQLParser) parseAggregateFunction(funcCall *pg_query.FuncCall, alias st
 			agg.Alias = strings.ToLower(funcName) + "_" + agg.Column
 		}
 	}
-	
+
 	return agg
 }
 
@@ -1269,30 +1269,30 @@ func (p *SQLParser) parseWindowFunctionFromFuncCall(funcCall *pg_query.FuncCall,
 	if len(funcCall.Funcname) == 0 {
 		return nil
 	}
-	
+
 	funcName := ""
 	if str := funcCall.Funcname[0].GetString_(); str != nil {
 		funcName = strings.ToUpper(str.Sval)
 	}
-	
+
 	// Check if it's a supported window function
 	supportedFuncs := map[string]bool{
-		"ROW_NUMBER":  true,
-		"RANK":        true,
-		"DENSE_RANK":  true,
-		"LAG":         true,
-		"LEAD":        true,
+		"ROW_NUMBER": true,
+		"RANK":       true,
+		"DENSE_RANK": true,
+		"LAG":        true,
+		"LEAD":       true,
 	}
-	
+
 	if !supportedFuncs[funcName] {
 		return nil
 	}
-	
+
 	winFunc := &WindowFunction{
 		Function: funcName,
 		Alias:    alias,
 	}
-	
+
 	// Parse function arguments (for LAG/LEAD)
 	if len(funcCall.Args) > 0 {
 		for _, arg := range funcCall.Args {
@@ -1314,23 +1314,23 @@ func (p *SQLParser) parseWindowFunctionFromFuncCall(funcCall *pg_query.FuncCall,
 			}
 		}
 	}
-	
+
 	// Parse the OVER clause (window specification)
 	if funcCall.Over != nil {
 		winFunc.WindowSpec = p.parseWindowSpecificationFromOverClause(funcCall.Over)
 	}
-	
+
 	// If no alias provided, generate one
 	if winFunc.Alias == "" {
 		winFunc.Alias = strings.ToLower(funcName)
 	}
-	
+
 	return winFunc
 }
 
 func (p *SQLParser) parseWindowSpecificationFromOverClause(overClause interface{}) WindowSpecification {
 	spec := WindowSpecification{}
-	
+
 	// Type assert to *pg_query.WindowDef
 	if windowDef, ok := overClause.(*pg_query.WindowDef); ok {
 		// Parse PARTITION BY clause
@@ -1345,13 +1345,13 @@ func (p *SQLParser) parseWindowSpecificationFromOverClause(overClause interface{
 				}
 			}
 		}
-		
+
 		// Parse ORDER BY clause
 		if windowDef.OrderClause != nil {
 			for _, orderNode := range windowDef.OrderClause {
 				if sortBy := orderNode.GetSortBy(); sortBy != nil {
 					orderCol := OrderByColumn{}
-					
+
 					// Extract column name
 					if columnRef := sortBy.Node.GetColumnRef(); columnRef != nil {
 						if len(columnRef.Fields) > 0 {
@@ -1360,7 +1360,7 @@ func (p *SQLParser) parseWindowSpecificationFromOverClause(overClause interface{
 							}
 						}
 					}
-					
+
 					// Extract sort direction
 					switch sortBy.SortbyDir {
 					case pg_query.SortByDir_SORTBY_ASC, pg_query.SortByDir_SORTBY_DEFAULT:
@@ -1368,7 +1368,7 @@ func (p *SQLParser) parseWindowSpecificationFromOverClause(overClause interface{
 					case pg_query.SortByDir_SORTBY_DESC:
 						orderCol.Direction = "DESC"
 					}
-					
+
 					if orderCol.Column != "" {
 						spec.OrderBy = append(spec.OrderBy, orderCol)
 					}
@@ -1376,7 +1376,7 @@ func (p *SQLParser) parseWindowSpecificationFromOverClause(overClause interface{
 			}
 		}
 	}
-	
+
 	return spec
 }
 
@@ -1390,7 +1390,7 @@ func (p *SQLParser) parseFunctionCall(funcCall *pg_query.FuncCall) *FunctionCall
 	if len(funcCall.Funcname) == 0 {
 		return nil
 	}
-	
+
 	// Extract function name (might be schema-qualified like pg_catalog.btrim)
 	funcName := ""
 	for i, part := range funcCall.Funcname {
@@ -1401,25 +1401,25 @@ func (p *SQLParser) parseFunctionCall(funcCall *pg_query.FuncCall) *FunctionCall
 			funcName += str.Sval
 		}
 	}
-	
+
 	// For common functions, strip the schema prefix
 	if strings.HasPrefix(strings.ToUpper(funcName), "PG_CATALOG.") {
 		funcName = funcName[11:] // Remove "pg_catalog."
 	}
-	
+
 	funcName = strings.ToUpper(funcName)
-	
+
 	// Handle function name aliases
 	switch funcName {
 	case "BTRIM":
 		funcName = "TRIM"
 	}
-	
+
 	fn := &FunctionCall{
 		Name: funcName,
 		Args: make([]interface{}, 0),
 	}
-	
+
 	// Parse function arguments
 	for _, arg := range funcCall.Args {
 		if columnRef := arg.GetColumnRef(); columnRef != nil {
@@ -1459,7 +1459,7 @@ func (p *SQLParser) parseFunctionCall(funcCall *pg_query.FuncCall) *FunctionCall
 			}
 		}
 	}
-	
+
 	return fn
 }
 
@@ -1481,7 +1481,7 @@ func (p *SQLParser) parseOrderBy(sortClause []*pg_query.Node, query *ParsedQuery
 			orderCol := OrderByColumn{
 				Direction: "ASC", // Default direction
 			}
-			
+
 			// Get column name
 			if sortBy.Node != nil {
 				if columnRef := sortBy.Node.GetColumnRef(); columnRef != nil {
@@ -1492,12 +1492,12 @@ func (p *SQLParser) parseOrderBy(sortClause []*pg_query.Node, query *ParsedQuery
 					}
 				}
 			}
-			
+
 			// Get sort direction
 			if sortBy.SortbyDir == pg_query.SortByDir_SORTBY_DESC {
 				orderCol.Direction = "DESC"
 			}
-			
+
 			if orderCol.Column != "" {
 				query.OrderBy = append(query.OrderBy, orderCol)
 			}
@@ -1508,7 +1508,7 @@ func (p *SQLParser) parseOrderBy(sortClause []*pg_query.Node, query *ParsedQuery
 // GetRequiredColumns analyzes the query and returns all columns that need to be read
 func (q *ParsedQuery) GetRequiredColumns() []string {
 	requiredCols := make(map[string]bool)
-	
+
 	// Add columns from SELECT clause
 	for _, col := range q.Columns {
 		if col.Name == "*" {
@@ -1524,35 +1524,35 @@ func (q *ParsedQuery) GetRequiredColumns() []string {
 			requiredCols[col.Name] = true
 		}
 	}
-	
+
 	// Add columns from aggregate functions
 	for _, agg := range q.Aggregates {
 		if agg.Column != "*" {
 			requiredCols[agg.Column] = true
 		}
 	}
-	
+
 	// Add columns from WHERE clause
 	for _, where := range q.Where {
 		q.addWhereConditionColumns(where, requiredCols)
 	}
-	
+
 	// Add columns from GROUP BY clause
 	for _, groupCol := range q.GroupBy {
 		requiredCols[groupCol] = true
 	}
-	
+
 	// Add columns from ORDER BY clause
 	for _, orderCol := range q.OrderBy {
 		requiredCols[orderCol.Column] = true
 	}
-	
+
 	// Convert map to slice
 	var result []string
 	for col := range requiredCols {
 		result = append(result, col)
 	}
-	
+
 	return result
 }
 
@@ -1568,17 +1568,17 @@ func (q *ParsedQuery) addWhereConditionColumns(where WhereCondition, requiredCol
 		}
 		return
 	}
-	
+
 	// Handle simple conditions
 	if where.Column != "" {
 		requiredCols[where.Column] = true
 	}
-	
+
 	// Handle column comparisons
 	if where.ValueColumn != "" {
 		requiredCols[where.ValueColumn] = true
 	}
-	
+
 	// Handle functions in WHERE conditions
 	if where.Function != nil {
 		q.addFunctionColumns(where.Function, requiredCols)
@@ -1650,7 +1650,7 @@ func (p *SQLParser) detectAllCorrelations(query *ParsedQuery) {
 	for i := range query.Where {
 		p.detectCorrelationInCondition(&query.Where[i], query)
 	}
-	
+
 	// Check column subqueries (for future SELECT clause subqueries)
 	for i := range query.Columns {
 		if query.Columns[i].Subquery != nil {
@@ -1665,7 +1665,7 @@ func (p *SQLParser) detectCorrelationInCondition(condition *WhereCondition, oute
 	if condition.Subquery != nil {
 		p.detectCorrelation(condition.Subquery, outerQuery)
 	}
-	
+
 	// Check nested conditions (for complex AND/OR conditions)
 	if condition.IsComplex {
 		if condition.Left != nil {
@@ -1689,7 +1689,7 @@ func (p *SQLParser) checkConditionForCorrelation(condition WhereCondition, outer
 		subquery.IsCorrelated = true
 		subquery.CorrelatedColumns = append(subquery.CorrelatedColumns, condition.ValueTableName+"."+condition.ValueColumn)
 	}
-	
+
 	// Check nested conditions (for complex AND/OR conditions)
 	if condition.IsComplex {
 		if condition.Left != nil {
@@ -1706,38 +1706,38 @@ func (p *SQLParser) parseCaseExpression(caseExpr *pg_query.CaseExpr, alias strin
 	result := &CaseExpression{
 		Alias: alias,
 	}
-	
+
 	// Parse WHEN clauses
 	for _, whenNode := range caseExpr.Args {
 		if caseWhen := whenNode.GetCaseWhen(); caseWhen != nil {
 			whenClause := WhenClause{}
-			
+
 			// Parse the WHEN condition
 			if caseWhen.Expr != nil {
 				whenClause.Condition = *p.parseExpressionAsCondition(caseWhen.Expr)
 			}
-			
+
 			// Parse the THEN result
 			if caseWhen.Result != nil {
 				whenClause.Result = *p.parseExpressionValue(caseWhen.Result)
 			}
-			
+
 			result.WhenClauses = append(result.WhenClauses, whenClause)
 		}
 	}
-	
+
 	// Parse ELSE clause (optional)
 	if caseExpr.Defresult != nil {
 		result.ElseClause = p.parseExpressionValue(caseExpr.Defresult)
 	}
-	
+
 	return result
 }
 
 // parseExpressionAsCondition converts an expression node to a WhereCondition
 func (p *SQLParser) parseExpressionAsCondition(expr *pg_query.Node) *WhereCondition {
 	condition := &WhereCondition{}
-	
+
 	// Handle A_Expr nodes (binary expressions like column = value)
 	if aExpr := expr.GetAExpr(); aExpr != nil {
 		if len(aExpr.Name) > 0 {
@@ -1745,7 +1745,7 @@ func (p *SQLParser) parseExpressionAsCondition(expr *pg_query.Node) *WhereCondit
 				condition.Operator = str.Sval
 			}
 		}
-		
+
 		// Parse left side (column reference or CASE expression)
 		if aExpr.Lexpr != nil {
 			if columnRef := aExpr.Lexpr.GetColumnRef(); columnRef != nil {
@@ -1768,7 +1768,7 @@ func (p *SQLParser) parseExpressionAsCondition(expr *pg_query.Node) *WhereCondit
 				condition.CaseExpr = p.parseCaseExpression(caseExpr, "")
 			}
 		}
-		
+
 		// Parse right side (value, column reference, or CASE expression)
 		if aExpr.Rexpr != nil {
 			if aConst := aExpr.Rexpr.GetAConst(); aConst != nil {
@@ -1803,14 +1803,14 @@ func (p *SQLParser) parseExpressionAsCondition(expr *pg_query.Node) *WhereCondit
 			}
 		}
 	}
-	
+
 	return condition
 }
 
 // parseExpressionValue converts an expression node to an ExpressionValue
 func (p *SQLParser) parseExpressionValue(expr *pg_query.Node) *ExpressionValue {
 	result := &ExpressionValue{}
-	
+
 	// Handle constants
 	if aConst := expr.GetAConst(); aConst != nil {
 		result.Type = "literal"
@@ -1825,7 +1825,7 @@ func (p *SQLParser) parseExpressionValue(expr *pg_query.Node) *ExpressionValue {
 		}
 		return result
 	}
-	
+
 	// Handle column references
 	if columnRef := expr.GetColumnRef(); columnRef != nil {
 		result.Type = "column"
@@ -1845,21 +1845,21 @@ func (p *SQLParser) parseExpressionValue(expr *pg_query.Node) *ExpressionValue {
 		}
 		return result
 	}
-	
+
 	// Handle nested CASE expressions
 	if caseExpr := expr.GetCaseExpr(); caseExpr != nil {
 		result.Type = "case"
 		result.CaseExpr = p.parseCaseExpression(caseExpr, "")
 		return result
 	}
-	
+
 	// Handle subqueries
 	if subLink := expr.GetSubLink(); subLink != nil {
 		result.Type = "subquery"
 		result.Subquery = p.parseSubquery(subLink)
 		return result
 	}
-	
+
 	// Default to literal with nil value
 	result.Type = "literal"
 	result.LiteralValue = nil

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"bytedb/core"
 )
 
 // SimpleOptimizerDemo shows clear optimization benefits
@@ -12,7 +14,7 @@ func SimpleOptimizerDemo() {
 	fmt.Println(strings.Repeat("=", 60))
 	fmt.Println()
 
-	engine := NewQueryEngine("./data")
+	engine := core.NewQueryEngine("./data")
 	defer engine.Close()
 
 	fmt.Println("This demo shows how ByteDB's query optimizer improves performance")
@@ -244,10 +246,10 @@ func CompareWithoutOptimization() {
 	fmt.Println()
 
 	scenarios := []struct {
-		query          string
-		withoutOptim   []string
-		withOptim      []string
-		improvement    string
+		query        string
+		withoutOptim []string
+		withOptim    []string
+		improvement  string
 	}{
 		{
 			"SELECT name, salary FROM employees",

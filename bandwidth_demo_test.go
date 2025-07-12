@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bytedb/core"
 )
 
 func TestBandwidthMeasurement(t *testing.T) {
@@ -12,7 +14,7 @@ func TestBandwidthMeasurement(t *testing.T) {
 		server := createBandwidthTrackingServer()
 		defer server.Close()
 
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		t.Logf("🌐 Network Bandwidth Measurement Demo")
@@ -129,7 +131,7 @@ func TestBandwidthComparison(t *testing.T) {
 		server := createBandwidthTrackingServer()
 		defer server.Close()
 
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		t.Logf("⚖️  Bandwidth Usage Comparison")
@@ -141,21 +143,21 @@ func TestBandwidthComparison(t *testing.T) {
 
 		// Test query with good optimization potential
 		query := "SELECT name, salary FROM employees WHERE department = 'Engineering'"
-		
+
 		t.Logf("🔍 Test Query: %s", query)
 		t.Logf("")
 
 		// Get file size for comparison
 		fullFileSize := getFileSize("./data/employees.parquet")
-		
+
 		// Execute optimized query
 		bandwidthTracker.Reset()
 		result, err := engine.Execute(query)
-		
+
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
-		
+
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
@@ -165,16 +167,16 @@ func TestBandwidthComparison(t *testing.T) {
 		t.Logf("📊 Bandwidth Comparison Results:")
 		t.Logf("   Full File Size: %s", formatBytes(fullFileSize))
 		t.Logf("   Optimized Usage: %s (%d range requests)", formatBytes(optimizedBytes), rangeReqs)
-		
+
 		if fullFileSize > 0 && optimizedBytes > 0 {
 			savingBytes := fullFileSize - optimizedBytes
 			savingPct := float64(savingBytes) / float64(fullFileSize) * 100
 			efficiency := float64(fullFileSize) / float64(optimizedBytes)
-			
+
 			t.Logf("   Bandwidth Saved: %s", formatBytes(savingBytes))
 			t.Logf("   Saving Percentage: %.1f%%", savingPct)
 			t.Logf("   Efficiency Ratio: %.1fx less data", efficiency)
-			
+
 			// Verify significant savings
 			if savingPct < 50 {
 				t.Logf("   ⚠️  Expected higher savings, got %.1f%%", savingPct)
@@ -197,7 +199,7 @@ func TestDetailedBandwidthAnalysis(t *testing.T) {
 		server := createBandwidthTrackingServer()
 		defer server.Close()
 
-		engine := NewQueryEngine("./data")
+		engine := core.NewQueryEngine("./data")
 		defer engine.Close()
 
 		httpURL := server.URL + "/employees.parquet"
@@ -217,7 +219,7 @@ func TestDetailedBandwidthAnalysis(t *testing.T) {
 		}{
 			{"SELECT * FROM employees", "Baseline - full table scan"},
 			{"SELECT name FROM employees", "Single column - max pruning"},
-			{"SELECT name, salary FROM employees", "Two columns - partial pruning"}, 
+			{"SELECT name, salary FROM employees", "Two columns - partial pruning"},
 			{"SELECT name FROM employees LIMIT 5", "Early termination benefits"},
 			{"SELECT * FROM employees WHERE id = 1", "Single row - selective filter"},
 		}
@@ -243,7 +245,7 @@ func TestDetailedBandwidthAnalysis(t *testing.T) {
 			}
 
 			_, bytesUsed, rangeReqs, _ := bandwidthTracker.GetStats()
-			
+
 			var savingPct float64
 			if fullFileSize > 0 {
 				savingPct = (1.0 - float64(bytesUsed)/float64(fullFileSize)) * 100
@@ -264,7 +266,7 @@ func TestDetailedBandwidthAnalysis(t *testing.T) {
 		// Summary analysis
 		t.Logf("📈 Bandwidth Efficiency Summary:")
 		for i, result := range results {
-			t.Logf("   %d. %s: %.1f%% savings", i+1, 
+			t.Logf("   %d. %s: %.1f%% savings", i+1,
 				strings.Split(result.query, " ")[1], // Extract main operation
 				result.savings)
 		}

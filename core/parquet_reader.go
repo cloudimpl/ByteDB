@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -51,22 +51,22 @@ type Product struct {
 }
 
 type Department struct {
-	Name        string  `parquet:"name"`
-	Manager     string  `parquet:"manager"`
-	Budget      float64 `parquet:"budget"`
-	Location    string  `parquet:"location"`
-	EmployeeCount int32 `parquet:"employee_count"`
+	Name          string  `parquet:"name"`
+	Manager       string  `parquet:"manager"`
+	Budget        float64 `parquet:"budget"`
+	Location      string  `parquet:"location"`
+	EmployeeCount int32   `parquet:"employee_count"`
 }
 
 func NewParquetReader(filePath string) (*ParquetReader, error) {
 	// Check if filePath is a URL
-	if isHTTPURL(filePath) {
+	if IsHTTPURL(filePath) {
 		return newHTTPParquetReader(filePath)
 	}
 	return newLocalParquetReader(filePath)
 }
 
-func isHTTPURL(path string) bool {
+func IsHTTPURL(path string) bool {
 	u, err := url.Parse(path)
 	if err != nil {
 		return false
@@ -164,7 +164,7 @@ func (pr *ParquetReader) GetSchemaInfo() map[string]interface{} {
 		"field_count": len(fields),
 		"fields":      make([]map[string]interface{}, len(fields)),
 	}
-	
+
 	fieldInfos := schemaInfo["fields"].([]map[string]interface{})
 	for i, field := range fields {
 		fieldInfos[i] = map[string]interface{}{
@@ -173,7 +173,7 @@ func (pr *ParquetReader) GetSchemaInfo() map[string]interface{} {
 			"optional": field.Optional(),
 		}
 	}
-	
+
 	return schemaInfo
 }
 
@@ -200,37 +200,37 @@ func (pr *ParquetReader) readRows(limit int, requiredColumns []string) ([]Row, e
 	if len(requiredColumns) == 0 {
 		return pr.readAllColumns(limit)
 	}
-	
+
 	// Read only the required columns for performance
 	return pr.readSpecificColumns(limit, requiredColumns)
 }
 
 func (pr *ParquetReader) readAllColumns(limit int) ([]Row, error) {
 	rows := make([]Row, 0)
-	
+
 	// Use generic reading with map interface
 	reader := parquet.NewReader(pr.reader)
 	defer reader.Close()
-	
+
 	count := 0
 	for {
 		if limit > 0 && count >= limit {
 			break
 		}
-		
+
 		// Read into a generic map
 		rowData := make(map[string]interface{})
 		err := reader.Read(&rowData)
 		if err != nil {
 			break // End of file or error
 		}
-		
+
 		// Convert map to our Row type
 		row := Row(rowData)
 		rows = append(rows, row)
 		count++
 	}
-	
+
 	return rows, nil
 }
 
@@ -238,10 +238,10 @@ func (pr *ParquetReader) readAllColumns(limit int) ([]Row, error) {
 
 func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string) ([]Row, error) {
 	rows := make([]Row, 0)
-	
+
 	// Get available columns from schema
 	availableColumns := pr.GetColumnNames()
-	
+
 	// Validate that all required columns exist
 	validColumns := make([]string, 0)
 	for _, reqCol := range requiredColumns {
@@ -252,11 +252,11 @@ func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string
 			}
 		}
 	}
-	
+
 	if len(validColumns) == 0 {
 		return rows, nil // No valid columns to read
 	}
-	
+
 	// For now, we implement column pruning at the Row level rather than Parquet level
 	// This still provides memory benefits by not storing unnecessary columns in Row objects
 	// A full optimization would read only specific columns from Parquet, but that requires
@@ -265,7 +265,7 @@ func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Project only the required columns to save memory
 	for _, row := range allRows {
 		projectedRow := make(Row)
@@ -276,7 +276,7 @@ func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string
 		}
 		rows = append(rows, projectedRow)
 	}
-	
+
 	return rows, nil
 }
 
@@ -322,21 +322,21 @@ func (pr *ParquetReader) matchesConditionWithEngine(row Row, condition WhereCond
 	if condition.IsComplex {
 		switch condition.LogicalOp {
 		case "AND":
-			return pr.matchesConditionWithEngine(row, *condition.Left, engine) && 
-				   pr.matchesConditionWithEngine(row, *condition.Right, engine)
+			return pr.matchesConditionWithEngine(row, *condition.Left, engine) &&
+				pr.matchesConditionWithEngine(row, *condition.Right, engine)
 		case "OR":
-			return pr.matchesConditionWithEngine(row, *condition.Left, engine) || 
-				   pr.matchesConditionWithEngine(row, *condition.Right, engine)
+			return pr.matchesConditionWithEngine(row, *condition.Left, engine) ||
+				pr.matchesConditionWithEngine(row, *condition.Right, engine)
 		default:
 			return false
 		}
 	}
-	
+
 	// Handle subquery-based conditions
 	if condition.Subquery != nil {
 		return pr.matchesSubqueryCondition(row, condition, engine)
 	}
-	
+
 	// Handle IS NULL and IS NOT NULL
 	if condition.Operator == "IS NULL" {
 		value, exists := row[condition.Column]
@@ -346,11 +346,11 @@ func (pr *ParquetReader) matchesConditionWithEngine(row Row, condition WhereCond
 		value, exists := row[condition.Column]
 		return exists && value != nil
 	}
-	
+
 	// Get left-side value (column, function, or CASE expression)
 	var leftValue interface{}
 	var exists bool
-	
+
 	if condition.CaseExpr != nil {
 		// Evaluate CASE expression on left side
 		leftValue = pr.evaluateCaseExpression(condition.CaseExpr, row, engine)
@@ -405,11 +405,11 @@ func (pr *ParquetReader) matchesConditionWithEngine(row Row, condition WhereCond
 
 	switch condition.Operator {
 	case "BETWEEN":
-		return pr.CompareValues(leftValue, condition.ValueFrom) >= 0 && 
-			   pr.CompareValues(leftValue, condition.ValueTo) <= 0
+		return pr.CompareValues(leftValue, condition.ValueFrom) >= 0 &&
+			pr.CompareValues(leftValue, condition.ValueTo) <= 0
 	case "NOT BETWEEN":
-		return pr.CompareValues(leftValue, condition.ValueFrom) < 0 || 
-			   pr.CompareValues(leftValue, condition.ValueTo) > 0
+		return pr.CompareValues(leftValue, condition.ValueFrom) < 0 ||
+			pr.CompareValues(leftValue, condition.ValueTo) > 0
 	case "=":
 		return pr.CompareValues(leftValue, rightValue) == 0
 	case "!=", "<>":
@@ -435,7 +435,7 @@ func (pr *ParquetReader) matchesSubqueryCondition(row Row, condition WhereCondit
 	if engine == nil {
 		return false // Cannot execute subquery without engine
 	}
-	
+
 	switch condition.Operator {
 	case "IN":
 		return pr.matchesInSubquery(row, condition, engine)
@@ -465,13 +465,13 @@ func (pr *ParquetReader) matchesInSubquery(row Row, condition WhereCondition, en
 	if !exists {
 		return false
 	}
-	
+
 	// Execute the subquery
 	result, err := engine.ExecuteSubquery(condition.Subquery)
 	if err != nil || result.Error != "" {
 		return false
 	}
-	
+
 	// Check if the value exists in the subquery results
 	for _, subRow := range result.Rows {
 		if len(result.Columns) > 0 {
@@ -481,7 +481,7 @@ func (pr *ParquetReader) matchesInSubquery(row Row, condition WhereCondition, en
 			}
 		}
 	}
-	
+
 	return false
 }
 
@@ -491,7 +491,7 @@ func (pr *ParquetReader) matchesExistsSubquery(condition WhereCondition, engine 
 	if err != nil || result.Error != "" {
 		return false
 	}
-	
+
 	// EXISTS returns true if subquery returns any rows
 	return len(result.Rows) > 0
 }
@@ -501,23 +501,23 @@ func (pr *ParquetReader) matchesScalarSubquery(row Row, condition WhereCondition
 	if !exists {
 		return false
 	}
-	
+
 	// Execute the subquery
 	result, err := engine.ExecuteSubquery(condition.Subquery)
 	if err != nil || result.Error != "" {
 		return false
 	}
-	
+
 	// Scalar subquery should return exactly one row and one column
 	if len(result.Rows) != 1 || len(result.Columns) != 1 {
 		return false
 	}
-	
+
 	subValue, subExists := result.Rows[0][result.Columns[0]]
 	if !subExists {
 		return false
 	}
-	
+
 	// Compare using the specified operator
 	comparison := pr.CompareValues(value, subValue)
 	switch condition.Operator {
@@ -583,8 +583,8 @@ func (pr *ParquetReader) CompareValues(a, b interface{}) int {
 func (pr *ParquetReader) isNumeric(kind reflect.Kind) bool {
 	switch kind {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		 reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		 reflect.Float32, reflect.Float64:
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
 		return true
 	}
 	return false
@@ -666,20 +666,20 @@ func (pr *ParquetReader) matchesLike(value, pattern interface{}) bool {
 	if value == nil || pattern == nil {
 		return false
 	}
-	
+
 	valueStr := fmt.Sprintf("%v", value)
 	patternStr := fmt.Sprintf("%v", pattern)
-	
+
 	// Convert SQL LIKE pattern to regex pattern
 	regexPattern := pr.convertLikeToRegex(patternStr)
-	
+
 	// Compile and match the regex
 	matched, err := regexp.MatchString(regexPattern, valueStr)
 	if err != nil {
 		// If regex compilation fails, fall back to simple string comparison
 		return valueStr == patternStr
 	}
-	
+
 	return matched
 }
 
@@ -688,20 +688,20 @@ func (pr *ParquetReader) matchesILike(value, pattern interface{}) bool {
 	if value == nil || pattern == nil {
 		return false
 	}
-	
+
 	valueStr := strings.ToLower(fmt.Sprintf("%v", value))
 	patternStr := strings.ToLower(fmt.Sprintf("%v", pattern))
-	
+
 	// Convert SQL LIKE pattern to regex pattern
 	regexPattern := pr.convertLikeToRegex(patternStr)
-	
+
 	// Compile and match the regex
 	matched, err := regexp.MatchString(regexPattern, valueStr)
 	if err != nil {
 		// If regex compilation fails, fall back to simple string comparison
 		return valueStr == patternStr
 	}
-	
+
 	return matched
 }
 
@@ -709,20 +709,20 @@ func (pr *ParquetReader) convertLikeToRegex(pattern string) string {
 	// Handle escaped wildcards first (\\% and \\_)
 	pattern = strings.ReplaceAll(pattern, "\\%", "\x00ESCAPED_PERCENT\x00")
 	pattern = strings.ReplaceAll(pattern, "\\_", "\x00ESCAPED_UNDERSCORE\x00")
-	
+
 	// Replace SQL wildcards with placeholders to avoid conflicts
 	pattern = strings.ReplaceAll(pattern, "%", "\x00PERCENT\x00")
 	pattern = strings.ReplaceAll(pattern, "_", "\x00UNDERSCORE\x00")
-	
+
 	// Escape special regex characters
 	pattern = regexp.QuoteMeta(pattern)
-	
+
 	// Now replace the placeholders with appropriate equivalents
-	pattern = strings.ReplaceAll(pattern, "\x00PERCENT\x00", ".*")    // % matches any sequence of characters
-	pattern = strings.ReplaceAll(pattern, "\x00UNDERSCORE\x00", ".")  // _ matches any single character
-	pattern = strings.ReplaceAll(pattern, "\x00ESCAPED_PERCENT\x00", "%")     // \% becomes literal %
-	pattern = strings.ReplaceAll(pattern, "\x00ESCAPED_UNDERSCORE\x00", "_")  // \_ becomes literal _
-	
+	pattern = strings.ReplaceAll(pattern, "\x00PERCENT\x00", ".*")           // % matches any sequence of characters
+	pattern = strings.ReplaceAll(pattern, "\x00UNDERSCORE\x00", ".")         // _ matches any single character
+	pattern = strings.ReplaceAll(pattern, "\x00ESCAPED_PERCENT\x00", "%")    // \% becomes literal %
+	pattern = strings.ReplaceAll(pattern, "\x00ESCAPED_UNDERSCORE\x00", "_") // \_ becomes literal _
+
 	// Anchor the pattern to match the entire string
 	return "^" + pattern + "$"
 }
@@ -731,7 +731,7 @@ func (pr *ParquetReader) matchesIn(value interface{}, valueList []interface{}) b
 	if len(valueList) == 0 {
 		return false // Empty IN list matches nothing
 	}
-	
+
 	for _, listValue := range valueList {
 		if pr.CompareValues(value, listValue) == 0 {
 			return true
@@ -795,7 +795,7 @@ func (pr *ParquetReader) SelectColumnsWithEngine(rows []Row, columns []Column, e
 				if col.Alias != "" {
 					key = col.Alias
 				}
-				
+
 				// Execute subquery to get the value
 				subqueryValue := pr.executeColumnSubquery(col.Subquery, row, engine)
 				newRow[key] = subqueryValue
@@ -805,7 +805,7 @@ func (pr *ParquetReader) SelectColumnsWithEngine(rows []Row, columns []Column, e
 				if col.Alias != "" {
 					key = col.Alias
 				}
-				
+
 				// Evaluate CASE expression to get the value
 				caseValue := pr.evaluateCaseExpression(col.CaseExpr, row, engine)
 				newRow[key] = caseValue
@@ -815,7 +815,7 @@ func (pr *ParquetReader) SelectColumnsWithEngine(rows []Row, columns []Column, e
 				if col.Alias != "" {
 					key = col.Alias
 				}
-				
+
 				// Evaluate function to get the value
 				funcValue, err := engine.EvaluateFunction(col.Function, row)
 				if err != nil {
@@ -887,21 +887,21 @@ func (pr *ParquetReader) matchesInSubqueryWithOuter(row Row, condition WhereCond
 	if !exists {
 		return false
 	}
-	
+
 	// Execute the subquery with correlation context
 	var result *QueryResult
 	var err error
-	
+
 	if condition.Subquery.IsCorrelated {
 		result, err = engine.ExecuteCorrelatedSubquery(condition.Subquery, outerRow)
 	} else {
 		result, err = engine.ExecuteSubquery(condition.Subquery)
 	}
-	
+
 	if err != nil || result.Error != "" {
 		return false
 	}
-	
+
 	// Check if the value exists in the subquery results
 	for _, subRow := range result.Rows {
 		if len(result.Columns) > 0 {
@@ -911,7 +911,7 @@ func (pr *ParquetReader) matchesInSubqueryWithOuter(row Row, condition WhereCond
 			}
 		}
 	}
-	
+
 	return false
 }
 
@@ -919,17 +919,17 @@ func (pr *ParquetReader) matchesExistsSubqueryWithOuter(condition WhereCondition
 	// Execute the subquery with correlation context
 	var result *QueryResult
 	var err error
-	
+
 	if condition.Subquery.IsCorrelated {
 		result, err = engine.ExecuteCorrelatedSubquery(condition.Subquery, outerRow)
 	} else {
 		result, err = engine.ExecuteSubquery(condition.Subquery)
 	}
-	
+
 	if err != nil || result.Error != "" {
 		return false
 	}
-	
+
 	// EXISTS returns true if subquery returns any rows
 	return len(result.Rows) > 0
 }
@@ -939,31 +939,31 @@ func (pr *ParquetReader) matchesScalarSubqueryWithOuter(row Row, condition Where
 	if !exists {
 		return false
 	}
-	
+
 	// Execute the subquery with correlation context
 	var result *QueryResult
 	var err error
-	
+
 	if condition.Subquery.IsCorrelated {
 		result, err = engine.ExecuteCorrelatedSubquery(condition.Subquery, outerRow)
 	} else {
 		result, err = engine.ExecuteSubquery(condition.Subquery)
 	}
-	
+
 	if err != nil || result.Error != "" {
 		return false
 	}
-	
+
 	// Scalar subquery should return exactly one row and one column
 	if len(result.Rows) != 1 || len(result.Columns) != 1 {
 		return false
 	}
-	
+
 	subValue, subExists := result.Rows[0][result.Columns[0]]
 	if !subExists {
 		return false
 	}
-	
+
 	// Compare values based on the operator
 	switch condition.Operator {
 	case "=":
@@ -988,44 +988,43 @@ func (pr *ParquetReader) executeColumnSubquery(subquery *ParsedQuery, currentRow
 	if engine == nil {
 		return nil
 	}
-	
-	
+
 	var result *QueryResult
 	var err error
-	
+
 	// Execute subquery with correlation support
 	if subquery.IsCorrelated {
 		result, err = engine.ExecuteCorrelatedSubquery(subquery, currentRow)
 	} else {
 		result, err = engine.ExecuteSubquery(subquery)
 	}
-	
+
 	if err != nil || result.Error != "" {
 		return nil
 	}
-	
+
 	// SELECT clause subqueries should return exactly one row and one column (scalar)
 	if len(result.Rows) == 0 {
 		return nil
 	}
-	
+
 	if len(result.Rows) > 1 {
 		// Multiple rows returned - take the first one for now
 		// In a production system, this should be an error
 	}
-	
+
 	if len(result.Columns) == 0 {
 		return nil
 	}
-	
+
 	// Get the first column value from the first row
 	firstRow := result.Rows[0]
 	firstColumn := result.Columns[0]
-	
+
 	if value, exists := firstRow[firstColumn]; exists {
 		return value
 	}
-	
+
 	return nil
 }
 
@@ -1048,12 +1047,12 @@ func (pr *ParquetReader) evaluateCaseExpression(caseExpr *CaseExpression, row Ro
 			return pr.evaluateExpressionValue(whenClause.Result, row, engine)
 		}
 	}
-	
+
 	// No WHEN clause matched, return ELSE value if present
 	if caseExpr.ElseClause != nil {
 		return pr.evaluateExpressionValue(*caseExpr.ElseClause, row, engine)
 	}
-	
+
 	// No ELSE clause, return nil
 	return nil
 }
@@ -1062,7 +1061,7 @@ func (pr *ParquetReader) evaluateCaseExpression(caseExpr *CaseExpression, row Ro
 func (pr *ParquetReader) evaluateCondition(condition WhereCondition, row Row, engine SubqueryExecutor) bool {
 	// Get the left value (column or function)
 	var leftValue interface{}
-	
+
 	if condition.Function != nil {
 		// Evaluate function on left side
 		var err error
@@ -1085,7 +1084,7 @@ func (pr *ParquetReader) evaluateCondition(condition WhereCondition, row Row, en
 			}
 		}
 	}
-	
+
 	// Get right side value (literal, column, or function)
 	var rightValue interface{}
 	if condition.ValueFunction != nil {
@@ -1113,7 +1112,7 @@ func (pr *ParquetReader) evaluateCondition(condition WhereCondition, row Row, en
 		// Literal value
 		rightValue = condition.Value
 	}
-	
+
 	// Compare with the right value based on operator
 	switch condition.Operator {
 	case "=":
@@ -1137,7 +1136,7 @@ func (pr *ParquetReader) evaluateCondition(condition WhereCondition, row Row, en
 	case "IS NOT NULL":
 		return leftValue != nil
 	}
-	
+
 	return false
 }
 

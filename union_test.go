@@ -1,8 +1,10 @@
 package main
 
 import (
-	"testing"
 	"fmt"
+	"testing"
+
+	"bytedb/core"
 )
 
 func TestBasicUnion(t *testing.T) {
@@ -13,7 +15,7 @@ func TestBasicUnion(t *testing.T) {
 		query := `SELECT name, department FROM employees WHERE department = 'Engineering'
 		          UNION
 		          SELECT name, department FROM employees WHERE department = 'Sales'`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -21,24 +23,24 @@ func TestBasicUnion(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Should return Engineering (4) + Sales (2) = 6 employees
 		if result.Count != 6 {
 			t.Errorf("Expected 6 employees, got %d", result.Count)
 		}
-		
+
 		// Check columns
 		if len(result.Columns) != 2 {
 			t.Errorf("Expected 2 columns, got %d", len(result.Columns))
 		}
-		
+
 		// Verify departments
 		deptCounts := make(map[string]int)
 		for _, row := range result.Rows {
 			dept := row["department"].(string)
 			deptCounts[dept]++
 		}
-		
+
 		if deptCounts["Engineering"] != 4 {
 			t.Errorf("Expected 4 Engineering employees, got %d", deptCounts["Engineering"])
 		}
@@ -51,7 +53,7 @@ func TestBasicUnion(t *testing.T) {
 		query := `SELECT name, salary FROM employees WHERE salary > 75000
 		          UNION ALL
 		          SELECT name, salary FROM employees WHERE department = 'Engineering'`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -59,7 +61,7 @@ func TestBasicUnion(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Salary > 75000: Mike(80k), Lisa(85k), Chris(78k) = 3 (John is exactly 75k, not > 75k)
 		// Engineering: John, Mike, Lisa, Chris = 4
 		// With UNION ALL, we should get all rows, so total = 7
@@ -75,7 +77,7 @@ func TestBasicUnion(t *testing.T) {
 		query := `SELECT name, department FROM employees WHERE salary > 75000
 		          UNION
 		          SELECT name, department FROM employees WHERE department = 'Engineering'`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -83,7 +85,7 @@ func TestBasicUnion(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// All Engineering employees have salary >= 75000, so UNION should remove duplicates
 		// Result should be just the 4 Engineering employees
 		if result.Count != 4 {
@@ -98,7 +100,7 @@ func TestBasicUnion(t *testing.T) {
 		query := `SELECT name, age FROM employees WHERE age < 30
 		          UNION
 		          SELECT name, age FROM employees WHERE age > 32`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -106,7 +108,7 @@ func TestBasicUnion(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Check that we only get employees with age < 30 or age > 32
 		for _, row := range result.Rows {
 			var age int
@@ -120,7 +122,7 @@ func TestBasicUnion(t *testing.T) {
 			default:
 				t.Fatalf("Unexpected age type: %T", v)
 			}
-			
+
 			if age >= 30 && age <= 32 {
 				t.Errorf("Found employee with age %d, should only have < 30 or > 32", age)
 			}
@@ -132,7 +134,7 @@ func TestBasicUnion(t *testing.T) {
 		          UNION
 		          SELECT name, salary FROM employees WHERE department = 'Sales'
 		          ORDER BY salary DESC`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -140,7 +142,7 @@ func TestBasicUnion(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Verify ordering
 		for i := 1; i < len(result.Rows); i++ {
 			prevSalary := result.Rows[i-1]["salary"].(float64)
@@ -157,7 +159,7 @@ func TestBasicUnion(t *testing.T) {
 		          SELECT name, salary FROM employees WHERE department = 'Sales'
 		          ORDER BY salary DESC
 		          LIMIT 3`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -165,11 +167,11 @@ func TestBasicUnion(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		if result.Count != 3 {
 			t.Errorf("Expected 3 rows with LIMIT, got %d", result.Count)
 		}
-		
+
 		// Should get the top 3 salaries
 		expectedSalaries := []float64{85000, 80000, 78000} // Lisa, Mike, Chris
 		for i, expectedSal := range expectedSalaries {
@@ -191,12 +193,12 @@ func TestUnionColumnCompatibility(t *testing.T) {
 		query := `SELECT name FROM employees
 		          UNION
 		          SELECT name, department FROM employees`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
 		}
-		
+
 		// Should get an error about column count mismatch
 		if result.Error == "" {
 			t.Error("Expected error for mismatched column count")
@@ -207,7 +209,7 @@ func TestUnionColumnCompatibility(t *testing.T) {
 		query := `SELECT name AS employee_name, salary AS pay FROM employees WHERE department = 'Engineering'
 		          UNION
 		          SELECT name, salary FROM employees WHERE department = 'Sales'`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -215,7 +217,7 @@ func TestUnionColumnCompatibility(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// First query's column names should be used
 		if len(result.Columns) != 2 {
 			t.Errorf("Expected 2 columns, got %d", len(result.Columns))
@@ -239,7 +241,7 @@ func TestMultipleUnions(t *testing.T) {
 		          SELECT name, department FROM employees WHERE department = 'Sales'
 		          UNION
 		          SELECT name, department FROM employees WHERE department = 'Marketing'`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -247,7 +249,7 @@ func TestMultipleUnions(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Engineering (4) + Sales (2) + Marketing (2) = 8
 		if result.Count != 8 {
 			t.Errorf("Expected 8 employees, got %d", result.Count)
@@ -260,7 +262,7 @@ func TestMultipleUnions(t *testing.T) {
 		          SELECT name FROM employees WHERE salary = 80000
 		          UNION ALL
 		          SELECT name FROM employees WHERE salary = 85000`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -268,7 +270,7 @@ func TestMultipleUnions(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Should get 3 employees (John 75k, Mike 80k, Lisa 85k)
 		if result.Count != 3 {
 			t.Errorf("Expected 3 employees, got %d", result.Count)
@@ -284,7 +286,7 @@ func TestUnionWithAggregates(t *testing.T) {
 		query := `SELECT department, COUNT(*) as count FROM employees WHERE salary > 70000 GROUP BY department
 		          UNION
 		          SELECT department, COUNT(*) as count FROM employees WHERE age < 35 GROUP BY department`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -292,7 +294,7 @@ func TestUnionWithAggregates(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Each unique department/count combination should appear once
 		fmt.Printf("Aggregate UNION returned %d rows\n", result.Count)
 		for _, row := range result.Rows {
@@ -305,7 +307,7 @@ func TestUnionWithAggregates(t *testing.T) {
 		query := `SELECT 'High Earners' as category, COUNT(*) as count FROM employees WHERE salary > 80000
 		          UNION
 		          SELECT 'Low Earners' as category, COUNT(*) as count FROM employees WHERE salary < 60000`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -313,7 +315,7 @@ func TestUnionWithAggregates(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// Should get 2 rows: High Earners and Low Earners
 		if result.Count != 2 {
 			t.Errorf("Expected 2 rows, got %d", result.Count)
@@ -322,7 +324,7 @@ func TestUnionWithAggregates(t *testing.T) {
 			}
 			return
 		}
-		
+
 		categories := make(map[string]int)
 		for _, row := range result.Rows {
 			catVal := row["category"]
@@ -339,7 +341,7 @@ func TestUnionWithAggregates(t *testing.T) {
 			count := int(countVal.(float64))
 			categories[cat] = count
 		}
-		
+
 		if categories["High Earners"] != 1 { // Only Lisa has salary > 80000
 			t.Errorf("Expected 1 high earner, got %d", categories["High Earners"])
 		}
@@ -360,7 +362,7 @@ func TestUnionWithCTE(t *testing.T) {
 		          SELECT name, department FROM high_earners WHERE department = 'Engineering'
 		          UNION
 		          SELECT name, department FROM high_earners WHERE department = 'Sales'`
-		
+
 		result, err := engine.Execute(query)
 		if err != nil {
 			t.Fatalf("Query failed: %v", err)
@@ -368,7 +370,7 @@ func TestUnionWithCTE(t *testing.T) {
 		if result.Error != "" {
 			t.Fatalf("Query error: %s", result.Error)
 		}
-		
+
 		// High earners (>75k): Mike(80k), Lisa(85k), Chris(78k) all in Engineering
 		// No high earners in Sales
 		if result.Count != 3 {
@@ -378,35 +380,35 @@ func TestUnionWithCTE(t *testing.T) {
 }
 
 func TestUnionParsing(t *testing.T) {
-	parser := NewSQLParser()
+	parser := core.NewSQLParser()
 
 	t.Run("Parse simple UNION", func(t *testing.T) {
 		sql := `SELECT name FROM employees WHERE department = 'Engineering'
 		        UNION
 		        SELECT name FROM employees WHERE department = 'Sales'`
-		
+
 		query, err := parser.Parse(sql)
 		if err != nil {
 			t.Fatalf("Failed to parse UNION: %v", err)
 		}
-		
-		if query.Type != UNION {
+
+		if query.Type != core.UNION {
 			t.Errorf("Expected query type UNION, got %v", query.Type)
 		}
-		
+
 		if !query.HasUnion {
 			t.Error("Expected HasUnion to be true")
 		}
-		
+
 		if len(query.UnionQueries) != 2 {
 			t.Errorf("Expected 2 union queries, got %d", len(query.UnionQueries))
 		}
-		
+
 		// Check first query
 		if query.UnionQueries[0].UnionAll {
 			t.Error("First query should not be UNION ALL")
 		}
-		
+
 		// Check second query
 		if query.UnionQueries[1].UnionAll {
 			t.Error("Second query should not be UNION ALL")
@@ -417,16 +419,16 @@ func TestUnionParsing(t *testing.T) {
 		sql := `SELECT name FROM employees WHERE age < 30
 		        UNION ALL
 		        SELECT name FROM employees WHERE age > 40`
-		
+
 		query, err := parser.Parse(sql)
 		if err != nil {
 			t.Fatalf("Failed to parse UNION ALL: %v", err)
 		}
-		
+
 		if len(query.UnionQueries) != 2 {
 			t.Errorf("Expected 2 union queries, got %d", len(query.UnionQueries))
 		}
-		
+
 		// Second query should be UNION ALL
 		if !query.UnionQueries[1].UnionAll {
 			t.Error("Second query should be UNION ALL")

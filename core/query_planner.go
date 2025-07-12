@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -34,20 +34,20 @@ func (qp *QueryPlanner) CreatePlan(query *ParsedQuery, engine *QueryEngine) (*Qu
 			cteNodes = append(cteNodes, cteNode)
 		}
 	}
-	
+
 	// Build the main query plan
 	var root *PlanNode
-	
+
 	// Start with table scan or CTE reference
 	if query.TableName != "" {
 		root = qp.createScanNode(query, engine)
 	}
-	
+
 	// Add filter node if there are WHERE conditions
 	if len(query.Where) > 0 && root != nil {
 		root = qp.createFilterNode(query.Where, root)
 	}
-	
+
 	// Add join nodes if present
 	if query.HasJoins && len(query.Joins) > 0 {
 		for _, join := range query.Joins {
@@ -60,36 +60,36 @@ func (qp *QueryPlanner) CreatePlan(query *ParsedQuery, engine *QueryEngine) (*Qu
 				rightScan.Statistics = stats
 				rightScan.Rows = stats.TableRows
 			}
-			
+
 			root = qp.createJoinNode(join, root, rightScan)
 		}
 	}
-	
+
 	// Add aggregate node if needed
 	if query.IsAggregate {
 		root = qp.createAggregateNode(query, root)
 	}
-	
+
 	// Add window function node if present
 	if query.HasWindowFuncs {
 		root = qp.createWindowNode(query.WindowFuncs, root)
 	}
-	
+
 	// Add sort node if ORDER BY is present
 	if len(query.OrderBy) > 0 && root != nil {
 		root = qp.createSortNode(query.OrderBy, root)
 	}
-	
+
 	// Add project node to select specific columns
 	if len(query.Columns) > 0 && root != nil {
 		root = qp.createProjectNode(query.Columns, root)
 	}
-	
+
 	// Add limit node if LIMIT is present
 	if query.Limit > 0 && root != nil {
 		root = qp.createLimitNode(query.Limit, root)
 	}
-	
+
 	// Prepend CTE nodes if any
 	if len(cteNodes) > 0 {
 		// CTEs are materialized first, then the main query executes
@@ -98,12 +98,12 @@ func (qp *QueryPlanner) CreatePlan(query *ParsedQuery, engine *QueryEngine) (*Qu
 			root = cteNodes[i]
 		}
 	}
-	
+
 	// Calculate costs and row estimates
 	if root != nil {
 		qp.estimatePlanCosts(root)
 	}
-	
+
 	return &QueryPlan{Root: root}, nil
 }
 
@@ -113,7 +113,7 @@ func (qp *QueryPlanner) createScanNode(query *ParsedQuery, engine *QueryEngine) 
 		Type:      PlanNodeScan,
 		TableName: query.TableName,
 	}
-	
+
 	// Get table statistics
 	if stats := qp.getTableStats(query.TableName, engine); stats != nil {
 		node.Statistics = stats
@@ -121,13 +121,13 @@ func (qp *QueryPlanner) createScanNode(query *ParsedQuery, engine *QueryEngine) 
 	} else {
 		node.Rows = 1000 // Default estimate
 	}
-	
+
 	// Determine which columns to scan
 	requiredCols := query.GetRequiredColumns()
 	if len(requiredCols) > 0 {
 		node.Columns = requiredCols
 	}
-	
+
 	return node
 }
 
@@ -138,14 +138,14 @@ func (qp *QueryPlanner) createFilterNode(conditions []WhereCondition, child *Pla
 		Filter:   conditions,
 		Children: []*PlanNode{child},
 	}
-	
+
 	// Estimate selectivity
 	selectivity := qp.estimateSelectivity(conditions, child.Statistics)
 	if node.Statistics == nil {
 		node.Statistics = &NodeStatistics{}
 	}
 	node.Statistics.Selectivity = selectivity
-	
+
 	return node
 }
 
@@ -158,7 +158,7 @@ func (qp *QueryPlanner) createProjectNode(columns []Column, child *PlanNode) *Pl
 			colNames = append(colNames, col.Name)
 		}
 	}
-	
+
 	return &PlanNode{
 		Type:     PlanNodeProject,
 		Columns:  colNames,
@@ -217,22 +217,22 @@ func (qp *QueryPlanner) estimatePlanCosts(node *PlanNode) {
 	if node == nil {
 		return
 	}
-	
+
 	// First estimate costs for children
 	for _, child := range node.Children {
 		qp.estimatePlanCosts(child)
 	}
-	
+
 	// Estimate rows based on parent
 	if len(node.Children) > 0 {
 		node.Rows = node.EstimateRows(node.Children[0].Rows)
 	} else {
 		node.Rows = node.EstimateRows(0)
 	}
-	
+
 	// Estimate cost
 	node.EstimateCost()
-	
+
 	// Estimate row width (simplified)
 	node.Width = qp.estimateRowWidth(node)
 }
@@ -261,7 +261,7 @@ func (qp *QueryPlanner) estimateSelectivity(conditions []WhereCondition, stats *
 	if len(conditions) == 0 {
 		return 1.0
 	}
-	
+
 	selectivity := 1.0
 	for _, cond := range conditions {
 		condSelectivity := qp.estimateConditionSelectivity(cond, stats)
@@ -273,7 +273,7 @@ func (qp *QueryPlanner) estimateSelectivity(conditions []WhereCondition, stats *
 			selectivity *= condSelectivity
 		}
 	}
-	
+
 	return selectivity
 }
 
@@ -289,13 +289,13 @@ func (qp *QueryPlanner) estimateConditionSelectivity(cond WhereCondition, stats 
 		if cond.Right != nil {
 			rightSel = qp.estimateConditionSelectivity(*cond.Right, stats)
 		}
-		
+
 		if cond.LogicalOp == "OR" {
 			return leftSel + rightSel - (leftSel * rightSel)
 		}
 		return leftSel * rightSel
 	}
-	
+
 	// Use statistics if available
 	if stats != nil && stats.DistinctValues != nil {
 		if distinct, ok := stats.DistinctValues[cond.Column]; ok && distinct > 0 {
@@ -315,7 +315,7 @@ func (qp *QueryPlanner) estimateConditionSelectivity(cond WhereCondition, stats 
 			}
 		}
 	}
-	
+
 	// Default selectivities
 	switch cond.Operator {
 	case "=":
@@ -361,13 +361,13 @@ func (qp *QueryPlanner) getTableStats(tableName string, engine *QueryEngine) *No
 		MaxValues:      make(map[string]interface{}),
 		NullCount:      make(map[string]int64),
 	}
-	
+
 	// Try to get actual row count by opening the reader
 	reader, err := engine.getReader(tableName)
 	if err == nil && reader != nil {
 		// This is a simplified approach - in production, we'd cache these stats
 		stats.TableRows = int64(reader.GetRowCount())
-		
+
 		// Estimate distinct values for common columns
 		columns := reader.GetColumnNames()
 		for _, col := range columns {
@@ -384,6 +384,6 @@ func (qp *QueryPlanner) getTableStats(tableName string, engine *QueryEngine) *No
 			}
 		}
 	}
-	
+
 	return stats
 }
