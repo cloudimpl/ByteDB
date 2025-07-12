@@ -18,6 +18,7 @@ func generateSampleData() {
 
 	generateEmployees()
 	generateProducts()
+	generateDepartments()
 	fmt.Println("Sample data generated in ./data directory")
 }
 
@@ -76,6 +77,32 @@ func generateProducts() {
 
 	for _, prod := range products {
 		if err := writer.Write(prod); err != nil {
+			log.Fatal(err)
+		}
+	}
+}
+
+func generateDepartments() {
+	departments := []Department{
+		{"Engineering", "Lisa Davis", 500000.0, "Building A", 4},
+		{"Marketing", "Jane Smith", 200000.0, "Building B", 2},
+		{"HR", "Sarah Wilson", 150000.0, "Building C", 1},
+		{"Sales", "David Brown", 300000.0, "Building B", 2},
+		{"Finance", "Anna Garcia", 250000.0, "Building C", 1},
+		{"Research", "Dr. Smith", 400000.0, "Building D", 0}, // Department with no employees
+	}
+
+	file, err := os.Create("./data/departments.parquet")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	writer := parquet.NewWriter(file, parquet.SchemaOf(Department{}))
+	defer writer.Close()
+
+	for _, dept := range departments {
+		if err := writer.Write(dept); err != nil {
 			log.Fatal(err)
 		}
 	}

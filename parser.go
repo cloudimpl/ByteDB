@@ -18,8 +18,9 @@ const (
 )
 
 type Column struct {
-	Name  string
-	Alias string
+	Name      string
+	Alias     string
+	TableName string // For qualified columns like "e.name"
 }
 
 type WhereCondition struct {
@@ -27,6 +28,36 @@ type WhereCondition struct {
 	Operator  string
 	Value     interface{}   // Single value for =, !=, <, <=, >, >=, LIKE
 	ValueList []interface{} // List of values for IN operator
+	TableName string        // For qualified columns like "e.department"
+}
+
+type JoinType int
+
+const (
+	INNER_JOIN JoinType = iota
+	LEFT_JOIN
+	RIGHT_JOIN
+	FULL_OUTER_JOIN
+)
+
+type JoinCondition struct {
+	LeftColumn  string // Left table column
+	RightColumn string // Right table column
+	LeftTable   string // Left table alias/name
+	RightTable  string // Right table alias/name
+	Operator    string // Usually "=" but could be others
+}
+
+type JoinClause struct {
+	Type       JoinType
+	TableName  string
+	TableAlias string
+	Condition  JoinCondition
+}
+
+type TableReference struct {
+	Name  string
+	Alias string
 }
 
 type OrderByColumn struct {
@@ -43,14 +74,17 @@ type AggregateFunction struct {
 type ParsedQuery struct {
 	Type        QueryType
 	TableName   string
+	TableAlias  string
 	Columns     []Column
 	Aggregates  []AggregateFunction
 	GroupBy     []string
 	Where       []WhereCondition
 	OrderBy     []OrderByColumn
+	Joins       []JoinClause
 	Limit       int
 	RawSQL      string
 	IsAggregate bool // True if query contains aggregate functions
+	HasJoins    bool // True if query contains JOIN clauses
 }
 
 type SQLParser struct{}
@@ -80,13 +114,149 @@ func (p *SQLParser) Parse(sql string) (*ParsedQuery, error) {
 	return query, fmt.Errorf("unsupported statement type")
 }
 
+func (p *SQLParser) parseFromClause(fromClause []*pg_query.Node, query *ParsedQuery) error {
+	if len(fromClause) == 0 {
+		return fmt.Errorf("empty FROM clause")
+	}
+
+	fromNode := fromClause[0]
+	
+	// Check if it's a simple table reference or a JOIN
+	if rangeVar := fromNode.GetRangeVar(); rangeVar != nil {
+		// Simple table reference: FROM table_name [alias]
+		query.TableName = rangeVar.Relname
+		if rangeVar.Alias != nil {
+			query.TableAlias = rangeVar.Alias.Aliasname
+		}
+		return nil
+	}
+	
+	// Check if it's a JOIN expression
+	if joinExpr := fromNode.GetJoinExpr(); joinExpr != nil {
+		return p.parseJoinExpression(joinExpr, query)
+	}
+	
+	return fmt.Errorf("unsupported FROM clause type")
+}
+
+func (p *SQLParser) parseJoinExpression(joinExpr *pg_query.JoinExpr, query *ParsedQuery) error {
+	query.HasJoins = true
+	
+	// Parse left side (main table)
+	if leftNode := joinExpr.Larg; leftNode != nil {
+		if rangeVar := leftNode.GetRangeVar(); rangeVar != nil {
+			query.TableName = rangeVar.Relname
+			if rangeVar.Alias != nil {
+				query.TableAlias = rangeVar.Alias.Aliasname
+			}
+		}
+	}
+	
+	// Parse right side (joined table)
+	var joinClause JoinClause
+	if rightNode := joinExpr.Rarg; rightNode != nil {
+		if rangeVar := rightNode.GetRangeVar(); rangeVar != nil {
+			joinClause.TableName = rangeVar.Relname
+			if rangeVar.Alias != nil {
+				joinClause.TableAlias = rangeVar.Alias.Aliasname
+			}
+		}
+	}
+	
+	// Parse JOIN type
+	switch joinExpr.Jointype {
+	case pg_query.JoinType_JOIN_INNER:
+		joinClause.Type = INNER_JOIN
+	case pg_query.JoinType_JOIN_LEFT:
+		joinClause.Type = LEFT_JOIN
+	case pg_query.JoinType_JOIN_RIGHT:
+		joinClause.Type = RIGHT_JOIN
+	case pg_query.JoinType_JOIN_FULL:
+		joinClause.Type = FULL_OUTER_JOIN
+	default:
+		joinClause.Type = INNER_JOIN // Default to INNER JOIN
+	}
+	
+	// Parse ON condition
+	if joinExpr.Quals != nil {
+		err := p.parseJoinCondition(joinExpr.Quals, &joinClause, query)
+		if err != nil {
+			return fmt.Errorf("failed to parse JOIN condition: %w", err)
+		}
+	}
+	
+	query.Joins = append(query.Joins, joinClause)
+	return nil
+}
+
+func (p *SQLParser) parseJoinCondition(quals *pg_query.Node, joinClause *JoinClause, query *ParsedQuery) error {
+	if aExpr := quals.GetAExpr(); aExpr != nil {
+		// Parse the join condition (e.g., e.department = d.name)
+		condition := JoinCondition{
+			Operator: "=", // Default to equality
+		}
+		
+		// Get operator
+		if len(aExpr.Name) > 0 {
+			if str := aExpr.Name[0].GetString_(); str != nil {
+				condition.Operator = str.Sval
+			}
+		}
+		
+		// Parse left expression (e.g., e.department)
+		if lexpr := aExpr.Lexpr; lexpr != nil {
+			if columnRef := lexpr.GetColumnRef(); columnRef != nil {
+				if len(columnRef.Fields) >= 2 {
+					// Qualified column: table.column
+					if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+						condition.LeftTable = tableStr.Sval
+					}
+					if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+						condition.LeftColumn = columnStr.Sval
+					}
+				} else if len(columnRef.Fields) == 1 {
+					// Unqualified column
+					if columnStr := columnRef.Fields[0].GetString_(); columnStr != nil {
+						condition.LeftColumn = columnStr.Sval
+					}
+				}
+			}
+		}
+		
+		// Parse right expression (e.g., d.name)
+		if rexpr := aExpr.Rexpr; rexpr != nil {
+			if columnRef := rexpr.GetColumnRef(); columnRef != nil {
+				if len(columnRef.Fields) >= 2 {
+					// Qualified column: table.column
+					if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+						condition.RightTable = tableStr.Sval
+					}
+					if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+						condition.RightColumn = columnStr.Sval
+					}
+				} else if len(columnRef.Fields) == 1 {
+					// Unqualified column
+					if columnStr := columnRef.Fields[0].GetString_(); columnStr != nil {
+						condition.RightColumn = columnStr.Sval
+					}
+				}
+			}
+		}
+		
+		joinClause.Condition = condition
+		return nil
+	}
+	
+	return fmt.Errorf("unsupported JOIN condition type")
+}
+
 func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (*ParsedQuery, error) {
 	query.Type = SELECT
 
 	if stmt.FromClause != nil && len(stmt.FromClause) > 0 {
-		fromNode := stmt.FromClause[0]
-		if rangeVar := fromNode.GetRangeVar(); rangeVar != nil {
-			query.TableName = rangeVar.Relname
+		err := p.parseFromClause(stmt.FromClause, query)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse FROM clause: %w", err)
 		}
 	}
 
@@ -111,7 +281,18 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 				}
 				
 				if columnRef := resTarget.Val.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) > 0 {
+					if len(columnRef.Fields) >= 2 {
+						// Qualified column: table.column
+						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+							col.TableName = tableStr.Sval
+						}
+						if colStr := columnRef.Fields[1].GetString_(); colStr != nil {
+							col.Name = colStr.Sval
+						} else if columnRef.Fields[1].GetAStar() != nil {
+							col.Name = "*"
+						}
+					} else if len(columnRef.Fields) == 1 {
+						// Unqualified column
 						if str := columnRef.Fields[0].GetString_(); str != nil {
 							col.Name = str.Sval
 						} else if columnRef.Fields[0].GetAStar() != nil {

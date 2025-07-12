@@ -38,6 +38,14 @@ type Product struct {
 	Description string  `parquet:"description"`
 }
 
+type Department struct {
+	Name        string  `parquet:"name"`
+	Manager     string  `parquet:"manager"`
+	Budget      float64 `parquet:"budget"`
+	Location    string  `parquet:"location"`
+	EmployeeCount int32 `parquet:"employee_count"`
+}
+
 func NewParquetReader(filePath string) (*ParquetReader, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
