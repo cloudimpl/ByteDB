@@ -350,16 +350,18 @@ func (ao *AggregateOptimizer) createFinalAggregationStage(plan *DistributedPlan,
 func (ao *AggregateOptimizer) buildOptimizedScanSQL(query *core.ParsedQuery, columns []string, partitionIndex int, partitioning *PartitioningStrategy) string {
 	sql := fmt.Sprintf("SELECT %s FROM %s", strings.Join(columns, ", "), query.TableName)
 	
-	// Add WHERE conditions
+	// Add WHERE conditions (no partition filters - data is already physically partitioned)
 	conditions := []string{}
 	for _, where := range query.Where {
-		conditions = append(conditions, fmt.Sprintf("%s %s %v", where.Column, where.Operator, where.Value))
-	}
-	
-	// Add partition filter
-	partitionFilter := ao.buildPartitionFilter(partitionIndex, partitioning)
-	if partitionFilter != "" {
-		conditions = append(conditions, partitionFilter)
+		// Properly format value based on type
+		var valueStr string
+		switch v := where.Value.(type) {
+		case string:
+			valueStr = fmt.Sprintf("'%s'", v)
+		default:
+			valueStr = fmt.Sprintf("%v", v)
+		}
+		conditions = append(conditions, fmt.Sprintf("%s %s %s", where.Column, where.Operator, valueStr))
 	}
 	
 	if len(conditions) > 0 {

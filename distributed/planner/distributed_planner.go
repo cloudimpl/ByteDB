@@ -654,23 +654,25 @@ func (dqp *DistributedQueryPlanner) planPartitionedJoin(plan *DistributedPlan, q
 // Helper functions for SQL generation
 
 func (dqp *DistributedQueryPlanner) buildScanSQL(query *core.ParsedQuery, partitionIndex int, partitioning *PartitioningStrategy) string {
-	// Build SQL with partition-specific WHERE clauses
+	// Build SQL for scan - data is already physically partitioned
 	sql := fmt.Sprintf("SELECT %s FROM %s", 
 		dqp.columnsToString(query.Columns), 
 		query.TableName)
 	
-	// Add partition filter
-	partitionFilter := dqp.buildPartitionFilter(partitionIndex, partitioning)
-	
-	// Combine with existing WHERE conditions
+	// Only add user-specified WHERE conditions (no partition filters needed)
 	whereConditions := []string{}
-	if partitionFilter != "" {
-		whereConditions = append(whereConditions, partitionFilter)
-	}
 	
 	for _, condition := range query.Where {
+		// Properly format value based on type
+		var valueStr string
+		switch v := condition.Value.(type) {
+		case string:
+			valueStr = fmt.Sprintf("'%s'", v)
+		default:
+			valueStr = fmt.Sprintf("%v", v)
+		}
 		whereConditions = append(whereConditions, 
-			fmt.Sprintf("%s %s %v", condition.Column, condition.Operator, condition.Value))
+			fmt.Sprintf("%s %s %s", condition.Column, condition.Operator, valueStr))
 	}
 	
 	if len(whereConditions) > 0 {
@@ -726,8 +728,16 @@ func (dqp *DistributedQueryPlanner) buildPartialAggregationSQL(query *core.Parse
 	}
 	
 	for _, condition := range query.Where {
+		// Properly format value based on type
+		var valueStr string
+		switch v := condition.Value.(type) {
+		case string:
+			valueStr = fmt.Sprintf("'%s'", v)
+		default:
+			valueStr = fmt.Sprintf("%v", v)
+		}
 		whereConditions = append(whereConditions, 
-			fmt.Sprintf("%s %s %v", condition.Column, condition.Operator, condition.Value))
+			fmt.Sprintf("%s %s %s", condition.Column, condition.Operator, valueStr))
 	}
 	
 	if len(whereConditions) > 0 {

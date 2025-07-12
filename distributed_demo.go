@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytedb/core"
 	"bytedb/distributed/communication"
 	"bytedb/distributed/coordinator"
 	"bytedb/distributed/worker"
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
+	
+	"github.com/parquet-go/parquet-go"
 )
 
 // DistributedDemo demonstrates the distributed query execution
@@ -15,8 +19,8 @@ func DistributedDemo() {
 	fmt.Println("\n🚀 ByteDB Distributed Query Engine Demo")
 	fmt.Println("=====================================")
 	
-	// Ensure test data exists
-	generateSampleData()
+	// Ensure test data exists and is distributed
+	generateDistributedSampleData()
 	
 	// Create memory transport for demo
 	transport := communication.NewMemoryTransport()
@@ -28,11 +32,11 @@ func DistributedDemo() {
 	
 	fmt.Println("📡 Starting distributed cluster...")
 	
-	// Create and register workers
+	// Create and register workers with separate data directories
 	workers := []*worker.Worker{
-		worker.NewWorker("worker-1", "./data"),
-		worker.NewWorker("worker-2", "./data"),
-		worker.NewWorker("worker-3", "./data"),
+		worker.NewWorker("worker-1", "./data/worker-1"),
+		worker.NewWorker("worker-2", "./data/worker-2"),
+		worker.NewWorker("worker-3", "./data/worker-3"),
 	}
 	
 	workerAddrs := []string{
@@ -236,6 +240,122 @@ func DistributedDemo() {
 	fmt.Printf("   - Implement data partitioning strategies\n")
 	fmt.Printf("   - Add fault tolerance and recovery\n")
 	fmt.Printf("   - Optimize query planning for distributed execution\n")
+}
+
+// generateDistributedSampleData generates sample data distributed across worker directories
+func generateDistributedSampleData() {
+	// Create worker directories
+	workerDirs := []string{
+		"./data/worker-1",
+		"./data/worker-2",
+		"./data/worker-3",
+	}
+	
+	for _, dir := range workerDirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			log.Fatalf("Failed to create directory %s: %v", dir, err)
+		}
+	}
+	
+	// First, generate complete data in main data directory
+	generateSampleData()
+	
+	// Now distribute the data across workers
+	distributeEmployeeData(workerDirs)
+	
+	fmt.Println("Sample data distributed across worker directories")
+}
+
+// distributeEmployeeData distributes employee data across worker directories
+func distributeEmployeeData(workerDirs []string) {
+	// Read the original employees data
+	engine := NewTestQueryEngine()
+	defer engine.Close()
+	
+	// Get all employees
+	result, err := engine.Execute("SELECT * FROM employees")
+	if err != nil {
+		log.Fatalf("Failed to read employees: %v", err)
+	}
+	
+	// Create separate parquet writers for each worker
+	writers := make([]*parquet.Writer, len(workerDirs))
+	files := make([]*os.File, len(workerDirs))
+	
+	for i, dir := range workerDirs {
+		file, err := os.Create(fmt.Sprintf("%s/employees.parquet", dir))
+		if err != nil {
+			log.Fatalf("Failed to create file: %v", err)
+		}
+		files[i] = file
+		
+		writer := parquet.NewWriter(file, parquet.SchemaOf(&core.Employee{}))
+		writers[i] = writer
+	}
+	
+	// Distribute rows using round-robin partitioning
+	for i, row := range result.Rows {
+		workerIndex := i % len(workerDirs)
+		
+		// Convert row to Employee struct with proper type handling
+		emp := core.Employee{
+			ID:         getInt32(row["id"]),
+			Name:       row["name"].(string),
+			Department: row["department"].(string),
+			Salary:     row["salary"].(float64),
+			Age:        getInt32(row["age"]),
+			HireDate:   row["hire_date"].(string),
+		}
+		
+		if err := writers[workerIndex].Write(&emp); err != nil {
+			log.Fatalf("Failed to write employee: %v", err)
+		}
+	}
+	
+	// Close all writers and files
+	for i := range writers {
+		if err := writers[i].Close(); err != nil {
+			log.Fatalf("Failed to close writer: %v", err)
+		}
+		files[i].Close()
+	}
+	
+	// Also copy other tables to each worker (for simplicity, we'll replicate small tables)
+	for _, dir := range workerDirs {
+		// Copy departments (small table, can be replicated)
+		copyFile("./data/departments.parquet", fmt.Sprintf("%s/departments.parquet", dir))
+		// Copy products (for join tests)
+		copyFile("./data/products.parquet", fmt.Sprintf("%s/products.parquet", dir))
+	}
+}
+
+// copyFile copies a file from src to dst
+func copyFile(src, dst string) error {
+	input, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	
+	err = os.WriteFile(dst, input, 0644)
+	if err != nil {
+		return err
+	}
+	
+	return nil
+}
+
+// getInt32 safely converts interface{} to int32
+func getInt32(val interface{}) int32 {
+	switch v := val.(type) {
+	case int32:
+		return v
+	case int64:
+		return int32(v)
+	case int:
+		return int32(v)
+	default:
+		return 0
+	}
 }
 
 // Run the demo if this file is executed directly

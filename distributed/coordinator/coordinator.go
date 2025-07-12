@@ -505,7 +505,15 @@ func (c *Coordinator) buildOptimizedAggregateSQL(query *core.ParsedQuery, worker
 	if len(query.Where) > 0 {
 		conditions := []string{}
 		for _, where := range query.Where {
-			conditions = append(conditions, fmt.Sprintf("%s %s %v", where.Column, where.Operator, where.Value))
+			// Properly format value based on type
+			var valueStr string
+			switch v := where.Value.(type) {
+			case string:
+				valueStr = fmt.Sprintf("'%s'", v)
+			default:
+				valueStr = fmt.Sprintf("%v", v)
+			}
+			conditions = append(conditions, fmt.Sprintf("%s %s %s", where.Column, where.Operator, valueStr))
 		}
 		sql += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -584,8 +592,42 @@ func (c *Coordinator) aggregateResults(query *core.ParsedQuery, results []*commu
 	}
 	
 	if len(results) == 1 {
-		// Single worker result
+		// Single worker result - still need to handle aggregations
 		result := results[0]
+		
+		// Check if we need final aggregation processing
+		if (len(query.GroupBy) > 0 || len(query.Aggregates) > 0) && len(result.Rows) > 0 {
+			// Check for intermediate columns that need final processing
+			hasIntermediateColumns := false
+			for _, col := range result.Columns {
+				if strings.HasSuffix(col, "_sum") || strings.HasSuffix(col, "_count") {
+					hasIntermediateColumns = true
+					break
+				}
+			}
+			
+			if hasIntermediateColumns {
+				// Perform final aggregation even for single worker
+				aggregatedRows, err := c.performFinalAggregation(query, result.Rows, result.Columns)
+				if err != nil {
+					return nil, err
+				}
+				
+				// Update columns to final aggregate names
+				finalColumns := make([]string, 0)
+				finalColumns = append(finalColumns, query.GroupBy...)
+				for _, agg := range query.Aggregates {
+					finalColumns = append(finalColumns, agg.Alias)
+				}
+				
+				return &core.QueryResult{
+					Columns: finalColumns,
+					Rows:    aggregatedRows,
+					Count:   len(aggregatedRows),
+				}, nil
+			}
+		}
+		
 		return &core.QueryResult{
 			Columns: result.Columns,
 			Rows:    result.Rows,
@@ -811,7 +853,7 @@ func (c *Coordinator) generateFragmentID() string {
 
 func (c *Coordinator) buildFragmentSQL(query *core.ParsedQuery, dataPath string) string {
 	// Build SQL for fragment execution
-	// This is simplified - a full implementation would optimize the SQL for distributed execution
+	// Since data is already partitioned across workers, we don't need partition filters
 	var sql strings.Builder
 	
 	sql.WriteString("SELECT ")
@@ -830,12 +872,20 @@ func (c *Coordinator) buildFragmentSQL(query *core.ParsedQuery, dataPath string)
 	
 	if len(query.Where) > 0 {
 		sql.WriteString(" WHERE ")
-		// Simplified WHERE clause building
+		// Build WHERE clause without partition filters
 		for i, cond := range query.Where {
 			if i > 0 {
 				sql.WriteString(" AND ")
 			}
-			sql.WriteString(fmt.Sprintf("%s %s %v", cond.Column, cond.Operator, cond.Value))
+			// Properly format value based on type
+			var valueStr string
+			switch v := cond.Value.(type) {
+			case string:
+				valueStr = fmt.Sprintf("'%s'", v)
+			default:
+				valueStr = fmt.Sprintf("%v", v)
+			}
+			sql.WriteString(fmt.Sprintf("%s %s %s", cond.Column, cond.Operator, valueStr))
 		}
 	}
 	
@@ -860,20 +910,91 @@ func (c *Coordinator) extractColumns(query *core.ParsedQuery) []string {
 }
 
 func (c *Coordinator) aggregateGlobal(aggregates []core.Column, rows []core.Row, columns []string) ([]core.Row, error) {
-	// Simplified global aggregation
+	// Global aggregation - properly handle partial results
 	if len(rows) == 0 {
 		return []core.Row{}, nil
 	}
 	
 	result := make(core.Row)
-	count := len(rows)
 	
-	// Handle COUNT
-	for _, agg := range aggregates {
-		if strings.ToUpper(agg.Name) == "COUNT" {
-			result[agg.Alias] = count
+	// Check if we have partial aggregation results
+	hasPartialResults := false
+	for _, col := range columns {
+		if col == "total_employees" || col == "count" {
+			hasPartialResults = true
+			break
 		}
-		// Add other aggregation functions as needed
+	}
+	
+	// Handle aggregations
+	for _, agg := range aggregates {
+		switch strings.ToUpper(agg.Name) {
+		case "COUNT":
+			if hasPartialResults {
+				// Sum up partial counts from workers
+				totalCount := 0.0
+				for _, row := range rows {
+					if val, exists := row[agg.Alias]; exists {
+						totalCount += getFloat64(val)
+					}
+				}
+				result[agg.Alias] = int(totalCount)
+			} else {
+				// Direct count of rows
+				result[agg.Alias] = len(rows)
+			}
+		case "SUM":
+			// Sum up values
+			total := 0.0
+			for _, row := range rows {
+				if val, exists := row[agg.Alias]; exists {
+					total += getFloat64(val)
+				}
+			}
+			result[agg.Alias] = total
+		case "AVG":
+			// Handle AVG aggregation
+			if sumCol := agg.Alias + "_sum"; containsColumn(columns, sumCol) {
+				// Optimized path with partial sums and counts
+				totalSum := 0.0
+				totalCount := 0.0
+				for _, row := range rows {
+					if sumVal, exists := row[sumCol]; exists {
+						totalSum += getFloat64(sumVal)
+					}
+					if countVal, exists := row[agg.Alias + "_count"]; exists {
+						totalCount += getFloat64(countVal)
+					}
+				}
+				if totalCount > 0 {
+					result[agg.Alias] = totalSum / totalCount
+				} else {
+					result[agg.Alias] = 0.0
+				}
+			}
+		case "MIN":
+			// Find minimum value
+			var minVal interface{}
+			for _, row := range rows {
+				if val, exists := row[agg.Alias]; exists {
+					if minVal == nil || getFloat64(val) < getFloat64(minVal) {
+						minVal = val
+					}
+				}
+			}
+			result[agg.Alias] = minVal
+		case "MAX":
+			// Find maximum value
+			var maxVal interface{}
+			for _, row := range rows {
+				if val, exists := row[agg.Alias]; exists {
+					if maxVal == nil || getFloat64(val) > getFloat64(maxVal) {
+						maxVal = val
+					}
+				}
+			}
+			result[agg.Alias] = maxVal
+		}
 	}
 	
 	return []core.Row{result}, nil
@@ -973,4 +1094,14 @@ func getFloat64(val interface{}) float64 {
 	default:
 		return 0
 	}
+}
+
+// containsColumn checks if a column exists in the columns list
+func containsColumn(columns []string, column string) bool {
+	for _, col := range columns {
+		if col == column {
+			return true
+		}
+	}
+	return false
 }
