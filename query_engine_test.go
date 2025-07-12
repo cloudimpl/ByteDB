@@ -360,9 +360,9 @@ func TestQueryEngine(t *testing.T) {
 			hasError:     false,
 			checkFunc: func(result *QueryResult) bool {
 				expectedNames := map[string]bool{
-					"Laptop":     true,
-					"Monitor":    true,
-					"Desk Chair": true,
+					"Laptop":  true,
+					"Monitor": true,
+					"Phone":   true,
 				}
 				
 				if len(result.Rows) != 3 {
@@ -453,8 +453,8 @@ func TestJSONOutput(t *testing.T) {
 		t.Fatalf("Failed to unmarshal JSON: %v", err)
 	}
 
-	if result.Count != 1 {
-		t.Errorf("Expected 1 row, got %d", result.Count)
+	if result.Count != 2 {
+		t.Errorf("Expected 2 rows, got %d", result.Count)
 		t.Logf("Rows: %+v", result.Rows)
 	}
 

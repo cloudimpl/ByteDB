@@ -161,7 +161,16 @@ GROUP BY e.name, e.salary, d.budget;
 
 ## 🧪 Testing
 
-Run the comprehensive test suite:
+ByteDB uses a fixed test data system to ensure deterministic and reliable tests.
+
+### Test Data System
+
+Tests use fixed data stored in `./testdata/` directory (automatically created):
+- 10 employees with known salaries, departments, and ages
+- 10 products with specific prices and categories
+- 6 departments with defined budgets
+
+### Running Tests
 
 ```bash
 # Run all tests
@@ -175,7 +184,30 @@ go test -v -run TestSubqueries
 
 # Run benchmarks
 go test -bench=.
+
+# Clean test data
+make clean
 ```
+
+### Writing Tests
+
+Use the test helpers for consistent test data:
+
+```go
+func TestExample(t *testing.T) {
+    // Use NewTestQueryEngine() instead of NewQueryEngine("./data")
+    engine := NewTestQueryEngine()
+    defer engine.Close()
+    
+    // Use constants instead of magic numbers
+    result, err := engine.Execute("SELECT * FROM employees WHERE salary > 70000")
+    if len(result.Rows) != TestEmployeesOver70k {
+        t.Errorf("Expected %d employees, got %d", TestEmployeesOver70k, len(result.Rows))
+    }
+}
+```
+
+See `test_data.go` for available test data constants and `TEST_DATA_MIGRATION.md` for migration guide.
 
 ## 📁 Code Structure
 

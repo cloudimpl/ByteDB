@@ -8,11 +8,8 @@ import (
 
 // TestBasicWindowFunctions tests core window function functionality
 func TestBasicWindowFunctions(t *testing.T) {
-	engine := NewQueryEngine("./data")
+	engine := NewTestQueryEngine()
 	defer engine.Close()
-
-	// Ensure test data exists
-	generateSampleData()
 
 	t.Run("ROW_NUMBER without PARTITION BY", func(t *testing.T) {
 		query := "SELECT name, salary, ROW_NUMBER() OVER (ORDER BY salary DESC) as row_num FROM employees"
@@ -206,10 +203,8 @@ func TestBasicWindowFunctions(t *testing.T) {
 
 // TestAdvancedWindowFunctions tests more complex window function scenarios
 func TestAdvancedWindowFunctions(t *testing.T) {
-	engine := NewQueryEngine("./data")
+	engine := NewTestQueryEngine()
 	defer engine.Close()
-
-	generateSampleData()
 
 	t.Run("Multiple window functions in same query", func(t *testing.T) {
 		query := `SELECT name, department, salary,
@@ -315,10 +310,8 @@ func TestAdvancedWindowFunctions(t *testing.T) {
 
 // TestWindowFunctionEdgeCases tests edge cases and error conditions
 func TestWindowFunctionEdgeCases(t *testing.T) {
-	engine := NewQueryEngine("./data")
+	engine := NewTestQueryEngine()
 	defer engine.Close()
-
-	generateSampleData()
 
 	t.Run("Window function with empty partition", func(t *testing.T) {
 		// Create a query that might result in empty partitions
@@ -387,10 +380,8 @@ func TestWindowFunctionEdgeCases(t *testing.T) {
 
 // TestWindowFunctionDataTypes tests window functions with different data types
 func TestWindowFunctionDataTypes(t *testing.T) {
-	engine := NewQueryEngine("./data")
+	engine := NewTestQueryEngine()
 	defer engine.Close()
-
-	generateSampleData()
 
 	tests := []struct {
 		name     string
@@ -472,10 +463,8 @@ func TestWindowFunctionDataTypes(t *testing.T) {
 
 // BenchmarkWindowFunctions tests performance of window functions
 func BenchmarkWindowFunctions(b *testing.B) {
-	engine := NewQueryEngine("./data")
+	engine := NewTestQueryEngine()
 	defer engine.Close()
-
-	generateSampleData()
 
 	benchmarks := []struct {
 		name  string

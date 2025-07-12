@@ -35,8 +35,8 @@ func TestSubqueries(t *testing.T) {
 		fmt.Printf("Columns: %v\n", result.Columns)
 		fmt.Printf("Row count: %d\n", len(result.Rows))
 		
-		// Should return employees in Engineering, Sales, and Finance departments
-		expectedCount := 7 // 4 Engineering + 2 Sales + 1 Finance employees  
+		// All departments have budget > 200000, so all employees should be returned
+		expectedCount := 10 // All employees  
 		if len(result.Rows) != expectedCount {
 			t.Errorf("Expected %d rows from IN subquery, got %d", expectedCount, len(result.Rows))
 		}

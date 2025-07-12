@@ -60,6 +60,7 @@ clean:
 	@echo "Cleaning build artifacts..."
 	@rm -f bytedb
 	@rm -rf ./data/*.parquet
+	@rm -rf ./testdata
 	@echo "✅ Clean completed"
 
 # Show help

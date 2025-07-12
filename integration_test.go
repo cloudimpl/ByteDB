@@ -76,7 +76,7 @@ func TestEndToEndQueries(t *testing.T) {
 		{
 			name:         "Type coercion - float comparison",
 			sql:          "SELECT name FROM products WHERE price > 199.99;",
-			expectedRows: 2, // Laptop (999.99), Monitor (299.99) - Desk Chair is exactly 199.99
+			expectedRows: 3, // Laptop (999.99), Monitor (299.99), Phone (699.99)
 			shouldError:  false,
 		},
 		{
@@ -197,9 +197,9 @@ func TestQueryResultAccuracy(t *testing.T) {
 	}
 
 	expectedExpensive := map[string]float64{
-		"Laptop":     999.99,
-		"Monitor":    299.99,
-		"Desk Chair": 199.99,
+		"Laptop":  999.99,
+		"Monitor": 299.99,
+		"Phone":   699.99,
 	}
 
 	if len(result.Rows) != 3 {
@@ -631,12 +631,12 @@ func TestInOperator(t *testing.T) {
 		t.Fatalf("Query returned error: %s", result.Error)
 	}
 
-	// Should return Mouse (29.99), Desk Chair (199.99), Laptop (999.99)
-	if len(result.Rows) != 3 {
-		t.Errorf("Expected 3 products with specified prices, got %d", len(result.Rows))
+	// Should return Mouse (29.99), Laptop (999.99)
+	if len(result.Rows) != 2 {
+		t.Errorf("Expected 2 products with specified prices, got %d", len(result.Rows))
 	}
 
-	expectedPrices := map[float64]bool{29.99: true, 199.99: true, 999.99: true}
+	expectedPrices := map[float64]bool{29.99: true, 999.99: true}
 	for _, row := range result.Rows {
 		price := row["price"].(float64)
 		if !expectedPrices[price] {

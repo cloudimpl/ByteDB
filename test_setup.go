@@ -21,18 +21,8 @@ func generateSampleData() {
 }
 
 func generateEmployees() {
-	employees := []Employee{
-		{1, "John Doe", "Engineering", 75000.0, 30, "2020-01-15"},
-		{2, "Jane Smith", "Marketing", 65000.0, 28, "2019-03-22"},
-		{3, "Mike Johnson", "Engineering", 80000.0, 35, "2018-07-10"},
-		{4, "Sarah Wilson", "HR", 55000.0, 32, "2021-05-18"},
-		{5, "David Brown", "Sales", 70000.0, 29, "2019-11-02"},
-		{6, "Lisa Davis", "Engineering", 85000.0, 33, "2017-12-01"},
-		{7, "Tom Miller", "Marketing", 62000.0, 27, "2020-08-14"},
-		{8, "Anna Garcia", "Finance", 68000.0, 31, "2019-06-25"},
-		{9, "Chris Anderson", "Engineering", 78000.0, 34, "2018-04-03"},
-		{10, "Maria Rodriguez", "Sales", 72000.0, 26, "2021-02-09"},
-	}
+	// Use fixed test data to ensure tests are deterministic
+	employees := TestEmployees
 
 	file, err := os.Create("./data/employees.parquet")
 	if err != nil {
@@ -51,18 +41,8 @@ func generateEmployees() {
 }
 
 func generateProducts() {
-	products := []Product{
-		{1, "Laptop", "Electronics", 999.99, true, "TechCorp"},
-		{2, "Mouse", "Electronics", 29.99, true, "TechCorp"},
-		{3, "Keyboard", "Electronics", 89.99, false, "TechCorp"},
-		{4, "Monitor", "Electronics", 299.99, true, "ScreenCorp"},
-		{5, "Webcam", "Electronics", 79.99, true, "CameraCorp"},
-		{6, "Notebook", "Stationery", 5.99, true, "PaperCorp"},
-		{7, "Pen", "Stationery", 1.99, true, "PaperCorp"},
-		{8, "Eraser", "Stationery", 0.99, false, "PaperCorp"},
-		{9, "Calculator", "Electronics", 15.99, true, "MathCorp"},
-		{10, "Phone", "Electronics", 699.99, true, "PhoneCorp"},
-	}
+	// Use fixed test data to ensure tests are deterministic
+	products := TestProducts
 
 	file, err := os.Create("./data/products.parquet")
 	if err != nil {
@@ -81,14 +61,8 @@ func generateProducts() {
 }
 
 func generateDepartments() {
-	departments := []Department{
-		{"Engineering", "Lisa Davis", 1000000.0, "Building A", 4},
-		{"Marketing", "Jane Smith", 500000.0, "Building B", 2},
-		{"HR", "Sarah Wilson", 300000.0, "Building C", 1},
-		{"Sales", "David Brown", 750000.0, "Building B", 2},
-		{"Finance", "Anna Garcia", 600000.0, "Building C", 1},
-		{"Research", "Dr. Smith", 400000.0, "Building D", 0},
-	}
+	// Use fixed test data to ensure tests are deterministic
+	departments := TestDepartments
 
 	file, err := os.Create("./data/departments.parquet")
 	if err != nil {
