@@ -22,6 +22,7 @@ type Row map[string]interface{}
 // SubqueryExecutor interface for executing subqueries
 type SubqueryExecutor interface {
 	ExecuteSubquery(query *ParsedQuery) (*QueryResult, error)
+	ExecuteCorrelatedSubquery(query *ParsedQuery, outerRow Row) (*QueryResult, error)
 }
 
 // Define the structs for our sample data
@@ -656,4 +657,107 @@ func (pr *ParquetReader) parseConstantValue(name string) interface{} {
 	}
 	// Default to the name itself
 	return name
+}
+
+// Correlated subquery support methods
+
+func (pr *ParquetReader) matchesInSubqueryWithOuter(row Row, condition WhereCondition, engine SubqueryExecutor, outerRow Row) bool {
+	value, exists := row[condition.Column]
+	if !exists {
+		return false
+	}
+	
+	// Execute the subquery with correlation context
+	var result *QueryResult
+	var err error
+	
+	if condition.Subquery.IsCorrelated {
+		result, err = engine.ExecuteCorrelatedSubquery(condition.Subquery, outerRow)
+	} else {
+		result, err = engine.ExecuteSubquery(condition.Subquery)
+	}
+	
+	if err != nil || result.Error != "" {
+		return false
+	}
+	
+	// Check if the value exists in the subquery results
+	for _, subRow := range result.Rows {
+		if len(result.Columns) > 0 {
+			subValue, subExists := subRow[result.Columns[0]]
+			if subExists && pr.CompareValues(value, subValue) == 0 {
+				return true
+			}
+		}
+	}
+	
+	return false
+}
+
+func (pr *ParquetReader) matchesExistsSubqueryWithOuter(condition WhereCondition, engine SubqueryExecutor, outerRow Row) bool {
+	// Execute the subquery with correlation context
+	var result *QueryResult
+	var err error
+	
+	if condition.Subquery.IsCorrelated {
+		result, err = engine.ExecuteCorrelatedSubquery(condition.Subquery, outerRow)
+	} else {
+		result, err = engine.ExecuteSubquery(condition.Subquery)
+	}
+	
+	if err != nil || result.Error != "" {
+		return false
+	}
+	
+	// EXISTS returns true if subquery returns any rows
+	return len(result.Rows) > 0
+}
+
+func (pr *ParquetReader) matchesScalarSubqueryWithOuter(row Row, condition WhereCondition, engine SubqueryExecutor, outerRow Row) bool {
+	value, exists := row[condition.Column]
+	if !exists {
+		return false
+	}
+	
+	// Execute the subquery with correlation context
+	var result *QueryResult
+	var err error
+	
+	if condition.Subquery.IsCorrelated {
+		result, err = engine.ExecuteCorrelatedSubquery(condition.Subquery, outerRow)
+	} else {
+		result, err = engine.ExecuteSubquery(condition.Subquery)
+	}
+	
+	if err != nil || result.Error != "" {
+		return false
+	}
+	
+	// Scalar subquery should return exactly one row and one column
+	if len(result.Rows) != 1 || len(result.Columns) != 1 {
+		return false
+	}
+	
+	subValue, subExists := result.Rows[0][result.Columns[0]]
+	if !subExists {
+		return false
+	}
+	
+	// Compare values based on the operator
+	switch condition.Operator {
+	case "=":
+		return pr.CompareValues(value, subValue) == 0
+	case "!=", "<>":
+		return pr.CompareValues(value, subValue) != 0
+	case "<":
+		return pr.CompareValues(value, subValue) < 0
+	case "<=":
+		return pr.CompareValues(value, subValue) <= 0
+	case ">":
+		return pr.CompareValues(value, subValue) > 0
+	case ">=":
+		return pr.CompareValues(value, subValue) >= 0
+	default:
+		return false
+	}
 }

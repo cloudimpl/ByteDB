@@ -87,6 +87,8 @@ type ParsedQuery struct {
 	RawSQL      string
 	IsAggregate bool // True if query contains aggregate functions
 	HasJoins    bool // True if query contains JOIN clauses
+	IsCorrelated bool // True if subquery references outer query columns
+	CorrelatedColumns []string // List of outer query columns referenced
 }
 
 type SQLParser struct{}
@@ -290,6 +292,9 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 		}
 	}
 
+	// Post-process to detect correlated subqueries
+	p.detectAllCorrelations(query)
+
 	return query, nil
 }
 
@@ -439,6 +444,7 @@ func (p *SQLParser) parseSubquery(subLink *pg_query.SubLink) *ParsedQuery {
 			Type:        SELECT,
 			IsAggregate: false,
 			HasJoins:    false,
+			IsCorrelated: false,
 		}
 		
 		// Parse the subquery components
@@ -447,6 +453,57 @@ func (p *SQLParser) parseSubquery(subLink *pg_query.SubLink) *ParsedQuery {
 	}
 	
 	return nil
+}
+
+// parseSubqueryWithOuter parses a subquery and detects correlation with outer query
+func (p *SQLParser) parseSubqueryWithOuter(subLink *pg_query.SubLink, outerQuery *ParsedQuery) *ParsedQuery {
+	subquery := p.parseSubquery(subLink)
+	if subquery == nil {
+		return nil
+	}
+	
+	// Detect correlation by checking if subquery references outer query tables
+	p.detectCorrelation(subquery, outerQuery)
+	return subquery
+}
+
+// detectCorrelation checks if subquery references outer query tables/aliases
+func (p *SQLParser) detectCorrelation(subquery *ParsedQuery, outerQuery *ParsedQuery) {
+	outerTables := make(map[string]bool)
+	
+	// Add outer query table names and aliases
+	if outerQuery.TableName != "" {
+		outerTables[outerQuery.TableName] = true
+	}
+	if outerQuery.TableAlias != "" {
+		outerTables[outerQuery.TableAlias] = true
+	}
+	
+	// Add JOIN table names and aliases
+	for _, join := range outerQuery.Joins {
+		if join.TableName != "" {
+			outerTables[join.TableName] = true
+		}
+		if join.TableAlias != "" {
+			outerTables[join.TableAlias] = true
+		}
+	}
+	
+	// Check subquery WHERE conditions for references to outer tables
+	for _, condition := range subquery.Where {
+		if condition.TableName != "" && outerTables[condition.TableName] {
+			subquery.IsCorrelated = true
+			subquery.CorrelatedColumns = append(subquery.CorrelatedColumns, condition.TableName+"."+condition.Column)
+		}
+	}
+	
+	// Check subquery columns for references to outer tables
+	for _, column := range subquery.Columns {
+		if column.TableName != "" && outerTables[column.TableName] {
+			subquery.IsCorrelated = true
+			subquery.CorrelatedColumns = append(subquery.CorrelatedColumns, column.TableName+"."+column.Name)
+		}
+	}
 }
 
 func (p *SQLParser) parseSelectStatement(selectStmt *pg_query.SelectStmt, query *ParsedQuery) {
@@ -749,4 +806,21 @@ func (q *ParsedQuery) String() string {
 		result += fmt.Sprintf("Limit: %d\n", q.Limit)
 	}
 	return result
+}
+
+// detectAllCorrelations scans the entire query to detect correlated subqueries
+func (p *SQLParser) detectAllCorrelations(query *ParsedQuery) {
+	// Check all WHERE conditions for subqueries
+	for i := range query.Where {
+		if query.Where[i].Subquery != nil {
+			p.detectCorrelation(query.Where[i].Subquery, query)
+		}
+	}
+	
+	// Check column subqueries (for future SELECT clause subqueries)
+	for i := range query.Columns {
+		if query.Columns[i].Subquery != nil {
+			p.detectCorrelation(query.Columns[i].Subquery, query)
+		}
+	}
 }

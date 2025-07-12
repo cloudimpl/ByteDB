@@ -1122,6 +1122,34 @@ func (qe *QueryEngine) ExecuteSubquery(query *ParsedQuery) (*QueryResult, error)
 	}
 }
 
+// ExecuteCorrelatedSubquery implements the SubqueryExecutor interface for correlated subqueries
+func (qe *QueryEngine) ExecuteCorrelatedSubquery(query *ParsedQuery, outerRow Row) (*QueryResult, error) {
+	if !query.IsCorrelated {
+		// If not correlated, use regular execution
+		return qe.ExecuteSubquery(query)
+	}
+	
+	// Execute correlated subquery with outer row context
+	switch query.Type {
+	case SELECT:
+		// Handle constant-only queries (no FROM clause)
+		if query.TableName == "" && qe.hasOnlyConstantColumns(query) {
+			return qe.executeConstantQuery(query)
+		}
+		
+		if query.HasJoins {
+			return qe.executeCorrelatedJoinQuery(query, outerRow)
+		} else {
+			return qe.executeCorrelatedSelect(query, outerRow)
+		}
+	default:
+		return &QueryResult{
+			Query: "correlated subquery",
+			Error: "unsupported correlated subquery type",
+		}, nil
+	}
+}
+
 // executeConstantQuery handles queries with only constants (no table access needed)
 func (qe *QueryEngine) executeConstantQuery(query *ParsedQuery) (*QueryResult, error) {
 	// Create a single row with constant values
@@ -1168,4 +1196,179 @@ func (qe *QueryEngine) parseConstantValue(name string) interface{} {
 	}
 	// Default to the name itself
 	return name
+}
+
+// executeCorrelatedSelect executes a correlated SELECT query with outer row context
+func (qe *QueryEngine) executeCorrelatedSelect(query *ParsedQuery, outerRow Row) (*QueryResult, error) {
+	reader, err := qe.getReader(query.TableName)
+	if err != nil {
+		return &QueryResult{
+			Query: "correlated select",
+			Error: fmt.Sprintf("failed to open file: %v", err),
+		}, nil
+	}
+	defer reader.Close()
+
+	// Read all rows and filter with correlation context
+	allRows, err := reader.ReadAll()
+	if err != nil {
+		return &QueryResult{
+			Query: "correlated select",
+			Error: fmt.Sprintf("failed to read data: %v", err),
+		}, nil
+	}
+
+	// Filter rows using WHERE conditions with outer row context
+	var filteredRows []Row
+	for _, row := range allRows {
+		if qe.matchesCorrelatedWhereConditions(row, query.Where, outerRow) {
+			filteredRows = append(filteredRows, row)
+		}
+	}
+
+	// Select specific columns
+	result := reader.SelectColumns(filteredRows, query.Columns)
+	
+	// Apply aggregations if needed (delegate to regular executeSelect for now)
+	if query.IsAggregate {
+		return qe.executeAggregate(query, result, reader)
+	}
+	
+	// Apply ordering
+	if len(query.OrderBy) > 0 {
+		result = qe.sortRows(result, query.OrderBy, reader)
+	}
+	
+	// Apply limit
+	if query.Limit > 0 && len(result) > query.Limit {
+		result = result[:query.Limit]
+	}
+
+	return &QueryResult{
+		Columns: qe.getResultColumns(result, query.Columns),
+		Rows:    result,
+		Count:   len(result),
+		Query:   "correlated select",
+	}, nil
+}
+
+// executeCorrelatedJoinQuery executes a correlated JOIN query with outer row context
+func (qe *QueryEngine) executeCorrelatedJoinQuery(query *ParsedQuery, outerRow Row) (*QueryResult, error) {
+	// For simplicity, delegate to regular JOIN for now
+	// In a full implementation, we'd pass outer context through JOIN processing
+	return qe.executeJoinQuery(query)
+}
+
+// matchesCorrelatedWhereConditions checks if a row matches WHERE conditions with outer row context
+func (qe *QueryEngine) matchesCorrelatedWhereConditions(row Row, conditions []WhereCondition, outerRow Row) bool {
+	for _, condition := range conditions {
+		if !qe.matchesCorrelatedCondition(row, condition, outerRow) {
+			return false
+		}
+	}
+	return true
+}
+
+// matchesCorrelatedCondition checks if a row matches a single WHERE condition with outer row context
+func (qe *QueryEngine) matchesCorrelatedCondition(row Row, condition WhereCondition, outerRow Row) bool {
+	var leftValue interface{}
+	
+	// Determine the left value - could be from current row or outer row
+	if condition.TableName != "" {
+		// This is a qualified column reference - need to resolve from appropriate context
+		qualifiedKey := condition.TableName + "." + condition.Column
+		if outerValue, exists := outerRow[qualifiedKey]; exists {
+			leftValue = outerValue
+		} else if outerValue, exists := outerRow[condition.Column]; exists {
+			leftValue = outerValue
+		} else {
+			leftValue = row[condition.Column]
+		}
+	} else {
+		leftValue = row[condition.Column]
+	}
+	
+	// Handle subquery conditions
+	if condition.Subquery != nil {
+		return qe.matchesCorrelatedSubqueryCondition(leftValue, condition, outerRow)
+	}
+	
+	// Create a dummy reader for comparison operations
+	dummyReader := &ParquetReader{}
+	
+	// Handle regular conditions
+	switch condition.Operator {
+	case "=":
+		return leftValue == condition.Value
+	case "!=":
+		return leftValue != condition.Value
+	case "<":
+		return dummyReader.CompareValues(leftValue, condition.Value) < 0
+	case "<=":
+		return dummyReader.CompareValues(leftValue, condition.Value) <= 0
+	case ">":
+		return dummyReader.CompareValues(leftValue, condition.Value) > 0
+	case ">=":
+		return dummyReader.CompareValues(leftValue, condition.Value) >= 0
+	case "IN":
+		for _, val := range condition.ValueList {
+			if leftValue == val {
+				return true
+			}
+		}
+		return false
+	case "LIKE":
+		return dummyReader.matchesLike(leftValue, condition.Value)
+	}
+	
+	return false
+}
+
+// matchesCorrelatedSubqueryCondition handles subquery conditions with outer row context
+func (qe *QueryEngine) matchesCorrelatedSubqueryCondition(leftValue interface{}, condition WhereCondition, outerRow Row) bool {
+	// Execute subquery with correlation context
+	var result *QueryResult
+	var err error
+	
+	if condition.Subquery.IsCorrelated {
+		result, err = qe.ExecuteCorrelatedSubquery(condition.Subquery, outerRow)
+	} else {
+		result, err = qe.ExecuteSubquery(condition.Subquery)
+	}
+	
+	if err != nil || result.Error != "" {
+		return false
+	}
+	
+	switch condition.Operator {
+	case "IN":
+		for _, row := range result.Rows {
+			for _, col := range result.Columns {
+				if leftValue == row[col] {
+					return true
+				}
+			}
+		}
+		return false
+	case "NOT IN":
+		for _, row := range result.Rows {
+			for _, col := range result.Columns {
+				if leftValue == row[col] {
+					return false
+				}
+			}
+		}
+		return true
+	case "EXISTS":
+		return len(result.Rows) > 0
+	case "=":
+		if len(result.Rows) == 1 {
+			for _, col := range result.Columns {
+				return leftValue == result.Rows[0][col]
+			}
+		}
+		return false
+	}
+	
+	return false
 }
