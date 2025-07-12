@@ -1308,6 +1308,10 @@ func (qe *QueryEngine) evaluateQueryColumns(rows []Row, queryColumns []Column) [
 					// If function evaluation fails, set to nil
 					value = nil
 				}
+			} else if col.CaseExpr != nil {
+				// Handle CASE expressions
+				reader := &ParquetReader{} // Create a temporary reader for evaluation
+				value = reader.evaluateCaseExpression(col.CaseExpr, row, qe)
 			} else if col.Name == "*" {
 				// For wildcard, copy all original columns
 				for k, v := range row {
@@ -1329,6 +1333,9 @@ func (qe *QueryEngine) evaluateQueryColumns(rows []Row, queryColumns []Column) [
 			} else if col.Function != nil {
 				// For functions without alias, use function name + args as key
 				newRow[col.Function.Name] = value
+			} else if col.CaseExpr != nil {
+				// For CASE expressions without alias, use "case" as key
+				newRow["case"] = value
 			} else {
 				newRow[col.Name] = value
 			}
