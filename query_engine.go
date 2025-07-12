@@ -140,7 +140,11 @@ func (qe *QueryEngine) executeSelect(query *ParsedQuery) (*QueryResult, error) {
 	}
 	
 	// Regular non-aggregate query processing
-	rows = reader.SelectColumns(rows, query.Columns)
+	if reader.hasColumnSubqueries(query.Columns) {
+		rows = reader.SelectColumnsWithEngine(rows, query.Columns, qe)
+	} else {
+		rows = reader.SelectColumns(rows, query.Columns)
+	}
 	rows = qe.sortRows(rows, query.OrderBy, reader)
 
 	// Apply LIMIT after filtering and sorting
@@ -1227,7 +1231,12 @@ func (qe *QueryEngine) executeCorrelatedSelect(query *ParsedQuery, outerRow Row)
 	}
 
 	// Select specific columns
-	result := reader.SelectColumns(filteredRows, query.Columns)
+	var result []Row
+	if reader.hasColumnSubqueries(query.Columns) {
+		result = reader.SelectColumnsWithEngine(filteredRows, query.Columns, qe)
+	} else {
+		result = reader.SelectColumns(filteredRows, query.Columns)
+	}
 	
 	// Apply aggregations if needed (delegate to regular executeSelect for now)
 	if query.IsAggregate {

@@ -31,6 +31,16 @@ type WhereCondition struct {
 	ValueList []interface{} // List of values for IN operator
 	TableName string        // For qualified columns like "e.department"
 	Subquery  *ParsedQuery  // For subquery conditions like IN (SELECT ...), EXISTS (SELECT ...)
+	
+	// For BETWEEN operator
+	ValueFrom interface{} // Start value for BETWEEN
+	ValueTo   interface{} // End value for BETWEEN
+	
+	// For complex logical operations
+	LogicalOp string              // "AND", "OR", ""
+	Left      *WhereCondition     // Left side of logical operation
+	Right     *WhereCondition     // Right side of logical operation
+	IsComplex bool                // True if this is a compound condition
 }
 
 type JoinType int
@@ -300,8 +310,42 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 
 func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 	if boolExpr := node.GetBoolExpr(); boolExpr != nil {
-		// Handle NOT expressions (e.g., NOT IN)
-		if boolExpr.Boolop == pg_query.BoolExprType_NOT_EXPR && len(boolExpr.Args) > 0 {
+		// Handle AND/OR expressions
+		if boolExpr.Boolop == pg_query.BoolExprType_AND_EXPR || boolExpr.Boolop == pg_query.BoolExprType_OR_EXPR {
+			if len(boolExpr.Args) >= 2 {
+				condition := WhereCondition{
+					IsComplex: true,
+				}
+				
+				if boolExpr.Boolop == pg_query.BoolExprType_AND_EXPR {
+					condition.LogicalOp = "AND"
+				} else {
+					condition.LogicalOp = "OR"
+				}
+				
+				// Parse left and right conditions recursively
+				condition.Left = p.parseWhereCondition(boolExpr.Args[0])
+				condition.Right = p.parseWhereCondition(boolExpr.Args[1])
+				
+				// For more than 2 args, chain them with the same operator
+				if len(boolExpr.Args) > 2 {
+					for i := 2; i < len(boolExpr.Args); i++ {
+						// Create a copy of the current condition to avoid circular reference
+						leftCondition := condition
+						condition = WhereCondition{
+							IsComplex: true,
+							LogicalOp: condition.LogicalOp,
+							Left:      &leftCondition,
+							Right:     p.parseWhereCondition(boolExpr.Args[i]),
+						}
+					}
+				}
+				
+				query.Where = append(query.Where, condition)
+				return
+			}
+		} else if boolExpr.Boolop == pg_query.BoolExprType_NOT_EXPR && len(boolExpr.Args) > 0 {
+			// Handle NOT expressions (e.g., NOT IN)
 			// Parse the inner expression and negate it
 			firstArg := boolExpr.Args[0]
 			if subLink := firstArg.GetSubLink(); subLink != nil {
@@ -431,6 +475,184 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 			query.Where = append(query.Where, condition)
 		}
 	}
+}
+
+// parseWhereCondition parses a single WHERE condition node
+func (p *SQLParser) parseWhereCondition(node *pg_query.Node) *WhereCondition {
+	condition := &WhereCondition{}
+	
+	if aExpr := node.GetAExpr(); aExpr != nil {
+		// Handle BETWEEN expressions
+		if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_BETWEEN || aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_NOT_BETWEEN {
+			if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_BETWEEN {
+				condition.Operator = "BETWEEN"
+			} else {
+				condition.Operator = "NOT BETWEEN"
+			}
+			
+			// Get column name from left expression
+			if lexpr := aExpr.Lexpr; lexpr != nil {
+				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
+					if len(columnRef.Fields) > 0 {
+						if str := columnRef.Fields[0].GetString_(); str != nil {
+							condition.Column = str.Sval
+						}
+					}
+				}
+			}
+			
+			// Get BETWEEN values from right expression (should be a list)
+			if rexpr := aExpr.Rexpr; rexpr != nil {
+				if aList := rexpr.GetList(); aList != nil && len(aList.Items) >= 2 {
+					// Parse first value (FROM)
+					if aConst := aList.Items[0].GetAConst(); aConst != nil {
+						condition.ValueFrom = p.parseConstantNode(aConst)
+					}
+					// Parse second value (TO) 
+					if aConst := aList.Items[1].GetAConst(); aConst != nil {
+						condition.ValueTo = p.parseConstantNode(aConst)
+					}
+				}
+			}
+			return condition
+		}
+		
+		// Handle IN expressions
+		if aExpr.Kind == pg_query.A_Expr_Kind_AEXPR_IN {
+			condition.Operator = "IN"
+			
+			// Get column name from left expression
+			if lexpr := aExpr.Lexpr; lexpr != nil {
+				if columnRef := lexpr.GetColumnRef(); columnRef != nil {
+					if len(columnRef.Fields) > 0 {
+						if str := columnRef.Fields[0].GetString_(); str != nil {
+							condition.Column = str.Sval
+						}
+					}
+				}
+			}
+			
+			// Get list of values from right expression
+			if rexpr := aExpr.Rexpr; rexpr != nil {
+				if aList := rexpr.GetList(); aList != nil {
+					for _, item := range aList.Items {
+						if aConst := item.GetAConst(); aConst != nil {
+							condition.ValueList = append(condition.ValueList, p.parseConstantNode(aConst))
+						}
+					}
+				} else if subLink := rexpr.GetSubLink(); subLink != nil {
+					// Handle IN subquery
+					if subquery := p.parseSubquery(subLink); subquery != nil {
+						condition.Subquery = subquery
+						condition.ValueList = nil // Clear value list for subquery
+					}
+				}
+			}
+			return condition
+		}
+		
+		// Handle NULL checks
+		if len(aExpr.Name) > 0 {
+			if str := aExpr.Name[0].GetString_(); str != nil {
+				operator := str.Sval
+				if operator == "IS" {
+					// Check if this is IS NULL or IS NOT NULL
+					if rexpr := aExpr.Rexpr; rexpr != nil {
+						if nullTest := rexpr.GetNullTest(); nullTest != nil {
+							condition.Operator = "IS NULL"
+							if nullTest.Nulltesttype == pg_query.NullTestType_IS_NOT_NULL {
+								condition.Operator = "IS NOT NULL"
+							}
+							
+							// Get column from left expression
+							if lexpr := aExpr.Lexpr; lexpr != nil {
+								if columnRef := lexpr.GetColumnRef(); columnRef != nil {
+									if len(columnRef.Fields) > 0 {
+										if str := columnRef.Fields[0].GetString_(); str != nil {
+											condition.Column = str.Sval
+										}
+									}
+								}
+							}
+							return condition
+						}
+					}
+				}
+				
+				// Regular operators (=, !=, <, <=, >, >=, LIKE)
+				if operator == "~~" {
+					condition.Operator = "LIKE"
+				} else {
+					condition.Operator = operator
+				}
+			}
+		}
+		
+		// Get column name from left expression
+		if lexpr := aExpr.Lexpr; lexpr != nil {
+			if columnRef := lexpr.GetColumnRef(); columnRef != nil {
+				if len(columnRef.Fields) > 0 {
+					if str := columnRef.Fields[0].GetString_(); str != nil {
+						condition.Column = str.Sval
+					}
+				}
+			}
+		}
+		
+		// Get value from right expression
+		if rexpr := aExpr.Rexpr; rexpr != nil {
+			if aConst := rexpr.GetAConst(); aConst != nil {
+				condition.Value = p.parseConstantNode(aConst)
+			} else if subLink := rexpr.GetSubLink(); subLink != nil {
+				// Handle scalar subquery (e.g., col = (SELECT ...))
+				if subquery := p.parseSubquery(subLink); subquery != nil {
+					condition.Subquery = subquery
+				}
+			}
+		}
+		
+		return condition
+	} else if subLink := node.GetSubLink(); subLink != nil {
+		// Handle EXISTS subqueries
+		if subLink.SubLinkType == pg_query.SubLinkType_EXISTS_SUBLINK {
+			condition.Operator = "EXISTS"
+			if subquery := p.parseSubquery(subLink); subquery != nil {
+				condition.Subquery = subquery
+			}
+		} else if subLink.SubLinkType == pg_query.SubLinkType_ANY_SUBLINK {
+			condition.Operator = "IN"
+			// For IN subqueries, we need to extract the column from the testexpr
+			if subLink.Testexpr != nil {
+				if columnRef := subLink.Testexpr.GetColumnRef(); columnRef != nil {
+					if len(columnRef.Fields) > 0 {
+						if str := columnRef.Fields[0].GetString_(); str != nil {
+							condition.Column = str.Sval
+						}
+					}
+				}
+			}
+			if subquery := p.parseSubquery(subLink); subquery != nil {
+				condition.Subquery = subquery
+			}
+		}
+		return condition
+	}
+	
+	return condition
+}
+
+// parseConstantNode extracts value from AConst node
+func (p *SQLParser) parseConstantNode(aConst *pg_query.A_Const) interface{} {
+	if ival := aConst.GetIval(); ival != nil {
+		return ival.Ival
+	} else if sval := aConst.GetSval(); sval != nil {
+		return sval.Sval
+	} else if fval := aConst.GetFval(); fval != nil {
+		return fval.Fval
+	} else if bval := aConst.GetBoolval(); bval != nil {
+		return bval.Boolval
+	}
+	return nil
 }
 
 func (p *SQLParser) parseSubquery(subLink *pg_query.SubLink) *ParsedQuery {
@@ -585,6 +807,17 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 			column.Name = fval.Fval
 		} else {
 			column.Name = "const"
+		}
+	} else if subLink := resTarget.Val.GetSubLink(); subLink != nil {
+		// Handle subqueries in SELECT clause like (SELECT COUNT(*) FROM ...)
+		if subquery := p.parseSubquery(subLink); subquery != nil {
+			column.Subquery = subquery
+			if resTarget.Name != "" {
+				column.Name = resTarget.Name
+				column.Alias = resTarget.Name
+			} else {
+				column.Name = "subquery"
+			}
 		}
 	}
 	
@@ -746,7 +979,7 @@ func (q *ParsedQuery) GetRequiredColumns() []string {
 	
 	// Add columns from WHERE clause
 	for _, where := range q.Where {
-		requiredCols[where.Column] = true
+		q.addWhereConditionColumns(where, requiredCols)
 	}
 	
 	// Add columns from GROUP BY clause
@@ -766,6 +999,25 @@ func (q *ParsedQuery) GetRequiredColumns() []string {
 	}
 	
 	return result
+}
+
+// addWhereConditionColumns recursively adds all columns from a WHERE condition to the required columns map
+func (q *ParsedQuery) addWhereConditionColumns(where WhereCondition, requiredCols map[string]bool) {
+	// Handle complex conditions (AND/OR)
+	if where.IsComplex {
+		if where.Left != nil {
+			q.addWhereConditionColumns(*where.Left, requiredCols)
+		}
+		if where.Right != nil {
+			q.addWhereConditionColumns(*where.Right, requiredCols)
+		}
+		return
+	}
+	
+	// Handle simple conditions
+	if where.Column != "" {
+		requiredCols[where.Column] = true
+	}
 }
 
 func (q *ParsedQuery) isConstantColumn(name string) bool {

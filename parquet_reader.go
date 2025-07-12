@@ -254,18 +254,48 @@ func (pr *ParquetReader) matchesCondition(row Row, condition WhereCondition) boo
 }
 
 func (pr *ParquetReader) matchesConditionWithEngine(row Row, condition WhereCondition, engine SubqueryExecutor) bool {
+	// Handle complex logical conditions (AND/OR)
+	if condition.IsComplex {
+		switch condition.LogicalOp {
+		case "AND":
+			return pr.matchesConditionWithEngine(row, *condition.Left, engine) && 
+				   pr.matchesConditionWithEngine(row, *condition.Right, engine)
+		case "OR":
+			return pr.matchesConditionWithEngine(row, *condition.Left, engine) || 
+				   pr.matchesConditionWithEngine(row, *condition.Right, engine)
+		default:
+			return false
+		}
+	}
+	
 	// Handle subquery-based conditions
 	if condition.Subquery != nil {
 		return pr.matchesSubqueryCondition(row, condition, engine)
 	}
 	
-	// Handle regular conditions
+	// Handle IS NULL and IS NOT NULL
+	if condition.Operator == "IS NULL" {
+		value, exists := row[condition.Column]
+		return !exists || value == nil
+	}
+	if condition.Operator == "IS NOT NULL" {
+		value, exists := row[condition.Column]
+		return exists && value != nil
+	}
+	
+	// Get column value for other operations
 	value, exists := row[condition.Column]
 	if !exists {
 		return false
 	}
 
 	switch condition.Operator {
+	case "BETWEEN":
+		return pr.CompareValues(value, condition.ValueFrom) >= 0 && 
+			   pr.CompareValues(value, condition.ValueTo) <= 0
+	case "NOT BETWEEN":
+		return pr.CompareValues(value, condition.ValueFrom) < 0 || 
+			   pr.CompareValues(value, condition.ValueTo) > 0
 	case "=":
 		return pr.CompareValues(value, condition.Value) == 0
 	case "!=", "<>":
@@ -623,6 +653,52 @@ func (pr *ParquetReader) SelectColumns(rows []Row, columns []Column) []Row {
 	return result
 }
 
+// SelectColumnsWithEngine handles column selection including subquery columns
+func (pr *ParquetReader) SelectColumnsWithEngine(rows []Row, columns []Column, engine SubqueryExecutor) []Row {
+	if len(columns) == 0 || (len(columns) == 1 && columns[0].Name == "*") {
+		return rows
+	}
+
+	result := make([]Row, len(rows))
+	for i, row := range rows {
+		newRow := make(Row)
+		for _, col := range columns {
+			if col.Name == "*" {
+				for k, v := range row {
+					newRow[k] = v
+				}
+			} else if col.Subquery != nil {
+				// Handle subquery columns
+				key := col.Name
+				if col.Alias != "" {
+					key = col.Alias
+				}
+				
+				// Execute subquery to get the value
+				subqueryValue := pr.executeColumnSubquery(col.Subquery, row, engine)
+				newRow[key] = subqueryValue
+			} else {
+				if value, exists := row[col.Name]; exists {
+					key := col.Name
+					if col.Alias != "" {
+						key = col.Alias
+					}
+					newRow[key] = value
+				} else if pr.isConstantColumn(col.Name) {
+					// Handle constant columns like "1", "hello", etc.
+					key := col.Name
+					if col.Alias != "" {
+						key = col.Alias
+					}
+					newRow[key] = pr.parseConstantValue(col.Name)
+				}
+			}
+		}
+		result[i] = newRow
+	}
+	return result
+}
+
 func (pr *ParquetReader) isConstantColumn(name string) bool {
 	// Check if this looks like a constant value
 	if name == "const" || name == "column" {
@@ -760,4 +836,59 @@ func (pr *ParquetReader) matchesScalarSubqueryWithOuter(row Row, condition Where
 	default:
 		return false
 	}
+}
+
+// executeColumnSubquery executes a subquery in SELECT clause and returns the scalar result
+func (pr *ParquetReader) executeColumnSubquery(subquery *ParsedQuery, currentRow Row, engine SubqueryExecutor) interface{} {
+	if engine == nil {
+		return nil
+	}
+	
+	var result *QueryResult
+	var err error
+	
+	// Execute subquery with correlation support
+	if subquery.IsCorrelated {
+		result, err = engine.ExecuteCorrelatedSubquery(subquery, currentRow)
+	} else {
+		result, err = engine.ExecuteSubquery(subquery)
+	}
+	
+	if err != nil || result.Error != "" {
+		return nil
+	}
+	
+	// SELECT clause subqueries should return exactly one row and one column (scalar)
+	if len(result.Rows) == 0 {
+		return nil
+	}
+	
+	if len(result.Rows) > 1 {
+		// Multiple rows returned - take the first one for now
+		// In a production system, this should be an error
+	}
+	
+	if len(result.Columns) == 0 {
+		return nil
+	}
+	
+	// Get the first column value from the first row
+	firstRow := result.Rows[0]
+	firstColumn := result.Columns[0]
+	
+	if value, exists := firstRow[firstColumn]; exists {
+		return value
+	}
+	
+	return nil
+}
+
+// hasColumnSubqueries checks if any columns contain subqueries
+func (pr *ParquetReader) hasColumnSubqueries(columns []Column) bool {
+	for _, col := range columns {
+		if col.Subquery != nil {
+			return true
+		}
+	}
+	return false
 }
