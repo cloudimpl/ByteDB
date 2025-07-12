@@ -18,10 +18,12 @@ const (
 )
 
 type Column struct {
-	Name      string
-	Alias     string
-	TableName string       // For qualified columns like "e.name"
-	Subquery  *ParsedQuery // For subquery columns like (SELECT COUNT(*) FROM ...)
+	Name         string
+	Alias        string
+	TableName    string         // For qualified columns like "e.name"
+	Subquery     *ParsedQuery   // For subquery columns like (SELECT COUNT(*) FROM ...)
+	WindowFunc   *WindowFunction // For window function columns like ROW_NUMBER() OVER (...)
+	CaseExpr     *CaseExpression // For CASE expressions like CASE WHEN ... THEN ... END
 }
 
 type WhereCondition struct {
@@ -39,6 +41,10 @@ type WhereCondition struct {
 	// For BETWEEN operator
 	ValueFrom interface{} // Start value for BETWEEN
 	ValueTo   interface{} // End value for BETWEEN
+	
+	// For CASE expressions in WHERE clauses
+	CaseExpr      *CaseExpression // For CASE expressions on left side
+	ValueCaseExpr *CaseExpression // For CASE expressions on right side
 	
 	// For complex logical operations
 	LogicalOp string              // "AND", "OR", ""
@@ -87,12 +93,48 @@ type AggregateFunction struct {
 	Alias    string // Optional alias for the result
 }
 
+type WindowFunction struct {
+	Function    string            // "ROW_NUMBER", "RANK", "DENSE_RANK", "LAG", "LEAD", etc.
+	Column      string            // Column name for LAG/LEAD, empty for ROW_NUMBER/RANK
+	Arguments   []interface{}     // Arguments for functions like LAG(column, offset, default)
+	Alias       string            // Optional alias for the result
+	WindowSpec  WindowSpecification // OVER clause specification
+}
+
+type WindowSpecification struct {
+	PartitionBy []string          // PARTITION BY columns
+	OrderBy     []OrderByColumn   // ORDER BY columns within the window
+	FrameStart  string           // Frame start specification (for future use)
+	FrameEnd    string           // Frame end specification (for future use)
+}
+
+type CaseExpression struct {
+	WhenClauses []WhenClause    // WHEN condition THEN result pairs
+	ElseClause  *ExpressionValue // ELSE result (optional)
+	Alias       string          // Optional alias for the CASE expression
+}
+
+type WhenClause struct {
+	Condition WhereCondition   // WHEN condition
+	Result    ExpressionValue  // THEN result
+}
+
+type ExpressionValue struct {
+	Type        string      // "literal", "column", "subquery", "case"
+	LiteralValue interface{} // For literal values (string, int, float, bool)
+	ColumnName  string      // For column references
+	TableName   string      // For qualified column references
+	Subquery    *ParsedQuery // For subquery expressions
+	CaseExpr    *CaseExpression // For nested CASE expressions
+}
+
 type ParsedQuery struct {
 	Type        QueryType
 	TableName   string
 	TableAlias  string
 	Columns     []Column
 	Aggregates  []AggregateFunction
+	WindowFuncs []WindowFunction
 	GroupBy     []string
 	Where       []WhereCondition
 	OrderBy     []OrderByColumn
@@ -101,6 +143,7 @@ type ParsedQuery struct {
 	RawSQL      string
 	IsAggregate bool // True if query contains aggregate functions
 	HasJoins    bool // True if query contains JOIN clauses
+	HasWindowFuncs bool // True if query contains window functions
 	IsCorrelated bool // True if subquery references outer query columns
 	CorrelatedColumns []string // List of outer query columns referenced
 }
@@ -958,8 +1001,32 @@ func (p *SQLParser) parseSelectStatement(selectStmt *pg_query.SelectStmt, query 
 }
 
 func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *ParsedQuery) {
-	// Check if this is an aggregate function call
+	// Check if this is a function call (which might include window functions)
 	if funcCall := resTarget.Val.GetFuncCall(); funcCall != nil {
+		// First check if it's a window function (has OVER clause)
+		if funcCall.Over != nil {
+			winFunc := p.parseWindowFunctionFromFuncCall(funcCall, resTarget.Name)
+			if winFunc != nil {
+				// Add to both WindowFuncs collection and as a Column with WindowFunc
+				query.WindowFuncs = append(query.WindowFuncs, *winFunc)
+				query.HasWindowFuncs = true
+				
+				// Also add as a column for result set handling
+				column := Column{
+					WindowFunc: winFunc,
+					Alias:      resTarget.Name,
+				}
+				if column.Alias == "" {
+					column.Name = winFunc.Function // Use function name as default name
+				} else {
+					column.Name = column.Alias
+				}
+				query.Columns = append(query.Columns, column)
+				return
+			}
+		}
+		
+		// Otherwise check if it's an aggregate function
 		agg := p.parseAggregateFunction(funcCall, resTarget.Name)
 		if agg != nil {
 			query.Aggregates = append(query.Aggregates, *agg)
@@ -1008,6 +1075,18 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 				column.Alias = resTarget.Name
 			} else {
 				column.Name = "subquery"
+			}
+		}
+	} else if caseExpr := resTarget.Val.GetCaseExpr(); caseExpr != nil {
+		// Handle CASE expressions
+		if parsedCase := p.parseCaseExpression(caseExpr, resTarget.Name); parsedCase != nil {
+			column.CaseExpr = parsedCase
+			if resTarget.Name != "" {
+				column.Name = resTarget.Name
+				column.Alias = resTarget.Name
+				parsedCase.Alias = resTarget.Name
+			} else {
+				column.Name = "case_expr"
 			}
 		}
 	}
@@ -1101,6 +1180,127 @@ func (p *SQLParser) parseAggregateFunction(funcCall *pg_query.FuncCall, alias st
 	}
 	
 	return agg
+}
+
+func (p *SQLParser) parseWindowFunctionFromFuncCall(funcCall *pg_query.FuncCall, alias string) *WindowFunction {
+	if len(funcCall.Funcname) == 0 {
+		return nil
+	}
+	
+	funcName := ""
+	if str := funcCall.Funcname[0].GetString_(); str != nil {
+		funcName = strings.ToUpper(str.Sval)
+	}
+	
+	// Check if it's a supported window function
+	supportedFuncs := map[string]bool{
+		"ROW_NUMBER":  true,
+		"RANK":        true,
+		"DENSE_RANK":  true,
+		"LAG":         true,
+		"LEAD":        true,
+	}
+	
+	if !supportedFuncs[funcName] {
+		return nil
+	}
+	
+	winFunc := &WindowFunction{
+		Function: funcName,
+		Alias:    alias,
+	}
+	
+	// Parse function arguments (for LAG/LEAD)
+	if len(funcCall.Args) > 0 {
+		for _, arg := range funcCall.Args {
+			if columnRef := arg.GetColumnRef(); columnRef != nil {
+				if len(columnRef.Fields) > 0 {
+					if str := columnRef.Fields[0].GetString_(); str != nil {
+						winFunc.Column = str.Sval
+					}
+				}
+			} else if aConst := arg.GetAConst(); aConst != nil {
+				// Handle constant arguments (like offset in LAG/LEAD)
+				if ival := aConst.GetIval(); ival != nil {
+					winFunc.Arguments = append(winFunc.Arguments, ival.Ival)
+				} else if sval := aConst.GetSval(); sval != nil {
+					winFunc.Arguments = append(winFunc.Arguments, sval.Sval)
+				} else if fval := aConst.GetFval(); fval != nil {
+					winFunc.Arguments = append(winFunc.Arguments, fval.Fval)
+				}
+			}
+		}
+	}
+	
+	// Parse the OVER clause (window specification)
+	if funcCall.Over != nil {
+		winFunc.WindowSpec = p.parseWindowSpecificationFromOverClause(funcCall.Over)
+	}
+	
+	// If no alias provided, generate one
+	if winFunc.Alias == "" {
+		winFunc.Alias = strings.ToLower(funcName)
+	}
+	
+	return winFunc
+}
+
+func (p *SQLParser) parseWindowSpecificationFromOverClause(overClause interface{}) WindowSpecification {
+	spec := WindowSpecification{}
+	
+	// Type assert to *pg_query.WindowDef
+	if windowDef, ok := overClause.(*pg_query.WindowDef); ok {
+		// Parse PARTITION BY clause
+		if windowDef.PartitionClause != nil {
+			for _, partitionNode := range windowDef.PartitionClause {
+				if columnRef := partitionNode.GetColumnRef(); columnRef != nil {
+					if len(columnRef.Fields) > 0 {
+						if strNode := columnRef.Fields[0].GetString_(); strNode != nil {
+							spec.PartitionBy = append(spec.PartitionBy, strNode.Sval)
+						}
+					}
+				}
+			}
+		}
+		
+		// Parse ORDER BY clause
+		if windowDef.OrderClause != nil {
+			for _, orderNode := range windowDef.OrderClause {
+				if sortBy := orderNode.GetSortBy(); sortBy != nil {
+					orderCol := OrderByColumn{}
+					
+					// Extract column name
+					if columnRef := sortBy.Node.GetColumnRef(); columnRef != nil {
+						if len(columnRef.Fields) > 0 {
+							if strNode := columnRef.Fields[0].GetString_(); strNode != nil {
+								orderCol.Column = strNode.Sval
+							}
+						}
+					}
+					
+					// Extract sort direction
+					switch sortBy.SortbyDir {
+					case pg_query.SortByDir_SORTBY_ASC, pg_query.SortByDir_SORTBY_DEFAULT:
+						orderCol.Direction = "ASC"
+					case pg_query.SortByDir_SORTBY_DESC:
+						orderCol.Direction = "DESC"
+					}
+					
+					if orderCol.Column != "" {
+						spec.OrderBy = append(spec.OrderBy, orderCol)
+					}
+				}
+			}
+		}
+	}
+	
+	return spec
+}
+
+func (p *SQLParser) parseWindowSpecification(windef *pg_query.WindowDef) WindowSpecification {
+	// TODO: Implement proper window specification parsing if needed
+	spec := WindowSpecification{}
+	return spec
 }
 
 func (p *SQLParser) parseGroupBy(groupClause []*pg_query.Node, query *ParsedQuery) {
@@ -1306,4 +1506,169 @@ func (p *SQLParser) checkConditionForCorrelation(condition WhereCondition, outer
 			p.checkConditionForCorrelation(*condition.Right, outerTables, subquery)
 		}
 	}
+}
+
+// parseCaseExpression parses a CASE expression from the PostgreSQL AST
+func (p *SQLParser) parseCaseExpression(caseExpr *pg_query.CaseExpr, alias string) *CaseExpression {
+	result := &CaseExpression{
+		Alias: alias,
+	}
+	
+	// Parse WHEN clauses
+	for _, whenNode := range caseExpr.Args {
+		if caseWhen := whenNode.GetCaseWhen(); caseWhen != nil {
+			whenClause := WhenClause{}
+			
+			// Parse the WHEN condition
+			if caseWhen.Expr != nil {
+				whenClause.Condition = *p.parseExpressionAsCondition(caseWhen.Expr)
+			}
+			
+			// Parse the THEN result
+			if caseWhen.Result != nil {
+				whenClause.Result = *p.parseExpressionValue(caseWhen.Result)
+			}
+			
+			result.WhenClauses = append(result.WhenClauses, whenClause)
+		}
+	}
+	
+	// Parse ELSE clause (optional)
+	if caseExpr.Defresult != nil {
+		result.ElseClause = p.parseExpressionValue(caseExpr.Defresult)
+	}
+	
+	return result
+}
+
+// parseExpressionAsCondition converts an expression node to a WhereCondition
+func (p *SQLParser) parseExpressionAsCondition(expr *pg_query.Node) *WhereCondition {
+	condition := &WhereCondition{}
+	
+	// Handle A_Expr nodes (binary expressions like column = value)
+	if aExpr := expr.GetAExpr(); aExpr != nil {
+		if len(aExpr.Name) > 0 {
+			if str := aExpr.Name[0].GetString_(); str != nil {
+				condition.Operator = str.Sval
+			}
+		}
+		
+		// Parse left side (column reference or CASE expression)
+		if aExpr.Lexpr != nil {
+			if columnRef := aExpr.Lexpr.GetColumnRef(); columnRef != nil {
+				if len(columnRef.Fields) >= 2 {
+					// Qualified column: table.column
+					if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+						condition.TableName = tableStr.Sval
+					}
+					if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+						condition.Column = columnStr.Sval
+					}
+				} else if len(columnRef.Fields) == 1 {
+					// Unqualified column
+					if str := columnRef.Fields[0].GetString_(); str != nil {
+						condition.Column = str.Sval
+					}
+				}
+			} else if caseExpr := aExpr.Lexpr.GetCaseExpr(); caseExpr != nil {
+				// Handle CASE expression on left side
+				condition.CaseExpr = p.parseCaseExpression(caseExpr, "")
+			}
+		}
+		
+		// Parse right side (value, column reference, or CASE expression)
+		if aExpr.Rexpr != nil {
+			if aConst := aExpr.Rexpr.GetAConst(); aConst != nil {
+				if ival := aConst.GetIval(); ival != nil {
+					condition.Value = ival.Ival
+				} else if sval := aConst.GetSval(); sval != nil {
+					condition.Value = sval.Sval
+				} else if fval := aConst.GetFval(); fval != nil {
+					condition.Value = fval.Fval
+				} else if bval := aConst.GetBoolval(); bval != nil {
+					condition.Value = bval.Boolval
+				}
+			} else if columnRef := aExpr.Rexpr.GetColumnRef(); columnRef != nil {
+				// Handle column reference on right side
+				if len(columnRef.Fields) >= 2 {
+					// Qualified column: table.column
+					if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+						condition.ValueTableName = tableStr.Sval
+					}
+					if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+						condition.ValueColumn = columnStr.Sval
+					}
+				} else if len(columnRef.Fields) == 1 {
+					// Unqualified column
+					if str := columnRef.Fields[0].GetString_(); str != nil {
+						condition.ValueColumn = str.Sval
+					}
+				}
+			} else if caseExpr := aExpr.Rexpr.GetCaseExpr(); caseExpr != nil {
+				// Handle CASE expression on right side
+				condition.ValueCaseExpr = p.parseCaseExpression(caseExpr, "")
+			}
+		}
+	}
+	
+	return condition
+}
+
+// parseExpressionValue converts an expression node to an ExpressionValue
+func (p *SQLParser) parseExpressionValue(expr *pg_query.Node) *ExpressionValue {
+	result := &ExpressionValue{}
+	
+	// Handle constants
+	if aConst := expr.GetAConst(); aConst != nil {
+		result.Type = "literal"
+		if ival := aConst.GetIval(); ival != nil {
+			result.LiteralValue = ival.Ival
+		} else if sval := aConst.GetSval(); sval != nil {
+			result.LiteralValue = sval.Sval
+		} else if fval := aConst.GetFval(); fval != nil {
+			result.LiteralValue = fval.Fval
+		} else if bval := aConst.GetBoolval(); bval != nil {
+			result.LiteralValue = bval.Boolval
+		}
+		return result
+	}
+	
+	// Handle column references
+	if columnRef := expr.GetColumnRef(); columnRef != nil {
+		result.Type = "column"
+		if len(columnRef.Fields) >= 2 {
+			// Qualified column: table.column
+			if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
+				result.TableName = tableStr.Sval
+			}
+			if columnStr := columnRef.Fields[1].GetString_(); columnStr != nil {
+				result.ColumnName = columnStr.Sval
+			}
+		} else if len(columnRef.Fields) == 1 {
+			// Unqualified column
+			if str := columnRef.Fields[0].GetString_(); str != nil {
+				result.ColumnName = str.Sval
+			}
+		}
+		return result
+	}
+	
+	// Handle nested CASE expressions
+	if caseExpr := expr.GetCaseExpr(); caseExpr != nil {
+		result.Type = "case"
+		result.CaseExpr = p.parseCaseExpression(caseExpr, "")
+		return result
+	}
+	
+	// Handle subqueries
+	if subLink := expr.GetSubLink(); subLink != nil {
+		result.Type = "subquery"
+		result.Subquery = p.parseSubquery(subLink)
+		return result
+	}
+	
+	// Default to literal with nil value
+	result.Type = "literal"
+	result.LiteralValue = nil
+	return result
 }

@@ -139,6 +139,11 @@ func (qe *QueryEngine) executeSelect(query *ParsedQuery) (*QueryResult, error) {
 		return qe.executeAggregate(query, rows, reader)
 	}
 	
+	// Handle window functions
+	if query.HasWindowFuncs {
+		rows = qe.executeWindowFunctions(query, rows, reader)
+	}
+	
 	// Regular non-aggregate query processing
 	if reader.hasColumnSubqueries(query.Columns) {
 		rows = reader.SelectColumnsWithEngine(rows, query.Columns, qe)
@@ -1432,4 +1437,326 @@ func getRowKeys(row Row) []string {
 		keys = append(keys, fmt.Sprintf("%s=%v", k, v))
 	}
 	return keys
+}
+
+// executeWindowFunctions processes window functions and adds their results to rows
+func (qe *QueryEngine) executeWindowFunctions(query *ParsedQuery, rows []Row, reader *ParquetReader) []Row {
+	if len(query.WindowFuncs) == 0 {
+		return rows
+	}
+	
+	// Process each window function
+	for _, winFunc := range query.WindowFuncs {
+		rows = qe.executeWindowFunction(winFunc, rows, reader)
+	}
+	
+	return rows
+}
+
+// executeWindowFunction processes a single window function
+func (qe *QueryEngine) executeWindowFunction(winFunc WindowFunction, rows []Row, reader *ParquetReader) []Row {
+	switch winFunc.Function {
+	case "ROW_NUMBER":
+		return qe.executeRowNumber(winFunc, rows, reader)
+	case "RANK":
+		return qe.executeRank(winFunc, rows, reader)
+	case "DENSE_RANK":
+		return qe.executeDenseRank(winFunc, rows, reader)
+	case "LAG":
+		return qe.executeLag(winFunc, rows, reader)
+	case "LEAD":
+		return qe.executeLead(winFunc, rows, reader)
+	default:
+		// Unknown window function, return rows unchanged
+		return rows
+	}
+}
+
+// executeRowNumber implements ROW_NUMBER() window function
+func (qe *QueryEngine) executeRowNumber(winFunc WindowFunction, rows []Row, reader *ParquetReader) []Row {
+	// Group rows by partition if PARTITION BY is specified
+	partitions := qe.partitionRows(rows, winFunc.WindowSpec.PartitionBy)
+	
+	// Process each partition
+	for _, partition := range partitions {
+		// Sort partition by ORDER BY if specified
+		if len(winFunc.WindowSpec.OrderBy) > 0 {
+			partition = qe.sortRows(partition, winFunc.WindowSpec.OrderBy, reader)
+		}
+		
+		// Assign row numbers within this partition
+		for i, row := range partition {
+			row[winFunc.Alias] = i + 1 // ROW_NUMBER starts at 1
+		}
+	}
+	
+	return rows
+}
+
+// partitionRows groups rows by the specified partition columns
+func (qe *QueryEngine) partitionRows(rows []Row, partitionBy []string) [][]Row {
+	if len(partitionBy) == 0 {
+		// No partitioning, return all rows as a single partition
+		return [][]Row{rows}
+	}
+	
+	partitionMap := make(map[string][]Row)
+	
+	for _, row := range rows {
+		// Create a key from the partition columns
+		var keyParts []string
+		for _, col := range partitionBy {
+			if val, exists := row[col]; exists {
+				keyParts = append(keyParts, fmt.Sprintf("%v", val))
+			} else {
+				keyParts = append(keyParts, "NULL")
+			}
+		}
+		key := strings.Join(keyParts, "|")
+		
+		partitionMap[key] = append(partitionMap[key], row)
+	}
+	
+	// Convert map to slice
+	var partitions [][]Row
+	for _, partition := range partitionMap {
+		partitions = append(partitions, partition)
+	}
+	
+	return partitions
+}
+
+// compareRowsForRanking compares two rows based on the specified ORDER BY columns
+// Returns: -1 if row1 < row2, 0 if row1 == row2, 1 if row1 > row2
+func (qe *QueryEngine) compareRowsForRanking(row1, row2 Row, orderBy []OrderByColumn) int {
+	for _, col := range orderBy {
+		val1, exists1 := row1[col.Column]
+		val2, exists2 := row2[col.Column]
+		
+		// Handle missing values
+		if !exists1 && !exists2 {
+			continue
+		}
+		if !exists1 {
+			if col.Direction == "DESC" {
+				return 1
+			} else {
+				return -1
+			}
+		}
+		if !exists2 {
+			if col.Direction == "DESC" {
+				return -1
+			} else {
+				return 1
+			}
+		}
+		
+		// Compare values based on type
+		cmp := qe.compareValues(val1, val2)
+		if cmp != 0 {
+			if col.Direction == "DESC" {
+				return -cmp
+			}
+			return cmp
+		}
+	}
+	return 0
+}
+
+// compareValues compares two interface{} values
+func (qe *QueryEngine) compareValues(val1, val2 interface{}) int {
+	// Handle nil values
+	if val1 == nil && val2 == nil {
+		return 0
+	}
+	if val1 == nil {
+		return -1
+	}
+	if val2 == nil {
+		return 1
+	}
+	
+	// Convert to comparable types
+	switch v1 := val1.(type) {
+	case int:
+		if v2, ok := val2.(int); ok {
+			if v1 < v2 { return -1 }
+			if v1 > v2 { return 1 }
+			return 0
+		}
+	case int64:
+		if v2, ok := val2.(int64); ok {
+			if v1 < v2 { return -1 }
+			if v1 > v2 { return 1 }
+			return 0
+		}
+	case float64:
+		if v2, ok := val2.(float64); ok {
+			if v1 < v2 { return -1 }
+			if v1 > v2 { return 1 }
+			return 0
+		}
+	case string:
+		if v2, ok := val2.(string); ok {
+			if v1 < v2 { return -1 }
+			if v1 > v2 { return 1 }
+			return 0
+		}
+	}
+	
+	// Fallback to string comparison
+	str1 := fmt.Sprintf("%v", val1)
+	str2 := fmt.Sprintf("%v", val2)
+	if str1 < str2 { return -1 }
+	if str1 > str2 { return 1 }
+	return 0
+}
+
+// executeRank implements RANK() window function
+func (qe *QueryEngine) executeRank(winFunc WindowFunction, rows []Row, reader *ParquetReader) []Row {
+	// Group rows by partition if PARTITION BY is specified
+	partitions := qe.partitionRows(rows, winFunc.WindowSpec.PartitionBy)
+	
+	// Process each partition
+	for _, partition := range partitions {
+		// Sort partition by ORDER BY if specified
+		if len(winFunc.WindowSpec.OrderBy) > 0 {
+			partition = qe.sortRows(partition, winFunc.WindowSpec.OrderBy, reader)
+		}
+		
+		// Assign ranks within this partition
+		currentRank := 1
+		for i, row := range partition {
+			if i > 0 && qe.compareRowsForRanking(partition[i-1], row, winFunc.WindowSpec.OrderBy) != 0 {
+				// Different values, update rank to current position + 1
+				currentRank = i + 1
+			}
+			// Same values keep the same rank
+			row[winFunc.Alias] = currentRank
+		}
+	}
+	
+	return rows
+}
+
+// executeDenseRank implements DENSE_RANK() window function
+func (qe *QueryEngine) executeDenseRank(winFunc WindowFunction, rows []Row, reader *ParquetReader) []Row {
+	// Group rows by partition if PARTITION BY is specified
+	partitions := qe.partitionRows(rows, winFunc.WindowSpec.PartitionBy)
+	
+	// Process each partition
+	for _, partition := range partitions {
+		// Sort partition by ORDER BY if specified
+		if len(winFunc.WindowSpec.OrderBy) > 0 {
+			partition = qe.sortRows(partition, winFunc.WindowSpec.OrderBy, reader)
+		}
+		
+		// Assign dense ranks within this partition
+		currentRank := 1
+		for i, row := range partition {
+			if i > 0 && qe.compareRowsForRanking(partition[i-1], row, winFunc.WindowSpec.OrderBy) != 0 {
+				// Different values, increment rank by 1 (dense rank)
+				currentRank++
+			}
+			// Same values keep the same rank
+			row[winFunc.Alias] = currentRank
+		}
+	}
+	
+	return rows
+}
+
+// executeLag implements LAG() window function
+// LAG(column, offset, default) accesses value from previous row
+func (qe *QueryEngine) executeLag(winFunc WindowFunction, rows []Row, reader *ParquetReader) []Row {
+	// Parse arguments: column, offset (default 1), default value (default nil)
+	column := winFunc.Column
+	offset := 1
+	var defaultValue interface{}
+	
+	if len(winFunc.Arguments) > 0 {
+		if offsetVal, ok := winFunc.Arguments[0].(int); ok {
+			offset = offsetVal
+		}
+	}
+	if len(winFunc.Arguments) > 1 {
+		defaultValue = winFunc.Arguments[1]
+	}
+	
+	// Group rows by partition if PARTITION BY is specified
+	partitions := qe.partitionRows(rows, winFunc.WindowSpec.PartitionBy)
+	
+	// Process each partition
+	for _, partition := range partitions {
+		// Sort partition by ORDER BY if specified
+		if len(winFunc.WindowSpec.OrderBy) > 0 {
+			partition = qe.sortRows(partition, winFunc.WindowSpec.OrderBy, reader)
+		}
+		
+		// Apply LAG within this partition
+		for i, row := range partition {
+			prevIndex := i - offset
+			if prevIndex >= 0 && prevIndex < len(partition) {
+				// Get value from previous row
+				if val, exists := partition[prevIndex][column]; exists {
+					row[winFunc.Alias] = val
+				} else {
+					row[winFunc.Alias] = defaultValue
+				}
+			} else {
+				// No previous row, use default value
+				row[winFunc.Alias] = defaultValue
+			}
+		}
+	}
+	
+	return rows
+}
+
+// executeLead implements LEAD() window function
+// LEAD(column, offset, default) accesses value from next row
+func (qe *QueryEngine) executeLead(winFunc WindowFunction, rows []Row, reader *ParquetReader) []Row {
+	// Parse arguments: column, offset (default 1), default value (default nil)
+	column := winFunc.Column
+	offset := 1
+	var defaultValue interface{}
+	
+	if len(winFunc.Arguments) > 0 {
+		if offsetVal, ok := winFunc.Arguments[0].(int); ok {
+			offset = offsetVal
+		}
+	}
+	if len(winFunc.Arguments) > 1 {
+		defaultValue = winFunc.Arguments[1]
+	}
+	
+	// Group rows by partition if PARTITION BY is specified
+	partitions := qe.partitionRows(rows, winFunc.WindowSpec.PartitionBy)
+	
+	// Process each partition
+	for _, partition := range partitions {
+		// Sort partition by ORDER BY if specified
+		if len(winFunc.WindowSpec.OrderBy) > 0 {
+			partition = qe.sortRows(partition, winFunc.WindowSpec.OrderBy, reader)
+		}
+		
+		// Apply LEAD within this partition
+		for i, row := range partition {
+			nextIndex := i + offset
+			if nextIndex >= 0 && nextIndex < len(partition) {
+				// Get value from next row
+				if val, exists := partition[nextIndex][column]; exists {
+					row[winFunc.Alias] = val
+				} else {
+					row[winFunc.Alias] = defaultValue
+				}
+			} else {
+				// No next row, use default value
+				row[winFunc.Alias] = defaultValue
+			}
+		}
+	}
+	
+	return rows
 }

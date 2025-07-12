@@ -283,35 +283,67 @@ func (pr *ParquetReader) matchesConditionWithEngine(row Row, condition WhereCond
 		return exists && value != nil
 	}
 	
-	// Get column value for other operations
-	value, exists := row[condition.Column]
-	if !exists {
-		return false
+	// Get left-side value (column or CASE expression)
+	var leftValue interface{}
+	var exists bool
+	
+	if condition.CaseExpr != nil {
+		// Evaluate CASE expression on left side
+		leftValue = pr.evaluateCaseExpression(condition.CaseExpr, row, engine)
+		exists = true
+	} else {
+		// Regular column lookup
+		leftValue, exists = row[condition.Column]
+		if !exists {
+			return false
+		}
+	}
+
+	// Get right-side value (handling CASE expressions, column references, or literal values)
+	var rightValue interface{}
+	if condition.ValueCaseExpr != nil {
+		// Evaluate CASE expression on right side
+		rightValue = pr.evaluateCaseExpression(condition.ValueCaseExpr, row, engine)
+	} else if condition.ValueColumn != "" {
+		// Column reference on right side
+		if condition.ValueTableName != "" {
+			qualifiedKey := condition.ValueTableName + "." + condition.ValueColumn
+			if val, exists := row[qualifiedKey]; exists {
+				rightValue = val
+			} else {
+				rightValue = row[condition.ValueColumn]
+			}
+		} else {
+			rightValue = row[condition.ValueColumn]
+		}
+	} else {
+		// Regular literal value
+		rightValue = condition.Value
 	}
 
 	switch condition.Operator {
 	case "BETWEEN":
-		return pr.CompareValues(value, condition.ValueFrom) >= 0 && 
-			   pr.CompareValues(value, condition.ValueTo) <= 0
+		return pr.CompareValues(leftValue, condition.ValueFrom) >= 0 && 
+			   pr.CompareValues(leftValue, condition.ValueTo) <= 0
 	case "NOT BETWEEN":
-		return pr.CompareValues(value, condition.ValueFrom) < 0 || 
-			   pr.CompareValues(value, condition.ValueTo) > 0
+		return pr.CompareValues(leftValue, condition.ValueFrom) < 0 || 
+			   pr.CompareValues(leftValue, condition.ValueTo) > 0
 	case "=":
-		return pr.CompareValues(value, condition.Value) == 0
+		return pr.CompareValues(leftValue, rightValue) == 0
 	case "!=", "<>":
-		return pr.CompareValues(value, condition.Value) != 0
+		return pr.CompareValues(leftValue, rightValue) != 0
 	case "<":
-		return pr.CompareValues(value, condition.Value) < 0
+		return pr.CompareValues(leftValue, rightValue) < 0
 	case "<=":
-		return pr.CompareValues(value, condition.Value) <= 0
+		return pr.CompareValues(leftValue, rightValue) <= 0
 	case ">":
-		return pr.CompareValues(value, condition.Value) > 0
+		return pr.CompareValues(leftValue, rightValue) > 0
 	case ">=":
-		return pr.CompareValues(value, condition.Value) >= 0
+		return pr.CompareValues(leftValue, rightValue) >= 0
 	case "LIKE":
-		return pr.matchesLike(value, condition.Value)
+		return pr.matchesLike(leftValue, rightValue)
 	case "IN":
-		return pr.matchesIn(value, condition.ValueList)
+		return pr.matchesIn(leftValue, condition.ValueList)
 	default:
 		return false
 	}
@@ -685,6 +717,16 @@ func (pr *ParquetReader) SelectColumnsWithEngine(rows []Row, columns []Column, e
 				// Execute subquery to get the value
 				subqueryValue := pr.executeColumnSubquery(col.Subquery, row, engine)
 				newRow[key] = subqueryValue
+			} else if col.CaseExpr != nil {
+				// Handle CASE expression columns
+				key := col.Name
+				if col.Alias != "" {
+					key = col.Alias
+				}
+				
+				// Evaluate CASE expression to get the value
+				caseValue := pr.evaluateCaseExpression(col.CaseExpr, row, engine)
+				newRow[key] = caseValue
 			} else {
 				if value, exists := row[col.Name]; exists {
 					key := col.Name
@@ -892,12 +934,104 @@ func (pr *ParquetReader) executeColumnSubquery(subquery *ParsedQuery, currentRow
 	return nil
 }
 
-// hasColumnSubqueries checks if any columns contain subqueries
+// hasColumnSubqueries checks if any columns contain subqueries or CASE expressions
 func (pr *ParquetReader) hasColumnSubqueries(columns []Column) bool {
 	for _, col := range columns {
-		if col.Subquery != nil {
+		if col.Subquery != nil || col.CaseExpr != nil {
 			return true
 		}
 	}
 	return false
+}
+
+// evaluateCaseExpression evaluates a CASE expression for a given row
+func (pr *ParquetReader) evaluateCaseExpression(caseExpr *CaseExpression, row Row, engine SubqueryExecutor) interface{} {
+	// Evaluate each WHEN clause in order
+	for _, whenClause := range caseExpr.WhenClauses {
+		if pr.evaluateCondition(whenClause.Condition, row, engine) {
+			// Condition is true, return the THEN result
+			return pr.evaluateExpressionValue(whenClause.Result, row, engine)
+		}
+	}
+	
+	// No WHEN clause matched, return ELSE value if present
+	if caseExpr.ElseClause != nil {
+		return pr.evaluateExpressionValue(*caseExpr.ElseClause, row, engine)
+	}
+	
+	// No ELSE clause, return nil
+	return nil
+}
+
+// evaluateCondition evaluates a WHERE condition for CASE expressions
+func (pr *ParquetReader) evaluateCondition(condition WhereCondition, row Row, engine SubqueryExecutor) bool {
+	// Get the left value (usually a column value)
+	var leftValue interface{}
+	if condition.TableName != "" {
+		qualifiedKey := condition.TableName + "." + condition.Column
+		if val, exists := row[qualifiedKey]; exists {
+			leftValue = val
+		} else if val, exists := row[condition.Column]; exists {
+			leftValue = val
+		}
+	} else {
+		if val, exists := row[condition.Column]; exists {
+			leftValue = val
+		}
+	}
+	
+	// Compare with the right value based on operator
+	switch condition.Operator {
+	case "=":
+		return pr.CompareValues(leftValue, condition.Value) == 0
+	case "!=", "<>":
+		return pr.CompareValues(leftValue, condition.Value) != 0
+	case "<":
+		return pr.CompareValues(leftValue, condition.Value) < 0
+	case "<=":
+		return pr.CompareValues(leftValue, condition.Value) <= 0
+	case ">":
+		return pr.CompareValues(leftValue, condition.Value) > 0
+	case ">=":
+		return pr.CompareValues(leftValue, condition.Value) >= 0
+	case "LIKE":
+		return pr.matchesLike(leftValue, condition.Value)
+	case "IN":
+		return pr.matchesIn(leftValue, condition.ValueList)
+	}
+	
+	return false
+}
+
+// evaluateExpressionValue evaluates an expression value for CASE THEN/ELSE clauses
+func (pr *ParquetReader) evaluateExpressionValue(expr ExpressionValue, row Row, engine SubqueryExecutor) interface{} {
+	switch expr.Type {
+	case "literal":
+		return expr.LiteralValue
+	case "column":
+		// Get column value from row
+		if expr.TableName != "" {
+			qualifiedKey := expr.TableName + "." + expr.ColumnName
+			if val, exists := row[qualifiedKey]; exists {
+				return val
+			}
+		}
+		if val, exists := row[expr.ColumnName]; exists {
+			return val
+		}
+		return nil
+	case "subquery":
+		// Execute subquery
+		if expr.Subquery != nil {
+			return pr.executeColumnSubquery(expr.Subquery, row, engine)
+		}
+		return nil
+	case "case":
+		// Evaluate nested CASE expression
+		if expr.CaseExpr != nil {
+			return pr.evaluateCaseExpression(expr.CaseExpr, row, engine)
+		}
+		return nil
+	}
+	return nil
 }
