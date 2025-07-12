@@ -64,7 +64,12 @@ func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
 	var result *QueryResult
 	switch parsedQuery.Type {
 	case SELECT:
-		result, err = qe.executeSelect(parsedQuery)
+		// Handle constant-only queries (no FROM clause)
+		if parsedQuery.TableName == "" && qe.hasOnlyConstantColumns(parsedQuery) {
+			result, err = qe.executeConstantQuery(parsedQuery)
+		} else {
+			result, err = qe.executeSelect(parsedQuery)
+		}
 	default:
 		result = &QueryResult{
 			Query: sql,
@@ -103,8 +108,20 @@ func (qe *QueryEngine) executeSelect(query *ParsedQuery) (*QueryResult, error) {
 	if len(requiredColumns) > 0 {
 		rows, err = reader.ReadAllWithColumns(requiredColumns)
 	} else {
-		// SELECT * or aggregates that need all columns
-		rows, err = reader.ReadAll()
+		// Check if this is a constants-only query (like SELECT 1 FROM table)
+		if qe.hasOnlyConstantColumns(query) {
+			// For constants-only queries, we just need to know the row count
+			// Read a minimal column to get the correct number of rows
+			allColumns := reader.GetColumnNames()
+			if len(allColumns) > 0 {
+				rows, err = reader.ReadAllWithColumns([]string{allColumns[0]})
+			} else {
+				rows, err = reader.ReadAll()
+			}
+		} else {
+			// SELECT * or aggregates that need all columns
+			rows, err = reader.ReadAll()
+		}
 	}
 	
 	if err != nil {
@@ -115,7 +132,7 @@ func (qe *QueryEngine) executeSelect(query *ParsedQuery) (*QueryResult, error) {
 	}
 
 	// Apply WHERE clause filtering first
-	rows = reader.FilterRows(rows, query.Where)
+	rows = reader.FilterRowsWithEngine(rows, query.Where, qe)
 	
 	// Handle aggregate queries
 	if query.IsAggregate {
@@ -191,7 +208,7 @@ func (qe *QueryEngine) executeJoinQuery(query *ParsedQuery) (*QueryResult, error
 	
 	// Apply WHERE clause filtering
 	if len(query.Where) > 0 {
-		joinedRows = qe.filterJoinedRows(joinedRows, query.Where)
+		joinedRows = qe.filterJoinedRowsWithEngine(joinedRows, query.Where)
 	}
 	
 	// Handle aggregate queries
@@ -491,13 +508,17 @@ func (qe *QueryEngine) valuesMatch(leftValue, rightValue interface{}, operator s
 
 // filterJoinedRows applies WHERE conditions to joined rows
 func (qe *QueryEngine) filterJoinedRows(rows []Row, conditions []WhereCondition) []Row {
+	return qe.filterJoinedRowsWithEngine(rows, conditions)
+}
+
+func (qe *QueryEngine) filterJoinedRowsWithEngine(rows []Row, conditions []WhereCondition) []Row {
 	if len(conditions) == 0 {
 		return rows
 	}
 	
 	var filtered []Row
 	for _, row := range rows {
-		if qe.rowMatchesConditions(row, conditions) {
+		if qe.rowMatchesConditionsWithEngine(row, conditions) {
 			filtered = append(filtered, row)
 		}
 	}
@@ -507,6 +528,10 @@ func (qe *QueryEngine) filterJoinedRows(rows []Row, conditions []WhereCondition)
 
 // rowMatchesConditions checks if a row matches all WHERE conditions
 func (qe *QueryEngine) rowMatchesConditions(row Row, conditions []WhereCondition) bool {
+	return qe.rowMatchesConditionsWithEngine(row, conditions)
+}
+
+func (qe *QueryEngine) rowMatchesConditionsWithEngine(row Row, conditions []WhereCondition) bool {
 	dummyReader := &ParquetReader{}
 	
 	for _, condition := range conditions {
@@ -516,16 +541,17 @@ func (qe *QueryEngine) rowMatchesConditions(row Row, conditions []WhereCondition
 		}
 		
 		_, exists := row[columnName]
-		if !exists {
+		if !exists && condition.Subquery == nil {
 			return false
 		}
 		
-		if !dummyReader.matchesCondition(row, WhereCondition{
+		if !dummyReader.matchesConditionWithEngine(row, WhereCondition{
 			Column:    columnName,
 			Operator:  condition.Operator,
 			Value:     condition.Value,
 			ValueList: condition.ValueList,
-		}) {
+			Subquery:  condition.Subquery,
+		}, qe) {
 			return false
 		}
 	}
@@ -1035,4 +1061,111 @@ func (qe *QueryEngine) ClearCache() {
 // SetCacheEnabled enables or disables query result caching
 func (qe *QueryEngine) SetCacheEnabled(enabled bool) {
 	qe.cache.config.Enabled = enabled
+}
+
+// hasOnlyConstantColumns checks if the query only selects constant values
+func (qe *QueryEngine) hasOnlyConstantColumns(query *ParsedQuery) bool {
+	if len(query.Columns) == 0 {
+		return false
+	}
+	
+	for _, col := range query.Columns {
+		if col.Name == "*" {
+			return false // Wildcard is not a constant
+		}
+		if !qe.isConstantColumnName(col.Name) {
+			return false
+		}
+	}
+	
+	return true
+}
+
+// isConstantColumnName checks if a column name represents a constant value
+func (qe *QueryEngine) isConstantColumnName(name string) bool {
+	// Check if this looks like a constant value
+	if name == "const" || name == "column" {
+		return true
+	}
+	// Check if it's a numeric constant
+	if len(name) > 0 && (name[0] >= '0' && name[0] <= '9') {
+		return true
+	}
+	// Check if it's a string constant (starts and ends with quotes)
+	if len(name) >= 2 && name[0] == '\'' && name[len(name)-1] == '\'' {
+		return true
+	}
+	return false
+}
+
+// ExecuteSubquery implements the SubqueryExecutor interface
+func (qe *QueryEngine) ExecuteSubquery(query *ParsedQuery) (*QueryResult, error) {
+	// Execute subquery without caching to avoid cache pollution
+	// and infinite recursion issues
+	switch query.Type {
+	case SELECT:
+		// Handle constant-only queries (no FROM clause)
+		if query.TableName == "" && qe.hasOnlyConstantColumns(query) {
+			return qe.executeConstantQuery(query)
+		}
+		
+		if query.HasJoins {
+			return qe.executeJoinQuery(query)
+		} else {
+			return qe.executeSelect(query)
+		}
+	default:
+		return &QueryResult{
+			Query: "subquery",
+			Error: "unsupported subquery type",
+		}, nil
+	}
+}
+
+// executeConstantQuery handles queries with only constants (no table access needed)
+func (qe *QueryEngine) executeConstantQuery(query *ParsedQuery) (*QueryResult, error) {
+	// Create a single row with constant values
+	row := make(Row)
+	var columns []string
+	
+	for _, col := range query.Columns {
+		// Parse the constant value
+		value := qe.parseConstantValue(col.Name)
+		
+		columnName := col.Name
+		if col.Alias != "" {
+			columnName = col.Alias
+		}
+		
+		row[columnName] = value
+		columns = append(columns, columnName)
+	}
+	
+	return &QueryResult{
+		Columns: columns,
+		Rows:    []Row{row},
+		Count:   1,
+		Query:   "constant query",
+	}, nil
+}
+
+// parseConstantValue converts a constant string to its appropriate type
+func (qe *QueryEngine) parseConstantValue(name string) interface{} {
+	// For numeric constants
+	if len(name) > 0 && (name[0] >= '0' && name[0] <= '9') {
+		// Try to parse as integer first
+		if val, err := strconv.Atoi(name); err == nil {
+			return val
+		}
+		// Try to parse as float
+		if val, err := strconv.ParseFloat(name, 64); err == nil {
+			return val
+		}
+	}
+	// For string constants
+	if len(name) >= 2 && name[0] == '\'' && name[len(name)-1] == '\'' {
+		return name[1 : len(name)-1] // Remove quotes
+	}
+	// Default to the name itself
+	return name
 }

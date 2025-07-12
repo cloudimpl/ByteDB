@@ -19,6 +19,11 @@ type ParquetReader struct {
 
 type Row map[string]interface{}
 
+// SubqueryExecutor interface for executing subqueries
+type SubqueryExecutor interface {
+	ExecuteSubquery(query *ParsedQuery) (*QueryResult, error)
+}
+
 // Define the structs for our sample data
 type Employee struct {
 	ID         int32   `parquet:"id"`
@@ -213,13 +218,17 @@ func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string
 // Schema detection methods removed - now supports any schema generically
 
 func (pr *ParquetReader) FilterRows(rows []Row, conditions []WhereCondition) []Row {
+	return pr.FilterRowsWithEngine(rows, conditions, nil)
+}
+
+func (pr *ParquetReader) FilterRowsWithEngine(rows []Row, conditions []WhereCondition, engine SubqueryExecutor) []Row {
 	if len(conditions) == 0 {
 		return rows
 	}
 
 	filtered := make([]Row, 0)
 	for _, row := range rows {
-		if pr.matchesConditions(row, conditions) {
+		if pr.matchesConditionsWithEngine(row, conditions, engine) {
 			filtered = append(filtered, row)
 		}
 	}
@@ -227,8 +236,12 @@ func (pr *ParquetReader) FilterRows(rows []Row, conditions []WhereCondition) []R
 }
 
 func (pr *ParquetReader) matchesConditions(row Row, conditions []WhereCondition) bool {
+	return pr.matchesConditionsWithEngine(row, conditions, nil)
+}
+
+func (pr *ParquetReader) matchesConditionsWithEngine(row Row, conditions []WhereCondition, engine SubqueryExecutor) bool {
 	for _, condition := range conditions {
-		if !pr.matchesCondition(row, condition) {
+		if !pr.matchesConditionWithEngine(row, condition, engine) {
 			return false
 		}
 	}
@@ -236,6 +249,16 @@ func (pr *ParquetReader) matchesConditions(row Row, conditions []WhereCondition)
 }
 
 func (pr *ParquetReader) matchesCondition(row Row, condition WhereCondition) bool {
+	return pr.matchesConditionWithEngine(row, condition, nil)
+}
+
+func (pr *ParquetReader) matchesConditionWithEngine(row Row, condition WhereCondition, engine SubqueryExecutor) bool {
+	// Handle subquery-based conditions
+	if condition.Subquery != nil {
+		return pr.matchesSubqueryCondition(row, condition, engine)
+	}
+	
+	// Handle regular conditions
 	value, exists := row[condition.Column]
 	if !exists {
 		return false
@@ -258,6 +281,105 @@ func (pr *ParquetReader) matchesCondition(row Row, condition WhereCondition) boo
 		return pr.matchesLike(value, condition.Value)
 	case "IN":
 		return pr.matchesIn(value, condition.ValueList)
+	default:
+		return false
+	}
+}
+
+func (pr *ParquetReader) matchesSubqueryCondition(row Row, condition WhereCondition, engine SubqueryExecutor) bool {
+	if engine == nil {
+		return false // Cannot execute subquery without engine
+	}
+	
+	switch condition.Operator {
+	case "IN":
+		return pr.matchesInSubquery(row, condition, engine)
+	case "NOT IN":
+		return !pr.matchesInSubquery(row, condition, engine)
+	case "EXISTS":
+		return pr.matchesExistsSubquery(condition, engine)
+	case "NOT EXISTS":
+		return !pr.matchesExistsSubquery(condition, engine)
+	case "=", "!=", "<>", "<", "<=", ">", ">=":
+		return pr.matchesScalarSubquery(row, condition, engine)
+	default:
+		return false
+	}
+}
+
+func (pr *ParquetReader) matchesInSubquery(row Row, condition WhereCondition, engine SubqueryExecutor) bool {
+	value, exists := row[condition.Column]
+	if !exists {
+		return false
+	}
+	
+	// Execute the subquery
+	result, err := engine.ExecuteSubquery(condition.Subquery)
+	if err != nil || result.Error != "" {
+		return false
+	}
+	
+	// Check if the value exists in the subquery results
+	for _, subRow := range result.Rows {
+		if len(result.Columns) > 0 {
+			subValue, subExists := subRow[result.Columns[0]]
+			if subExists && pr.CompareValues(value, subValue) == 0 {
+				return true
+			}
+		}
+	}
+	
+	return false
+}
+
+func (pr *ParquetReader) matchesExistsSubquery(condition WhereCondition, engine SubqueryExecutor) bool {
+	// Execute the subquery
+	result, err := engine.ExecuteSubquery(condition.Subquery)
+	if err != nil || result.Error != "" {
+		return false
+	}
+	
+	// EXISTS returns true if subquery returns any rows
+	return len(result.Rows) > 0
+}
+
+func (pr *ParquetReader) matchesScalarSubquery(row Row, condition WhereCondition, engine SubqueryExecutor) bool {
+	value, exists := row[condition.Column]
+	if !exists {
+		return false
+	}
+	
+	// Execute the subquery
+	result, err := engine.ExecuteSubquery(condition.Subquery)
+	if err != nil || result.Error != "" {
+		return false
+	}
+	
+	// Scalar subquery should return exactly one row and one column
+	if len(result.Rows) != 1 || len(result.Columns) != 1 {
+		return false
+	}
+	
+	subValue, subExists := result.Rows[0][result.Columns[0]]
+	if !subExists {
+		return false
+	}
+	
+	// Compare using the specified operator
+	comparison := pr.CompareValues(value, subValue)
+	switch condition.Operator {
+	case "=":
+		return comparison == 0
+	case "!=", "<>":
+		return comparison != 0
+	case "<":
+		return comparison < 0
+	case "<=":
+		return comparison <= 0
+	case ">":
+		return comparison > 0
+	case ">=":
+		return comparison >= 0
 	default:
 		return false
 	}
@@ -485,10 +607,53 @@ func (pr *ParquetReader) SelectColumns(rows []Row, columns []Column) []Row {
 						key = col.Alias
 					}
 					newRow[key] = value
+				} else if pr.isConstantColumn(col.Name) {
+					// Handle constant columns like "1", "hello", etc.
+					key := col.Name
+					if col.Alias != "" {
+						key = col.Alias
+					}
+					newRow[key] = pr.parseConstantValue(col.Name)
 				}
 			}
 		}
 		result[i] = newRow
 	}
 	return result
+}
+
+func (pr *ParquetReader) isConstantColumn(name string) bool {
+	// Check if this looks like a constant value
+	if name == "const" || name == "column" {
+		return true
+	}
+	// Check if it's a numeric constant
+	if len(name) > 0 && (name[0] >= '0' && name[0] <= '9') {
+		return true
+	}
+	// Check if it's a string constant (starts and ends with quotes)
+	if len(name) >= 2 && name[0] == '\'' && name[len(name)-1] == '\'' {
+		return true
+	}
+	return false
+}
+
+func (pr *ParquetReader) parseConstantValue(name string) interface{} {
+	// For numeric constants
+	if len(name) > 0 && (name[0] >= '0' && name[0] <= '9') {
+		// Try to parse as integer first
+		if val, err := strconv.Atoi(name); err == nil {
+			return val
+		}
+		// Try to parse as float
+		if val, err := strconv.ParseFloat(name, 64); err == nil {
+			return val
+		}
+	}
+	// For string constants
+	if len(name) >= 2 && name[0] == '\'' && name[len(name)-1] == '\'' {
+		return name[1 : len(name)-1] // Remove quotes
+	}
+	// Default to the name itself
+	return name
 }

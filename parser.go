@@ -20,7 +20,8 @@ const (
 type Column struct {
 	Name      string
 	Alias     string
-	TableName string // For qualified columns like "e.name"
+	TableName string       // For qualified columns like "e.name"
+	Subquery  *ParsedQuery // For subquery columns like (SELECT COUNT(*) FROM ...)
 }
 
 type WhereCondition struct {
@@ -29,6 +30,7 @@ type WhereCondition struct {
 	Value     interface{}   // Single value for =, !=, <, <=, >, >=, LIKE
 	ValueList []interface{} // List of values for IN operator
 	TableName string        // For qualified columns like "e.department"
+	Subquery  *ParsedQuery  // For subquery conditions like IN (SELECT ...), EXISTS (SELECT ...)
 }
 
 type JoinType int
@@ -263,51 +265,7 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 	if stmt.TargetList != nil {
 		for _, target := range stmt.TargetList {
 			if resTarget := target.GetResTarget(); resTarget != nil {
-				// Check if this is an aggregate function call
-				if funcCall := resTarget.Val.GetFuncCall(); funcCall != nil {
-					agg := p.parseAggregateFunction(funcCall, resTarget.Name)
-					if agg != nil {
-						query.Aggregates = append(query.Aggregates, *agg)
-						query.IsAggregate = true
-						continue
-					}
-				}
-				
-				// Regular column parsing
-				col := Column{}
-				
-				if resTarget.Name != "" {
-					col.Alias = resTarget.Name
-				}
-				
-				if columnRef := resTarget.Val.GetColumnRef(); columnRef != nil {
-					if len(columnRef.Fields) >= 2 {
-						// Qualified column: table.column
-						if tableStr := columnRef.Fields[0].GetString_(); tableStr != nil {
-							col.TableName = tableStr.Sval
-						}
-						if colStr := columnRef.Fields[1].GetString_(); colStr != nil {
-							col.Name = colStr.Sval
-						} else if columnRef.Fields[1].GetAStar() != nil {
-							col.Name = "*"
-						}
-					} else if len(columnRef.Fields) == 1 {
-						// Unqualified column
-						if str := columnRef.Fields[0].GetString_(); str != nil {
-							col.Name = str.Sval
-						} else if columnRef.Fields[0].GetAStar() != nil {
-							col.Name = "*"
-						}
-					}
-				} else if aStar := resTarget.Val.GetAStar(); aStar != nil {
-					col.Name = "*"
-				}
-				
-				if col.Name == "" && col.Alias == "" {
-					col.Name = "unknown"
-				}
-				
-				query.Columns = append(query.Columns, col)
+				p.parseColumnTarget(resTarget, query)
 			}
 		}
 	}
@@ -358,6 +316,12 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 			if rexpr := aExpr.Rexpr; rexpr != nil {
 				if aList := rexpr.GetList(); aList != nil {
 					p.parseValueList(aList.Items, &condition)
+				} else if subLink := rexpr.GetSubLink(); subLink != nil {
+					// Handle IN subquery
+					if subquery := p.parseSubquery(subLink); subquery != nil {
+						condition.Subquery = subquery
+						condition.ValueList = nil // Clear value list for subquery
+					}
 				}
 			}
 		} else {
@@ -395,12 +359,158 @@ func (p *SQLParser) parseWhere(node *pg_query.Node, query *ParsedQuery) {
 					} else if bval := aConst.GetBoolval(); bval != nil {
 						condition.Value = bval.Boolval
 					}
+				} else if subLink := rexpr.GetSubLink(); subLink != nil {
+					// Handle scalar subquery (e.g., col = (SELECT ...))
+					if subquery := p.parseSubquery(subLink); subquery != nil {
+						condition.Subquery = subquery
+					}
 				}
 			}
 		}
 		
 		query.Where = append(query.Where, condition)
+	} else if subLink := node.GetSubLink(); subLink != nil {
+		// Handle EXISTS subqueries
+		condition := WhereCondition{}
+		if subLink.SubLinkType == pg_query.SubLinkType_EXISTS_SUBLINK {
+			condition.Operator = "EXISTS"
+			if subquery := p.parseSubquery(subLink); subquery != nil {
+				condition.Subquery = subquery
+			}
+		} else if subLink.SubLinkType == pg_query.SubLinkType_ANY_SUBLINK {
+			condition.Operator = "IN"
+			// For IN subqueries, we need to extract the column from the testexpr
+			if subLink.Testexpr != nil {
+				if columnRef := subLink.Testexpr.GetColumnRef(); columnRef != nil {
+					if len(columnRef.Fields) > 0 {
+						if str := columnRef.Fields[0].GetString_(); str != nil {
+							condition.Column = str.Sval
+						}
+					}
+				}
+			}
+			if subquery := p.parseSubquery(subLink); subquery != nil {
+				condition.Subquery = subquery
+			}
+		}
+		
+		if condition.Subquery != nil {
+			query.Where = append(query.Where, condition)
+		}
 	}
+}
+
+func (p *SQLParser) parseSubquery(subLink *pg_query.SubLink) *ParsedQuery {
+	if subLink.Subselect == nil {
+		return nil
+	}
+	
+	// Parse the subquery directly from the AST node
+	if selectStmt := subLink.Subselect.GetSelectStmt(); selectStmt != nil {
+		subquery := &ParsedQuery{
+			Type:        SELECT,
+			IsAggregate: false,
+			HasJoins:    false,
+		}
+		
+		// Parse the subquery components
+		p.parseSelectStatement(selectStmt, subquery)
+		return subquery
+	}
+	
+	return nil
+}
+
+func (p *SQLParser) parseSelectStatement(selectStmt *pg_query.SelectStmt, query *ParsedQuery) {
+	// Parse target list (SELECT columns)
+	for _, target := range selectStmt.TargetList {
+		if resTarget := target.GetResTarget(); resTarget != nil {
+			p.parseColumnTarget(resTarget, query)
+		}
+	}
+	
+	// Parse FROM clause
+	if len(selectStmt.FromClause) > 0 {
+		p.parseFromClause([]*pg_query.Node{selectStmt.FromClause[0]}, query)
+	}
+	
+	// Parse WHERE clause
+	if selectStmt.WhereClause != nil {
+		p.parseWhere(selectStmt.WhereClause, query)
+	}
+	
+	// Parse GROUP BY
+	if len(selectStmt.GroupClause) > 0 {
+		p.parseGroupBy(selectStmt.GroupClause, query)
+	}
+	
+	// Parse ORDER BY
+	if len(selectStmt.SortClause) > 0 {
+		p.parseOrderBy(selectStmt.SortClause, query)
+	}
+	
+	// Parse LIMIT
+	if selectStmt.LimitCount != nil {
+		if aConst := selectStmt.LimitCount.GetAConst(); aConst != nil {
+			if ival := aConst.GetIval(); ival != nil {
+				query.Limit = int(ival.Ival)
+			}
+		}
+	}
+}
+
+func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *ParsedQuery) {
+	// Check if this is an aggregate function call
+	if funcCall := resTarget.Val.GetFuncCall(); funcCall != nil {
+		agg := p.parseAggregateFunction(funcCall, resTarget.Name)
+		if agg != nil {
+			query.Aggregates = append(query.Aggregates, *agg)
+			query.IsAggregate = true
+			return
+		}
+	}
+	
+	// Regular column
+	column := Column{}
+	
+	// Get column name
+	if columnRef := resTarget.Val.GetColumnRef(); columnRef != nil {
+		if len(columnRef.Fields) > 0 {
+			if str := columnRef.Fields[0].GetString_(); str != nil {
+				column.Name = str.Sval
+			} else if columnRef.Fields[0].GetAStar() != nil {
+				column.Name = "*"
+			}
+		}
+		
+		// Handle qualified column names (table.column)
+		if len(columnRef.Fields) > 1 {
+			if str := columnRef.Fields[1].GetString_(); str != nil {
+				column.TableName = column.Name
+				column.Name = str.Sval
+			}
+		}
+	} else if aConst := resTarget.Val.GetAConst(); aConst != nil {
+		// Handle constants like SELECT 1, SELECT 'hello', etc.
+		if ival := aConst.GetIval(); ival != nil {
+			column.Name = fmt.Sprintf("%d", ival.Ival)
+		} else if sval := aConst.GetSval(); sval != nil {
+			column.Name = sval.Sval
+		} else if fval := aConst.GetFval(); fval != nil {
+			column.Name = fval.Fval
+		} else {
+			column.Name = "const"
+		}
+	}
+	
+	// Get alias
+	if resTarget.Name != "" {
+		column.Alias = resTarget.Name
+	} else if column.Name == "" {
+		column.Name = "column"
+	}
+	
+	query.Columns = append(query.Columns, column)
 }
 
 func (p *SQLParser) parseInValues(node *pg_query.Node, condition *WhereCondition) {
@@ -536,7 +646,10 @@ func (q *ParsedQuery) GetRequiredColumns() []string {
 			// If SELECT *, we need all columns - return empty slice to indicate this
 			return []string{}
 		}
-		requiredCols[col.Name] = true
+		// Skip constant columns
+		if !q.isConstantColumn(col.Name) {
+			requiredCols[col.Name] = true
+		}
 	}
 	
 	// Add columns from aggregate functions
@@ -568,6 +681,22 @@ func (q *ParsedQuery) GetRequiredColumns() []string {
 	}
 	
 	return result
+}
+
+func (q *ParsedQuery) isConstantColumn(name string) bool {
+	// Check if this looks like a constant value
+	if name == "const" || name == "column" {
+		return true
+	}
+	// Check if it's a numeric constant
+	if len(name) > 0 && (name[0] >= '0' && name[0] <= '9') {
+		return true
+	}
+	// Check if it's a string constant (starts and ends with quotes)
+	if len(name) >= 2 && name[0] == '\'' && name[len(name)-1] == '\'' {
+		return true
+	}
+	return false
 }
 
 func (q *ParsedQuery) String() string {
