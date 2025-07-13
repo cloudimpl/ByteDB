@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	
+	"github.com/parquet-go/parquet-go"
 )
 
 // TestCase represents a single SQL test case
@@ -111,6 +113,11 @@ type TestRunner struct {
 
 // NewTestRunner creates a new test runner
 func NewTestRunner(dataPath string) (*TestRunner, error) {
+	// Generate deterministic test data first
+	if err := GenerateDeterministicTestData(dataPath); err != nil {
+		return nil, fmt.Errorf("failed to generate test data: %w", err)
+	}
+
 	engine := NewQueryEngine(dataPath)
 
 	return &TestRunner{
@@ -217,6 +224,14 @@ func (tr *TestRunner) parseTestMetadata(line string, test *TestCase) {
 	case strings.HasPrefix(line, "-- @expect_columns"):
 		columns := parseTestAttributeList(line, "expect_columns")
 		test.Expected.Columns = columns
+	case strings.HasPrefix(line, "-- @expect_data"):
+		dataStr := parseTestAttribute(line, "expect_data")
+		if dataStr != "" {
+			var data []map[string]interface{}
+			if err := json.Unmarshal([]byte(dataStr), &data); err == nil {
+				test.Expected.Data = data
+			}
+		}
 	case strings.HasPrefix(line, "-- @expect_error"):
 		error := parseTestAttribute(line, "expect_error")
 		test.Expected.Error = &error
@@ -389,13 +404,9 @@ func (tr *TestRunner) validateResults(actual *QueryResult, expected TestExpectat
 
 	// Check specific data if provided
 	if len(expected.Data) > 0 {
-		if len(actual.Rows) != len(expected.Data) {
-			return fmt.Errorf("expected %d data rows, got %d", len(expected.Data), len(actual.Rows))
-		}
-		for i, expectedRow := range expected.Data {
-			if !tr.compareRows(actual.Rows[i], expectedRow) {
-				return fmt.Errorf("row %d does not match expected data", i)
-			}
+		dataErrors := tr.validateData(actual, expected.Data)
+		if len(dataErrors) > 0 {
+			return fmt.Errorf("data validation failed:\n%s", strings.Join(dataErrors, "\n"))
 		}
 	}
 
@@ -451,18 +462,63 @@ func (tr *TestRunner) validateTraces(actual []TraceEntry, expected []TraceExpect
 	return nil
 }
 
-// compareRows compares two rows for equality
-func (tr *TestRunner) compareRows(actual Row, expected map[string]interface{}) bool {
-	for key, expectedValue := range expected {
-		actualValue, exists := actual[key]
-		if !exists {
-			return false
+// validateData validates the actual data against expected data
+func (tr *TestRunner) validateData(result *QueryResult, expectedData []map[string]interface{}) []string {
+	var errors []string
+	
+	// First check if we have the same number of rows
+	if len(result.Rows) != len(expectedData) {
+		return []string{fmt.Sprintf("expected %d data rows, got %d", len(expectedData), len(result.Rows))}
+	}
+	
+	// Create column index map for efficient lookup
+	columnIndex := make(map[string]int)
+	for i, col := range result.Columns {
+		columnIndex[col] = i
+	}
+	
+	// Compare each expected row with actual rows
+	for i, expectedRow := range expectedData {
+		if i >= len(result.Rows) {
+			errors = append(errors, fmt.Sprintf("missing row %d", i))
+			continue
 		}
-		if !reflect.DeepEqual(actualValue, expectedValue) {
-			return false
+		
+		actualRow := result.Rows[i]
+		for key, expectedValue := range expectedRow {
+			actualValue, exists := actualRow[key]
+			if !exists {
+				errors = append(errors, fmt.Sprintf("row %d: missing column '%s'", i, key))
+				continue
+			}
+			
+			if !tr.compareValues(expectedValue, actualValue) {
+				errors = append(errors, fmt.Sprintf("row %d, column '%s': expected %v, got %v", 
+					i, key, expectedValue, actualValue))
+			}
 		}
 	}
-	return true
+	
+	return errors
+}
+
+// compareValues compares two values with type flexibility
+func (tr *TestRunner) compareValues(expected, actual interface{}) bool {
+	// If they're exactly equal, we're done
+	if reflect.DeepEqual(expected, actual) {
+		return true
+	}
+	
+	// Try numeric comparison for common type mismatches
+	expectedFloat, expectedErr := toFloat64(expected)
+	actualFloat, actualErr := toFloat64(actual)
+	
+	if expectedErr == nil && actualErr == nil {
+		return expectedFloat == actualFloat
+	}
+	
+	// Try string comparison as last resort
+	return fmt.Sprintf("%v", expected) == fmt.Sprintf("%v", actual)
 }
 
 // runSQLStatements executes a list of SQL statements
@@ -655,4 +711,117 @@ func parseTraceComponents(values []string) []TraceComponent {
 		}
 	}
 	return components
+}
+
+// GenerateDeterministicTestData creates deterministic test data for consistent testing
+func GenerateDeterministicTestData(dataPath string) error {
+	if err := os.MkdirAll(dataPath, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory: %w", err)
+	}
+
+	// Generate deterministic employees data
+	if err := generateTestEmployees(dataPath); err != nil {
+		return fmt.Errorf("failed to generate employees data: %w", err)
+	}
+
+	// Generate deterministic products data
+	if err := generateTestProducts(dataPath); err != nil {
+		return fmt.Errorf("failed to generate products data: %w", err)
+	}
+
+	// Generate deterministic departments data
+	if err := generateTestDepartments(dataPath); err != nil {
+		return fmt.Errorf("failed to generate departments data: %w", err)
+	}
+
+	return nil
+}
+
+// Fixed test data - same as in main package but in core for consistency
+var testEmployees = []Employee{
+	{1, "John Doe", "Engineering", 75000.0, 30, "2020-01-15"},
+	{2, "Jane Smith", "Marketing", 65000.0, 28, "2019-03-22"},
+	{3, "Mike Johnson", "Engineering", 80000.0, 35, "2018-07-10"},
+	{4, "Sarah Wilson", "HR", 55000.0, 32, "2021-05-18"},
+	{5, "David Brown", "Sales", 70000.0, 29, "2019-11-02"},
+	{6, "Lisa Davis", "Engineering", 85000.0, 33, "2017-12-01"},
+	{7, "Tom Miller", "Marketing", 62000.0, 27, "2020-08-14"},
+	{8, "Anna Garcia", "Finance", 68000.0, 31, "2019-06-25"},
+	{9, "Chris Anderson", "Engineering", 78000.0, 34, "2018-04-03"},
+	{10, "Maria Rodriguez", "Sales", 72000.0, 26, "2021-02-09"},
+}
+
+var testProducts = []Product{
+	{1, "Laptop", "Electronics", 999.99, true, "TechCorp"},
+	{2, "Mouse", "Electronics", 29.99, true, "TechCorp"},
+	{3, "Keyboard", "Electronics", 89.99, false, "TechCorp"},
+	{4, "Monitor", "Electronics", 299.99, true, "ScreenCorp"},
+	{5, "Webcam", "Electronics", 79.99, true, "CameraCorp"},
+	{6, "Notebook", "Stationery", 5.99, true, "PaperCorp"},
+	{7, "Pen", "Stationery", 1.99, true, "PaperCorp"},
+	{8, "Eraser", "Stationery", 0.99, false, "PaperCorp"},
+	{9, "Calculator", "Electronics", 15.99, true, "MathCorp"},
+	{10, "Phone", "Electronics", 699.99, true, "PhoneCorp"},
+}
+
+var testDepartments = []Department{
+	{"Engineering", "Lisa Davis", 1000000.0, "Building A", 4},
+	{"Marketing", "Jane Smith", 500000.0, "Building B", 2},
+	{"HR", "Sarah Wilson", 300000.0, "Building C", 2},
+	{"Sales", "David Brown", 750000.0, "Building B", 1},
+	{"Finance", "Anna Garcia", 600000.0, "Building C", 1},
+}
+
+func generateTestEmployees(dataPath string) error {
+	file, err := os.Create(filepath.Join(dataPath, "employees.parquet"))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := parquet.NewWriter(file, parquet.SchemaOf(Employee{}))
+	defer writer.Close()
+
+	for _, emp := range testEmployees {
+		if err := writer.Write(emp); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func generateTestProducts(dataPath string) error {
+	file, err := os.Create(filepath.Join(dataPath, "products.parquet"))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := parquet.NewWriter(file, parquet.SchemaOf(Product{}))
+	defer writer.Close()
+
+	for _, prod := range testProducts {
+		if err := writer.Write(prod); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func generateTestDepartments(dataPath string) error {
+	file, err := os.Create(filepath.Join(dataPath, "departments.parquet"))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := parquet.NewWriter(file, parquet.SchemaOf(Department{}))
+	defer writer.Close()
+
+	for _, dept := range testDepartments {
+		if err := writer.Write(dept); err != nil {
+			return err
+		}
+	}
+	return nil
 }

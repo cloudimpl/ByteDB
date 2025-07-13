@@ -1,0 +1,105 @@
+{
+  "name": "distributed_data_validation_json",
+  "description": "Test distributed queries with exact data validation using JSON format",
+  "test_cases": [
+    {
+      "name": "json_exact_department_counts",
+      "description": "Validate exact department counts",
+      "sql": "SELECT department, COUNT(*) as count FROM employees GROUP BY department ORDER BY department",
+      "expected": {
+        "row_count": 5,
+        "columns": ["department", "count"],
+        "data": [
+          {"department": "Engineering", "count": 4},
+          {"department": "Finance", "count": 1},
+          {"department": "HR", "count": 2},
+          {"department": "Marketing", "count": 2},
+          {"department": "Sales", "count": 1}
+        ]
+      },
+      "distributed": {
+        "workers": 3,
+        "expected_workers": 3,
+        "network_optimization": true
+      }
+    },
+    {
+      "name": "json_salary_statistics",
+      "description": "Validate salary statistics across distributed data",
+      "sql": "SELECT COUNT(*) as total_employees, SUM(salary) as total_salary, AVG(salary) as avg_salary, MIN(salary) as min_salary, MAX(salary) as max_salary FROM employees",
+      "expected": {
+        "row_count": 1,
+        "columns": ["total_employees", "total_salary", "avg_salary", "min_salary", "max_salary"],
+        "data": [
+          {
+            "total_employees": 10,
+            "total_salary": 650000,
+            "avg_salary": 65000,
+            "min_salary": 45000,
+            "max_salary": 95000
+          }
+        ]
+      },
+      "distributed": {
+        "workers": 3,
+        "expected_workers": 3,
+        "network_optimization": true,
+        "verify_partial_aggregates": true
+      }
+    },
+    {
+      "name": "json_specific_employees",
+      "description": "Get specific employees with exact data match",
+      "sql": "SELECT id, name, department FROM employees WHERE department = 'Engineering' ORDER BY id",
+      "expected": {
+        "row_count": 4,
+        "columns": ["id", "name", "department"],
+        "data": [
+          {"id": 1, "name": "John Doe", "department": "Engineering"},
+          {"id": 2, "name": "Jane Smith", "department": "Engineering"},
+          {"id": 6, "name": "Sarah Wilson", "department": "Engineering"},
+          {"id": 9, "name": "David Lee", "department": "Engineering"}
+        ]
+      },
+      "distributed": {
+        "workers": 3,
+        "expected_workers": 3
+      }
+    },
+    {
+      "name": "json_top_earners",
+      "description": "Validate top 5 earners with exact values",
+      "sql": "SELECT name, department, salary FROM employees ORDER BY salary DESC LIMIT 5",
+      "expected": {
+        "row_count": 5,
+        "columns": ["name", "department", "salary"],
+        "data": [
+          {"name": "Sarah Wilson", "department": "Engineering", "salary": 95000},
+          {"name": "Jane Smith", "department": "Engineering", "salary": 80000},
+          {"name": "John Doe", "department": "Engineering", "salary": 75000},
+          {"name": "Mike Johnson", "department": "Sales", "salary": 70000},
+          {"name": "Emily Brown", "department": "Marketing", "salary": 60000}
+        ]
+      },
+      "distributed": {
+        "workers": 3
+      }
+    },
+    {
+      "name": "json_department_salary_ranges",
+      "description": "Test salary ranges by department",
+      "sql": "SELECT department, MIN(salary) as min_sal, MAX(salary) as max_sal, MAX(salary) - MIN(salary) as salary_range FROM employees GROUP BY department HAVING MAX(salary) - MIN(salary) > 10000 ORDER BY salary_range DESC",
+      "expected": {
+        "row_count": 1,
+        "columns": ["department", "min_sal", "max_sal", "salary_range"],
+        "data": [
+          {"department": "Engineering", "min_sal": 45000, "max_sal": 95000, "salary_range": 50000}
+        ]
+      },
+      "distributed": {
+        "workers": 3,
+        "network_optimization": true
+      }
+    }
+  ]
+}

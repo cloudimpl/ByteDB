@@ -56,6 +56,11 @@ type DistributedTestRunner struct {
 
 // NewDistributedTestRunner creates a new distributed test runner
 func NewDistributedTestRunner(dataPath string) *DistributedTestRunner {
+	// Generate deterministic test data first
+	if err := generateDistributedTestData(dataPath); err != nil {
+		log.Printf("Warning: failed to generate test data: %v", err)
+	}
+
 	engine := core.NewQueryEngine(dataPath)
 	return &DistributedTestRunner{
 		engine:   engine,
@@ -502,11 +507,105 @@ func (r *DistributedTestRunner) validateResult(result *core.QueryResult, expecte
 		}
 	}
 	
-	// TODO: Validate data content when specified
+	// Validate data content when specified
+	if len(expected.Data) > 0 {
+		dataErrors := r.validateData(result, expected.Data)
+		errors = append(errors, dataErrors...)
+	}
 	
 	return errors
 }
 
+
+// validateData validates the actual data against expected data
+func (r *DistributedTestRunner) validateData(result *core.QueryResult, expectedData []map[string]interface{}) []string {
+	var errors []string
+	
+	// First check if we have the same number of rows
+	if len(result.Rows) != len(expectedData) {
+		return []string{fmt.Sprintf("expected %d data rows, got %d", len(expectedData), len(result.Rows))}
+	}
+	
+	// Rows are already in the correct format ([]Row where Row is map[string]interface{})
+	// No need to convert
+	
+	// Compare each expected row with actual rows
+	// For now, we'll do ordered comparison. Later we can add unordered option.
+	for i, expectedRow := range expectedData {
+		if i >= len(result.Rows) {
+			errors = append(errors, fmt.Sprintf("missing row %d", i))
+			continue
+		}
+		
+		actualRow := result.Rows[i]
+		for key, expectedValue := range expectedRow {
+			actualValue, exists := actualRow[key]
+			if !exists {
+				errors = append(errors, fmt.Sprintf("row %d: missing column '%s'", i, key))
+				continue
+			}
+			
+			if !r.compareValues(expectedValue, actualValue) {
+				errors = append(errors, fmt.Sprintf("row %d, column '%s': expected %v, got %v", 
+					i, key, expectedValue, actualValue))
+			}
+		}
+	}
+	
+	return errors
+}
+
+// compareValues compares two values with type flexibility
+func (r *DistributedTestRunner) compareValues(expected, actual interface{}) bool {
+	// Handle nil cases
+	if expected == nil && actual == nil {
+		return true
+	}
+	if expected == nil || actual == nil {
+		return false
+	}
+	
+	// Try direct comparison first
+	if reflect.DeepEqual(expected, actual) {
+		return true
+	}
+	
+	// Handle numeric comparisons with type conversion
+	expectedNum, expectedIsNum := toFloat64(expected)
+	actualNum, actualIsNum := toFloat64(actual)
+	if expectedIsNum && actualIsNum {
+		return expectedNum == actualNum
+	}
+	
+	// Handle string comparisons
+	expectedStr := fmt.Sprintf("%v", expected)
+	actualStr := fmt.Sprintf("%v", actual)
+	return expectedStr == actualStr
+}
+
+// toFloat64 attempts to convert a value to float64
+func toFloat64(val interface{}) (float64, bool) {
+	switch v := val.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	default:
+		return 0, false
+	}
+}
 
 // parseSQLAnnotation parses SQL annotations for test configuration
 func parseSQLAnnotation(line string, testCase *core.TestCase) {
@@ -553,6 +652,14 @@ func parseSQLAnnotation(line string, testCase *core.TestCase) {
 				testCase.Expected.Performance = &core.PerformanceExpectation{}
 			}
 			testCase.Expected.Performance.MaxDuration = duration
+		}
+	} else if strings.HasPrefix(line, "expect_data ") {
+		// Parse expected data in JSON format
+		// Example: -- @expect_data [{"department": "Engineering", "count": 4}, {"department": "Sales", "count": 3}]
+		dataStr := strings.TrimPrefix(line, "expect_data ")
+		var data []map[string]interface{}
+		if err := json.Unmarshal([]byte(dataStr), &data); err == nil {
+			testCase.Expected.Data = data
 		}
 	}
 }
@@ -603,4 +710,15 @@ func ParseTraceComponent(comp string) core.TraceComponent {
 	default:
 		return ""
 	}
+}
+
+// generateDistributedTestData creates deterministic test data for distributed testing
+func generateDistributedTestData(dataPath string) error {
+	if err := os.MkdirAll(dataPath, 0755); err != nil {
+		return fmt.Errorf("failed to create data directory: %w", err)
+	}
+
+	// For distributed testing, we can simply call the core data generation
+	// which will generate the same deterministic data
+	return core.GenerateDeterministicTestData(dataPath)
 }

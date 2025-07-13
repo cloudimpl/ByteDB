@@ -11,6 +11,7 @@ SELECT * FROM employees;
 -- @description Test SELECT with WHERE clause
 -- @expect_rows 1
 -- @expect_columns age,department,hire_date,id,name,salary
+-- @expect_data [{"age": 30, "department": "Engineering", "hire_date": "2020-01-15", "id": 1, "name": "John Doe", "salary": 75000}]
 -- @tags basic,where
 -- @trace_level DEBUG
 -- @trace_components QUERY,FILTER
@@ -20,6 +21,7 @@ SELECT * FROM employees WHERE id = 1;
 -- @description Test COUNT(*) functionality
 -- @expect_rows 1
 -- @expect_columns count
+-- @expect_data [{"count": 10}]
 -- @tags basic,aggregate
 -- @trace_level INFO
 -- @trace_components QUERY,AGGREGATE
@@ -28,7 +30,8 @@ SELECT COUNT(*) as count FROM employees;
 -- @test name=department_group_by
 -- @description Test GROUP BY with COUNT
 -- @expect_rows 5
--- @expect_columns department
+-- @expect_columns department,count
+-- @expect_data [{"department": "Engineering", "count": 4}, {"department": "Finance", "count": 1}, {"department": "HR", "count": 1}, {"department": "Marketing", "count": 2}, {"department": "Sales", "count": 2}]
 -- @tags basic,group_by,aggregate
 -- @trace_level DEBUG
 -- @trace_components QUERY,AGGREGATE,EXECUTION
@@ -40,6 +43,8 @@ ORDER BY department;
 -- @test name=salary_filter
 -- @description Test filtering by salary range
 -- @expect_rows 7
+-- @expect_columns name,salary
+-- @expect_data [{"name": "Sarah Wilson", "salary": 95000}, {"name": "Jane Smith", "salary": 80000}, {"name": "John Doe", "salary": 75000}, {"name": "Mike Johnson", "salary": 70000}, {"name": "Jennifer Davis", "salary": 68000}, {"name": "David Lee", "salary": 67000}, {"name": "Jessica Martinez", "salary": 66000}]
 -- @tags basic,where,numeric
 -- @trace_level INFO
 -- @trace_components QUERY,FILTER
@@ -89,6 +94,8 @@ ORDER BY salary DESC;
 -- @test name=between_operator
 -- @description Test BETWEEN operator
 -- @expect_rows 8
+-- @expect_columns name,salary
+-- @expect_data [{"name": "Emily Brown", "salary": 60000}, {"name": "Jessica Martinez", "salary": 66000}, {"name": "David Lee", "salary": 67000}, {"name": "Jennifer Davis", "salary": 68000}, {"name": "Mike Johnson", "salary": 70000}, {"name": "John Doe", "salary": 75000}, {"name": "Kevin Chen", "salary": 76000}, {"name": "Jane Smith", "salary": 80000}]
 -- @tags basic,where,between
 -- @trace_level DEBUG
 -- @trace_components QUERY,FILTER
@@ -101,6 +108,7 @@ ORDER BY salary;
 -- @description Test IN operator with department filter
 -- @expect_rows 8
 -- @expect_columns name,department
+-- @expect_data [{"name": "David Lee", "department": "Engineering"}, {"name": "Jane Smith", "department": "Engineering"}, {"name": "John Doe", "department": "Engineering"}, {"name": "Sarah Wilson", "department": "Engineering"}, {"name": "Emily Brown", "department": "Marketing"}, {"name": "Kevin Chen", "department": "Marketing"}, {"name": "Jessica Martinez", "department": "Sales"}, {"name": "Mike Johnson", "department": "Sales"}]
 -- @tags basic,where,in
 -- @trace_level DEBUG
 -- @trace_components QUERY,FILTER
