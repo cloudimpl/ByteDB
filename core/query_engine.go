@@ -2972,65 +2972,7 @@ func (qe *QueryEngine) executeCreateTable(query *ParsedQuery) (*QueryResult, err
 	
 	// Handle CREATE TABLE AS SELECT
 	if createStmt.AsSelect && createStmt.SelectQuery != nil {
-		// Special case: CREATE TABLE AS SELECT * FROM read_parquet('file')
-		// This is essentially the same as registering the table with that file
-		if createStmt.SelectQuery.TableFunction != nil && 
-		   strings.ToLower(createStmt.SelectQuery.TableFunction.Name) == "read_parquet" &&
-		   len(createStmt.SelectQuery.TableFunction.Arguments) > 0 {
-			
-			// Extract the file path
-			filePath, ok := createStmt.SelectQuery.TableFunction.Arguments[0].(string)
-			if !ok {
-				return &QueryResult{
-					Query: query.RawSQL,
-					Error: "read_parquet expects a string argument",
-				}, nil
-			}
-			
-			// Resolve relative paths
-			if !filepath.IsAbs(filePath) {
-				filePath = filepath.Join(qe.dataPath, filePath)
-			}
-			
-			// Check if file exists
-			if _, err := os.Stat(filePath); err != nil {
-				return &QueryResult{
-					Query: query.RawSQL,
-					Error: fmt.Sprintf("file not found: %s", filePath),
-				}, nil
-			}
-			
-			// Register the table
-			if qe.useCatalog && qe.catalogManager != nil {
-				// Use catalog system
-				err := qe.catalogManager.RegisterTable(ctx, createStmt.TableName, filePath, "parquet")
-				if err != nil && !createStmt.IfNotExists {
-					return &QueryResult{
-						Query: query.RawSQL,
-						Error: fmt.Sprintf("failed to create table: %v", err),
-					}, nil
-				}
-			} else {
-				// Use table registry
-				err := qe.tableRegistry.RegisterTable(createStmt.TableName, filePath)
-				if err != nil && !createStmt.IfNotExists {
-					return &QueryResult{
-						Query: query.RawSQL,
-						Error: fmt.Sprintf("failed to create table: %v", err),
-					}, nil
-				}
-			}
-			
-			return &QueryResult{
-				Query: query.RawSQL,
-				Columns: []string{"status"},
-				Rows: []Row{{"status": fmt.Sprintf("Table '%s' created from read_parquet('%s')", createStmt.TableName, filePath)}},
-				Count: 1,
-			}, nil
-		}
-		
-		// For other CREATE TABLE AS SELECT queries
-		// Execute the SELECT query
+		// Execute the SELECT query to get filtered results
 		selectResult, err := qe.executeSelect(createStmt.SelectQuery)
 		if err != nil {
 			return &QueryResult{
@@ -3039,11 +2981,39 @@ func (qe *QueryEngine) executeCreateTable(query *ParsedQuery) (*QueryResult, err
 			}, nil
 		}
 		
-		// TODO: Implement writing results to parquet file
-		// For now, return an error as this is not yet fully implemented
+		// Write the results to a new parquet file and register the table
+		if qe.useCatalog && qe.catalogManager != nil {
+			// Convert Row data to [][]interface{} format
+			rows := make([][]interface{}, len(selectResult.Rows))
+			for i, row := range selectResult.Rows {
+				rowData := make([]interface{}, len(selectResult.Columns))
+				for j, col := range selectResult.Columns {
+					rowData[j] = row[col]
+				}
+				rows[i] = rowData
+			}
+			
+			// Use catalog system to write and register table
+			err := qe.catalogManager.WriteTableData(ctx, createStmt.TableName, selectResult.Columns, rows, qe.dataPath)
+			if err != nil && !createStmt.IfNotExists {
+				return &QueryResult{
+					Query: query.RawSQL,
+					Error: fmt.Sprintf("failed to create table: %v", err),
+				}, nil
+			}
+		} else {
+			// Table registry doesn't support writing data, return error
+			return &QueryResult{
+				Query: query.RawSQL,
+				Error: "CREATE TABLE AS SELECT requires catalog system to be enabled",
+			}, nil
+		}
+		
 		return &QueryResult{
 			Query: query.RawSQL,
-			Error: fmt.Sprintf("CREATE TABLE AS SELECT is not yet fully implemented (got %d rows)", selectResult.Count),
+			Columns: []string{"status"},
+			Rows: []Row{{"status": fmt.Sprintf("Table '%s' created with %d rows", createStmt.TableName, selectResult.Count)}},
+			Count: 1,
 		}, nil
 	}
 	

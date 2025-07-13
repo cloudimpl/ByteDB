@@ -5,6 +5,7 @@ go 1.24.2
 require (
 	github.com/parquet-go/parquet-go v0.25.1
 	github.com/pganalyze/pg_query_go/v6 v6.1.0
+	howett.net/ranger v0.0.0-20171016084633-e2e137620847
 )
 
 require (
@@ -14,5 +15,4 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	golang.org/x/sys v0.21.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
-	howett.net/ranger v0.0.0-20171016084633-e2e137620847 // indirect
 )

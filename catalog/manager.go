@@ -2,11 +2,16 @@ package catalog
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
+
+	"github.com/parquet-go/parquet-go"
 )
 
 // SchemaReader is an interface for reading parquet schemas
@@ -73,18 +78,18 @@ func (m *Manager) GetMetadataStore() MetadataStore {
 func (m *Manager) CreateTable(ctx context.Context, identifier string, format string, columns []ColumnMetadata) error {
 	// Parse the identifier
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
-	
+
 	// Ensure catalog and schema exist
 	if err := m.ensureCatalogAndSchema(ctx, tableID.Catalog, tableID.Schema); err != nil {
 		return err
 	}
-	
+
 	// Create table metadata
 	table := &TableMetadata{
 		Name:        tableID.Table,
 		SchemaName:  tableID.Schema,
 		CatalogName: tableID.Catalog,
-		Location:    "", // No primary location for empty table
+		Location:    "",         // No primary location for empty table
 		Locations:   []string{}, // Empty table has no files
 		Format:      format,
 		Columns:     columns,
@@ -96,7 +101,7 @@ func (m *Manager) CreateTable(ctx context.Context, identifier string, format str
 			LastModified: time.Now(),
 		},
 	}
-	
+
 	return m.store.CreateTable(ctx, table)
 }
 
@@ -105,7 +110,7 @@ func (m *Manager) CreateTable(ctx context.Context, identifier string, format str
 func (m *Manager) RegisterTable(ctx context.Context, identifier string, location string, format string) error {
 	// Parse the identifier
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
-	
+
 	// Check if table already exists
 	_, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
 	if err == nil {
@@ -114,7 +119,7 @@ func (m *Manager) RegisterTable(ctx context.Context, identifier string, location
 	} else if err != ErrTableNotFound {
 		return fmt.Errorf("failed to check table existence: %w", err)
 	}
-	
+
 	// Table doesn't exist, create it with schema from the file
 	var columns []ColumnMetadata
 	if m.schemaReader != nil {
@@ -125,12 +130,12 @@ func (m *Manager) RegisterTable(ctx context.Context, identifier string, location
 			columns = []ColumnMetadata{}
 		}
 	}
-	
+
 	// Create the table
 	if err := m.CreateTable(ctx, identifier, format, columns); err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
 	}
-	
+
 	// Add the file to the newly created table
 	return m.AddFileToTable(ctx, identifier, location, false) // Skip validation since we just created with this schema
 }
@@ -152,7 +157,7 @@ func (m *Manager) ensureCatalogAndSchema(ctx context.Context, catalogName, schem
 	} else if err != nil {
 		return fmt.Errorf("failed to check catalog: %w", err)
 	}
-	
+
 	// Ensure schema exists
 	_, err = m.store.GetSchema(ctx, catalogName, schemaName)
 	if err == ErrSchemaNotFound {
@@ -169,19 +174,19 @@ func (m *Manager) ensureCatalogAndSchema(ctx context.Context, catalogName, schem
 	} else if err != nil {
 		return fmt.Errorf("failed to check schema: %w", err)
 	}
-	
+
 	return nil
 }
 
 // GetTableLocation resolves a table identifier to its physical location
 func (m *Manager) GetTableLocation(ctx context.Context, identifier string) (string, error) {
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
-	
+
 	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
 	if err != nil {
 		return "", fmt.Errorf("table %s not found: %w", tableID.String(), err)
 	}
-	
+
 	return table.Location, nil
 }
 
@@ -198,12 +203,12 @@ func (m *Manager) ResolveTablePath(ctx context.Context, tableName string, dataPa
 		// Otherwise, join with data path
 		return filepath.Join(dataPath, location), nil
 	}
-	
+
 	// Fallback to default behavior (tableName.parquet)
 	if err == ErrTableNotFound {
 		return "", err
 	}
-	
+
 	return "", fmt.Errorf("failed to resolve table path: %w", err)
 }
 
@@ -211,17 +216,17 @@ func (m *Manager) ResolveTablePath(ctx context.Context, tableName string, dataPa
 // This returns all files associated with a table for multi-file tables
 func (m *Manager) ResolveTablePaths(ctx context.Context, tableName string, dataPath string) ([]string, error) {
 	tableID := ParseTableIdentifier(tableName, m.defaultCatalog, m.defaultSchema)
-	
+
 	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
 	if err != nil {
 		return nil, fmt.Errorf("table %s not found: %w", tableID.String(), err)
 	}
-	
+
 	// If no locations array, use the single location
 	if len(table.Locations) == 0 && table.Location != "" {
 		table.Locations = []string{table.Location}
 	}
-	
+
 	// Resolve all paths
 	paths := make([]string, 0, len(table.Locations))
 	for _, location := range table.Locations {
@@ -231,7 +236,7 @@ func (m *Manager) ResolveTablePaths(ctx context.Context, tableName string, dataP
 			paths = append(paths, filepath.Join(dataPath, location))
 		}
 	}
-	
+
 	return paths, nil
 }
 
@@ -243,14 +248,14 @@ func (m *Manager) ListTables(ctx context.Context, pattern string) ([]*TableMetad
 		if err != nil {
 			return nil, err
 		}
-		
+
 		var allTables []*TableMetadata
 		for _, catalog := range catalogs {
 			schemas, err := m.store.ListSchemas(ctx, catalog.Name)
 			if err != nil {
 				continue
 			}
-			
+
 			for _, schema := range schemas {
 				tables, err := m.store.ListTables(ctx, catalog.Name, schema.Name)
 				if err != nil {
@@ -261,10 +266,10 @@ func (m *Manager) ListTables(ctx context.Context, pattern string) ([]*TableMetad
 		}
 		return allTables, nil
 	}
-	
+
 	// Parse pattern as table identifier
 	tableID := ParseTableIdentifier(pattern, m.defaultCatalog, m.defaultSchema)
-	
+
 	// If specific table requested
 	if tableID.Table != "*" && tableID.Table != "" {
 		table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
@@ -273,7 +278,7 @@ func (m *Manager) ListTables(ctx context.Context, pattern string) ([]*TableMetad
 		}
 		return []*TableMetadata{table}, nil
 	}
-	
+
 	// List tables in specific schema
 	return m.store.ListTables(ctx, tableID.Catalog, tableID.Schema)
 }
@@ -333,24 +338,24 @@ func (m *Manager) UpdateTableStatistics(ctx context.Context, identifier string, 
 // GetTableFiles returns all file paths for a table
 func (m *Manager) GetTableFiles(ctx context.Context, identifier string) ([]string, error) {
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
-	
+
 	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
 	if err != nil {
 		return nil, fmt.Errorf("table %s not found: %w", tableID.String(), err)
 	}
-	
+
 	return table.Locations, nil
 }
 
 // RefreshTableStatistics recalculates statistics for a table from its files
 func (m *Manager) RefreshTableStatistics(ctx context.Context, identifier string) error {
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
-	
+
 	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
 	if err != nil {
 		return fmt.Errorf("table %s not found: %w", tableID.String(), err)
 	}
-	
+
 	// Calculate aggregated statistics for all files in the table
 	if stats, err := m.calculateTableStatistics(table.Locations); err == nil {
 		return m.UpdateTableStatistics(ctx, identifier, stats)
@@ -362,20 +367,20 @@ func (m *Manager) RefreshTableStatistics(ctx context.Context, identifier string)
 // AddFileToTable adds a parquet file to an existing table with schema validation
 func (m *Manager) AddFileToTable(ctx context.Context, identifier string, filePath string, validateSchema bool) error {
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
-	
+
 	// Get existing table
 	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
 	if err != nil {
 		return fmt.Errorf("failed to get table: %w", err)
 	}
-	
+
 	// Check if file already exists in the table
 	for _, existingPath := range table.Locations {
 		if existingPath == filePath {
 			return fmt.Errorf("file %s already exists in table %s", filePath, identifier)
 		}
 	}
-	
+
 	// If schema validation is requested and table has schema
 	if validateSchema && len(table.Columns) > 0 && m.schemaReader != nil {
 		// Read schema from the new parquet file
@@ -383,13 +388,13 @@ func (m *Manager) AddFileToTable(ctx context.Context, identifier string, filePat
 		if err != nil {
 			return fmt.Errorf("failed to read parquet schema: %w", err)
 		}
-		
+
 		// Compare schemas
 		compatible, differences := CompareSchemas(table.Columns, newSchema)
 		if !compatible {
 			return fmt.Errorf("%w: %v", ErrSchemaIncompatible, differences)
 		}
-		
+
 		// Log any differences (like new columns) even if compatible
 		if len(differences) > 0 {
 			fmt.Printf("Info: Schema differences detected for file %s: %v\n", filePath, differences)
@@ -407,19 +412,19 @@ func (m *Manager) AddFileToTable(ctx context.Context, identifier string, filePat
 			fmt.Printf("Warning: Failed to read schema from %s: %v\n", filePath, err)
 		}
 	}
-	
+
 	// Add the file to the table
 	err = m.store.AddFileToTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table, filePath)
 	if err != nil {
 		return fmt.Errorf("failed to add file to table: %w", err)
 	}
-	
+
 	// Recalculate table statistics after adding the file
 	updatedTable, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
 	if err != nil {
 		return fmt.Errorf("failed to get updated table: %w", err)
 	}
-	
+
 	// Update the primary location if it was empty
 	if updatedTable.Location == "" {
 		updatedTable.Location = filePath
@@ -427,7 +432,7 @@ func (m *Manager) AddFileToTable(ctx context.Context, identifier string, filePat
 			fmt.Printf("Warning: Failed to update primary location: %v\n", err)
 		}
 	}
-	
+
 	// Calculate aggregated statistics for all files in the table
 	if stats, err := m.calculateTableStatistics(updatedTable.Locations); err == nil {
 		return m.UpdateTableStatistics(ctx, identifier, stats)
@@ -440,23 +445,23 @@ func (m *Manager) AddFileToTable(ctx context.Context, identifier string, filePat
 // RemoveFileFromTable removes a file from a table
 func (m *Manager) RemoveFileFromTable(ctx context.Context, identifier string, filePath string) error {
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
-	
+
 	// Get table before removal to check primary location
 	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
 	if err != nil {
 		return fmt.Errorf("failed to get table: %w", err)
 	}
-	
+
 	// Check if we're removing the last file
 	if len(table.Locations) <= 1 {
 		return fmt.Errorf("cannot remove last file from table %s; use DropTable instead", identifier)
 	}
-	
+
 	err = m.store.RemoveFileFromTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table, filePath)
 	if err != nil {
 		return err
 	}
-	
+
 	// If we removed the primary location, update it
 	if table.Location == filePath {
 		// Get updated table to find a new primary location
@@ -464,7 +469,7 @@ func (m *Manager) RemoveFileFromTable(ctx context.Context, identifier string, fi
 		if err != nil {
 			return fmt.Errorf("failed to get updated table: %w", err)
 		}
-		
+
 		if len(updatedTable.Locations) > 0 {
 			updatedTable.Location = updatedTable.Locations[0]
 			if err := m.store.UpdateTable(ctx, updatedTable); err != nil {
@@ -472,13 +477,13 @@ func (m *Manager) RemoveFileFromTable(ctx context.Context, identifier string, fi
 			}
 		}
 	}
-	
+
 	// Recalculate table statistics after removing the file
 	updatedTable, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
 	if err != nil {
 		return fmt.Errorf("failed to get updated table after file removal: %w", err)
 	}
-	
+
 	// Calculate aggregated statistics for remaining files in the table
 	if stats, err := m.calculateTableStatistics(updatedTable.Locations); err == nil {
 		return m.UpdateTableStatistics(ctx, identifier, stats)
@@ -494,7 +499,7 @@ func (m *Manager) readParquetSchema(filePath string) ([]ColumnMetadata, error) {
 		// If no schema reader is set, just return empty schema
 		return nil, nil
 	}
-	
+
 	return m.schemaReader.ReadParquetSchema(filePath)
 }
 
@@ -523,14 +528,14 @@ func (m *Manager) calculateFileStatistics(filePath string) (*TableStatistics, er
 	if err != nil {
 		return nil, fmt.Errorf("failed to stat file %s: %w", filePath, err)
 	}
-	
+
 	// For now, estimate row count based on file size
 	// In production, this would read actual parquet metadata using a parquet library
 	estimatedRowCount := fileInfo.Size() / 100 // Rough estimate: 100 bytes per row
 	if estimatedRowCount < 1 {
 		estimatedRowCount = 1 // Minimum of 1 row
 	}
-	
+
 	return &TableStatistics{
 		RowCount:     estimatedRowCount,
 		SizeBytes:    fileInfo.Size(),
@@ -549,30 +554,226 @@ func (m *Manager) calculateTableStatistics(filePaths []string) (*TableStatistics
 			LastModified: time.Now(),
 		}, nil
 	}
-	
+
 	var totalRowCount int64 = 0
 	var totalSizeBytes int64 = 0
 	var latestModTime time.Time
-	
+
 	for _, filePath := range filePaths {
 		fileStats, err := m.calculateFileStatistics(filePath)
 		if err != nil {
 			fmt.Printf("Warning: Failed to calculate statistics for file %s: %v\n", filePath, err)
 			continue
 		}
-		
+
 		totalRowCount += fileStats.RowCount
 		totalSizeBytes += fileStats.SizeBytes
-		
+
 		if fileStats.LastModified.After(latestModTime) {
 			latestModTime = fileStats.LastModified
 		}
 	}
-	
+
 	return &TableStatistics{
 		RowCount:     totalRowCount,
 		SizeBytes:    totalSizeBytes,
 		LastAnalyzed: time.Now(),
 		LastModified: latestModTime,
 	}, nil
+}
+
+// GetTableStoragePath returns the appropriate storage path for a new table file with UUID
+func (m *Manager) GetTableStoragePath(tableName string, fallbackDataPath string) (string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Generate UUID for unique filename
+	uuid, err := generateUUID()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate UUID: %w", err)
+	}
+
+	filename := fmt.Sprintf("%s/%s.parquet", tableName, uuid)
+
+	// Check if this is a file-based catalog store
+	if fileStore, ok := m.store.(*FileMetadataStore); ok {
+		// For file-based catalogs, store data in catalog/data/ folder
+		catalogDataDir := filepath.Join(fileStore.basePath, "data")
+		if err := os.MkdirAll(catalogDataDir, 0755); err != nil {
+			return "", fmt.Errorf("failed to create catalog data directory: %w", err)
+		}
+		return filepath.Join(catalogDataDir, filename), nil
+	}
+
+	// For in-memory catalogs, use a temporary directory
+	tempDir := filepath.Join(os.TempDir(), "bytedb-"+generateSessionID())
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create temporary data directory: %w", err)
+	}
+	return filepath.Join(tempDir, filename), nil
+}
+
+// WriteTableData writes query results to a parquet file and registers the table
+func (m *Manager) WriteTableData(ctx context.Context, tableName string, columns []string, rows [][]interface{}, fallbackDataPath string) error {
+	// Get the storage path for this table
+	filePath, err := m.GetTableStoragePath(tableName, fallbackDataPath)
+	if err != nil {
+		return fmt.Errorf("failed to determine storage path: %w", err)
+	}
+
+	// Write data to parquet file (this is a placeholder - actual implementation needed)
+	if err := writeParquetFile(filePath, columns, rows); err != nil {
+		return fmt.Errorf("failed to write parquet file: %w", err)
+	}
+
+	// Register the table in the catalog
+	return m.RegisterTable(ctx, tableName, filePath, "parquet")
+}
+
+// writeParquetFile writes data to a parquet file with dynamic schema
+func writeParquetFile(filePath string, columns []string, rows [][]interface{}) error {
+	if len(rows) == 0 || len(columns) == 0 {
+		return fmt.Errorf("no data to write")
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Create the file
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer file.Close()
+
+	// Create dynamic schema based on the data
+	schema, err := createDynamicSchema(columns, rows)
+	if err != nil {
+		return fmt.Errorf("failed to create schema: %w", err)
+	}
+
+	// Create parquet writer with dynamic schema
+	writer := parquet.NewGenericWriter[map[string]interface{}](file, &parquet.WriterConfig{Schema: schema})
+	defer writer.Close()
+
+	// Convert rows to map format and write
+	records := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		if len(row) != len(columns) {
+			return fmt.Errorf("row length %d doesn't match column count %d", len(row), len(columns))
+		}
+
+		record := make(map[string]interface{})
+		for i, col := range columns {
+			record[col] = row[i]
+		}
+		records = append(records, record)
+	}
+
+	// Write all records at once
+	_, err = writer.Write(records)
+	if err != nil {
+		return fmt.Errorf("failed to write records: %w", err)
+	}
+
+	return nil
+}
+
+// createDynamicSchema creates a parquet schema based on column names and sample data
+func createDynamicSchema(columns []string, rows [][]interface{}) (*parquet.Schema, error) {
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("no sample data to infer schema")
+	}
+
+	// Use first row to infer types
+	sampleRow := rows[0]
+	if len(sampleRow) != len(columns) {
+		return nil, fmt.Errorf("sample row length doesn't match column count")
+	}
+
+	// Create schema group map
+	group := make(parquet.Group)
+	for i, col := range columns {
+		value := sampleRow[i]
+		field, err := createFieldFromValue(col, value)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create field for column %s: %w", col, err)
+		}
+		group[col] = field
+	}
+
+	// Create and return the schema
+	return parquet.NewSchema("DynamicRecord", group), nil
+}
+
+// createFieldFromValue creates a parquet field based on the Go value type
+func createFieldFromValue(name string, value interface{}) (parquet.Node, error) {
+	if value == nil {
+		// Default to optional string for nil values
+		return parquet.Optional(parquet.String()), nil
+	}
+
+	switch value.(type) {
+	case string:
+		return parquet.String(), nil
+	case int, int32:
+		return parquet.Leaf(parquet.Int32Type), nil
+	case int64:
+		return parquet.Leaf(parquet.Int64Type), nil
+	case float32, float64:
+		return parquet.Leaf(parquet.DoubleType), nil
+	case bool:
+		return parquet.Leaf(parquet.BooleanType), nil
+	default:
+		// Try to handle other numeric types using reflection
+		rv := reflect.ValueOf(value)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32:
+			return parquet.Leaf(parquet.Int32Type), nil
+		case reflect.Int64:
+			return parquet.Leaf(parquet.Int64Type), nil
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32:
+			return parquet.Leaf(parquet.Int32Type), nil
+		case reflect.Uint64:
+			return parquet.Leaf(parquet.Int64Type), nil
+		case reflect.Float32, reflect.Float64:
+			return parquet.Leaf(parquet.DoubleType), nil
+		case reflect.Bool:
+			return parquet.Leaf(parquet.BooleanType), nil
+		case reflect.String:
+			return parquet.String(), nil
+		default:
+			// Fall back to string representation
+			return parquet.String(), nil
+		}
+	}
+}
+
+// generateUUID generates a UUID v4 for unique filenames
+func generateUUID() (string, error) {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+
+	// Set version (4) and variant bits according to RFC 4122
+	bytes[6] = (bytes[6] & 0x0f) | 0x40 // Version 4
+	bytes[8] = (bytes[8] & 0x3f) | 0x80 // Variant 10
+
+	return fmt.Sprintf("%x-%x-%x-%x-%x",
+		bytes[0:4],
+		bytes[4:6],
+		bytes[6:8],
+		bytes[8:10],
+		bytes[10:16],
+	), nil
+}
+
+// generateSessionID generates a random session ID for temporary directories
+func generateSessionID() string {
+	bytes := make([]byte, 4)
+	rand.Read(bytes)
+	return hex.EncodeToString(bytes)
 }
