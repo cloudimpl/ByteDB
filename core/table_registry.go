@@ -242,3 +242,16 @@ func (tr *TableRegistry) Clear() {
 	defer tr.mu.Unlock()
 	tr.mappings = make(map[string]*TableMapping)
 }
+
+// GetAllMappings returns all table mappings
+func (tr *TableRegistry) GetAllMappings() []TableMapping {
+	tr.mu.RLock()
+	defer tr.mu.RUnlock()
+	
+	mappings := make([]TableMapping, 0, len(tr.mappings))
+	for _, mapping := range tr.mappings {
+		mappings = append(mappings, *mapping)
+	}
+	
+	return mappings
+}

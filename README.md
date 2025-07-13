@@ -11,6 +11,8 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 - 🧪 [Test Data Migration Guide](TEST_DATA_MIGRATION.md) - Guide for test data system
 - 🌐 [Distributed Query Design](DISTRIBUTED_DESIGN.md) - Architecture and implementation of distributed query execution
 - 📊 [Monitoring & Observability Guide](MONITORING.md) - Comprehensive monitoring system documentation
+- 🗂️ [Catalog System Guide](CATALOG_SYSTEM.md) - Advanced table organization with catalog.schema.table hierarchy
+- 📑 [Table Registry Guide](USING_TABLE_REGISTRY.md) - Legacy table name mapping system
 
 ## 🎉 Recent Updates
 
@@ -106,6 +108,13 @@ GROUP BY department
 - **Query Caching**: Intelligent caching system for improved performance
 - **Data Type Support**: Comprehensive handling of strings, numbers, dates, and NULL values
 
+### Catalog & Metadata Management
+- **Three-Level Hierarchy**: Organize tables with catalog.schema.table structure
+- **Pluggable Metadata Stores**: Support for in-memory and file-based persistence
+- **Table Registry**: Legacy support for simple table name to file mappings
+- **SQL Standard Compliance**: Support for qualified table names in queries
+- **Automatic Migration**: Seamlessly migrate from table registry to catalog system
+
 ### Interface & Tools
 - **Interactive CLI**: Rich command-line interface with help system
 - **Multiple Output Formats**: Table format and JSON output
@@ -167,6 +176,26 @@ SELECT e.name, e.salary, d.budget
 FROM employees e 
 JOIN departments d ON e.department = d.name 
 WHERE e.salary > d.budget * 0.1;
+```
+
+#### Using Catalog System
+```sql
+-- Enable catalog with file-based persistence
+\catalog enable file
+
+-- Register tables with schema organization
+\catalog register hr.employees employees.parquet
+\catalog register hr.departments departments.parquet
+\catalog register sales.orders orders_2024.parquet
+
+-- Query using schema-qualified names
+SELECT * FROM hr.employees WHERE salary > 100000;
+SELECT COUNT(*) FROM sales.orders WHERE total > 1000;
+
+-- List catalog contents
+\dc                    -- Show all catalogs
+\dn                    -- Show schemas in default catalog
+\dt hr.*              -- Show all tables in hr schema
 ```
 
 #### Distributed Query Examples
@@ -658,12 +687,21 @@ stats, err := engine.GetOptimizationStats(sql)
 
 ## 🎮 Meta Commands
 
+### Basic Commands
 - `\d table_name` - Describe table schema
 - `\l` - List all tables
 - `\json <sql>` - Return results as JSON
 - `\cache` - Show cache statistics
 - `help` - Show available commands
 - `exit` or `quit` - Exit the program
+
+### Catalog Commands
+- `\dc` - List all catalogs
+- `\dn [catalog]` - List schemas in catalog
+- `\dt [pattern]` - List tables matching pattern
+- `\catalog enable <type>` - Enable catalog system (memory/file)
+- `\catalog register <table> <path>` - Register table in catalog
+- `\catalog drop <table>` - Drop table from catalog
 
 ## 🏗️ Architecture
 

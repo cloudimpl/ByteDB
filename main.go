@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -27,6 +28,21 @@ func main() {
 			fmt.Printf("Warning: Failed to load table mappings from %s: %v\n", configPath, err)
 		} else {
 			fmt.Printf("Loaded table mappings from %s\n", configPath)
+		}
+	}
+	
+	// Check if there's a catalog configuration file
+	catalogConfigPath := fmt.Sprintf("%s/catalog.json", dataPath)
+	if _, err := os.Stat(catalogConfigPath); err == nil {
+		// Load catalog configuration
+		config := make(map[string]interface{})
+		config["base_path"] = fmt.Sprintf("%s/.catalog", dataPath)
+		config["migrate_registry"] = true
+		
+		if err := engine.EnableCatalog("file", config); err != nil {
+			fmt.Printf("Warning: Failed to enable catalog: %v\n", err)
+		} else {
+			fmt.Printf("Catalog system enabled with file-based metadata store\n")
 		}
 	}
 
@@ -82,6 +98,35 @@ func main() {
 			}
 			continue
 		}
+		
+		// Catalog commands
+		if strings.HasPrefix(input, "\\catalog ") {
+			handleCatalogCommand(engine, input[9:])
+			continue
+		}
+		
+		if input == "\\dc" {
+			listCatalogs(engine)
+			continue
+		}
+		
+		if strings.HasPrefix(input, "\\dn") {
+			catalogName := "default"
+			if len(input) > 3 {
+				catalogName = strings.TrimSpace(input[3:])
+			}
+			listSchemas(engine, catalogName)
+			continue
+		}
+		
+		if strings.HasPrefix(input, "\\dt") {
+			pattern := "*"
+			if len(input) > 3 {
+				pattern = strings.TrimSpace(input[3:])
+			}
+			listCatalogTables(engine, pattern)
+			continue
+		}
 
 		if strings.HasPrefix(input, "\\json ") {
 			sql := strings.TrimSpace(input[6:])
@@ -121,8 +166,194 @@ func printHelp() {
 	fmt.Println("  help                               - Show this help")
 	fmt.Println("  exit, quit                         - Exit the program")
 	fmt.Println()
+	fmt.Println("Catalog commands:")
+	fmt.Println("  \\dc                                - List catalogs")
+	fmt.Println("  \\dn [catalog]                      - List schemas in catalog")
+	fmt.Println("  \\dt [pattern]                      - List tables matching pattern")
+	fmt.Println("  \\catalog enable <type> [options]   - Enable catalog system")
+	fmt.Println("  \\catalog register <table> <path>   - Register table in catalog")
+	fmt.Println("  \\catalog drop <table>              - Drop table from catalog")
+	fmt.Println()
 	fmt.Println("Notes:")
 	fmt.Println("  - Table names correspond to .parquet files in the data directory")
 	fmt.Println("  - Use table_name.parquet for files in the data directory")
 	fmt.Println("  - Supported WHERE operators: =, !=, <, <=, >, >=, LIKE")
+}
+
+func handleCatalogCommand(engine *core.QueryEngine, command string) {
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		fmt.Println("Usage: \\catalog <subcommand> [args...]")
+		return
+	}
+	
+	switch parts[0] {
+	case "enable":
+		if len(parts) < 2 {
+			fmt.Println("Usage: \\catalog enable <type> [options]")
+			fmt.Println("Types: memory, file")
+			return
+		}
+		
+		storeType := parts[1]
+		config := make(map[string]interface{})
+		
+		// Parse options
+		for i := 2; i < len(parts); i++ {
+			if strings.Contains(parts[i], "=") {
+				kv := strings.SplitN(parts[i], "=", 2)
+				config[kv[0]] = kv[1]
+			}
+		}
+		
+		// Set default base path for file store
+		if storeType == "file" && config["base_path"] == nil {
+			config["base_path"] = ".catalog"
+		}
+		
+		if err := engine.EnableCatalog(storeType, config); err != nil {
+			fmt.Printf("Error enabling catalog: %v\n", err)
+		} else {
+			fmt.Printf("Catalog enabled with %s store\n", storeType)
+		}
+		
+	case "register":
+		if len(parts) < 3 {
+			fmt.Println("Usage: \\catalog register <table> <path> [format]")
+			return
+		}
+		
+		table := parts[1]
+		path := parts[2]
+		format := "parquet"
+		if len(parts) > 3 {
+			format = parts[3]
+		}
+		
+		if err := engine.RegisterTableInCatalog(table, path, format); err != nil {
+			fmt.Printf("Error registering table: %v\n", err)
+		} else {
+			fmt.Printf("Table %s registered\n", table)
+		}
+		
+	case "drop":
+		if len(parts) < 2 {
+			fmt.Println("Usage: \\catalog drop <table>")
+			return
+		}
+		
+		table := parts[1]
+		if manager := engine.GetCatalogManager(); manager != nil {
+			ctx := context.Background()
+			if err := manager.DropTable(ctx, table); err != nil {
+				fmt.Printf("Error dropping table: %v\n", err)
+			} else {
+				fmt.Printf("Table %s dropped\n", table)
+			}
+		} else {
+			fmt.Println("Catalog system is not enabled")
+		}
+		
+	default:
+		fmt.Printf("Unknown catalog command: %s\n", parts[0])
+	}
+}
+
+func listCatalogs(engine *core.QueryEngine) {
+	manager := engine.GetCatalogManager()
+	if manager == nil {
+		fmt.Println("Catalog system is not enabled")
+		return
+	}
+	
+	store := manager.GetMetadataStore()
+	ctx := context.Background()
+	catalogs, err := store.ListCatalogs(ctx)
+	if err != nil {
+		fmt.Printf("Error listing catalogs: %v\n", err)
+		return
+	}
+	
+	fmt.Println("Catalogs:")
+	for _, catalog := range catalogs {
+		fmt.Printf("  %s", catalog.Name)
+		if catalog.Description != "" {
+			fmt.Printf(" - %s", catalog.Description)
+		}
+		fmt.Println()
+	}
+}
+
+func listSchemas(engine *core.QueryEngine, catalogName string) {
+	manager := engine.GetCatalogManager()
+	if manager == nil {
+		fmt.Println("Catalog system is not enabled")
+		return
+	}
+	
+	store := manager.GetMetadataStore()
+	ctx := context.Background()
+	schemas, err := store.ListSchemas(ctx, catalogName)
+	if err != nil {
+		fmt.Printf("Error listing schemas: %v\n", err)
+		return
+	}
+	
+	fmt.Printf("Schemas in catalog '%s':\n", catalogName)
+	for _, schema := range schemas {
+		fmt.Printf("  %s", schema.Name)
+		if schema.Description != "" {
+			fmt.Printf(" - %s", schema.Description)
+		}
+		fmt.Println()
+	}
+}
+
+func listCatalogTables(engine *core.QueryEngine, pattern string) {
+	manager := engine.GetCatalogManager()
+	if manager == nil {
+		fmt.Println("Catalog system is not enabled. Using legacy table listing.")
+		tables, err := engine.ListTables()
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+		} else {
+			fmt.Println("Tables:")
+			for _, table := range tables {
+				fmt.Printf("  - %s\n", table)
+			}
+		}
+		return
+	}
+	
+	ctx := context.Background()
+	tables, err := manager.ListTables(ctx, pattern)
+	if err != nil {
+		fmt.Printf("Error listing tables: %v\n", err)
+		return
+	}
+	
+	fmt.Println("Tables:")
+	currentCatalog := ""
+	currentSchema := ""
+	
+	for _, table := range tables {
+		// Group by catalog and schema
+		if table.CatalogName != currentCatalog {
+			currentCatalog = table.CatalogName
+			fmt.Printf("\nCatalog: %s\n", currentCatalog)
+		}
+		if table.SchemaName != currentSchema {
+			currentSchema = table.SchemaName
+			fmt.Printf("  Schema: %s\n", currentSchema)
+		}
+		
+		fmt.Printf("    %s", table.Name)
+		if table.Location != "" {
+			fmt.Printf(" (%s)", table.Location)
+		}
+		if table.Description != "" {
+			fmt.Printf(" - %s", table.Description)
+		}
+		fmt.Println()
+	}
 }

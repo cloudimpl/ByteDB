@@ -1,5 +1,7 @@
 # Using the Table Registry in ByteDB
 
+> **Note**: ByteDB now includes a more advanced [Catalog System](CATALOG_SYSTEM.md) that provides catalog.schema.table hierarchy. The table registry is still supported for backward compatibility, but we recommend using the catalog system for new deployments.
+
 ## Current Default Behavior
 
 By default, ByteDB still uses the traditional approach:

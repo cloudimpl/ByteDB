@@ -256,8 +256,21 @@ func (p *SQLParser) parseFromClause(fromClause []*pg_query.Node, query *ParsedQu
 
 	// Check if it's a simple table reference or a JOIN
 	if rangeVar := fromNode.GetRangeVar(); rangeVar != nil {
-		// Simple table reference: FROM table_name [alias]
-		query.TableName = rangeVar.Relname
+		// Simple table reference: FROM [catalog.][schema.]table_name [alias]
+		
+		// Build fully qualified name if catalog/schema are specified
+		var tableParts []string
+		if rangeVar.Catalogname != "" {
+			tableParts = append(tableParts, rangeVar.Catalogname)
+		}
+		if rangeVar.Schemaname != "" {
+			tableParts = append(tableParts, rangeVar.Schemaname)
+		}
+		tableParts = append(tableParts, rangeVar.Relname)
+		
+		// Join parts with dots to create the table identifier
+		query.TableName = strings.Join(tableParts, ".")
+		
 		if rangeVar.Alias != nil {
 			query.TableAlias = rangeVar.Alias.Aliasname
 		}
@@ -278,7 +291,17 @@ func (p *SQLParser) parseJoinExpression(joinExpr *pg_query.JoinExpr, query *Pars
 	// Parse left side (main table)
 	if leftNode := joinExpr.Larg; leftNode != nil {
 		if rangeVar := leftNode.GetRangeVar(); rangeVar != nil {
-			query.TableName = rangeVar.Relname
+			// Build fully qualified name if catalog/schema are specified
+			var tableParts []string
+			if rangeVar.Catalogname != "" {
+				tableParts = append(tableParts, rangeVar.Catalogname)
+			}
+			if rangeVar.Schemaname != "" {
+				tableParts = append(tableParts, rangeVar.Schemaname)
+			}
+			tableParts = append(tableParts, rangeVar.Relname)
+			
+			query.TableName = strings.Join(tableParts, ".")
 			if rangeVar.Alias != nil {
 				query.TableAlias = rangeVar.Alias.Aliasname
 			}
@@ -289,7 +312,17 @@ func (p *SQLParser) parseJoinExpression(joinExpr *pg_query.JoinExpr, query *Pars
 	var joinClause JoinClause
 	if rightNode := joinExpr.Rarg; rightNode != nil {
 		if rangeVar := rightNode.GetRangeVar(); rangeVar != nil {
-			joinClause.TableName = rangeVar.Relname
+			// Build fully qualified name if catalog/schema are specified
+			var tableParts []string
+			if rangeVar.Catalogname != "" {
+				tableParts = append(tableParts, rangeVar.Catalogname)
+			}
+			if rangeVar.Schemaname != "" {
+				tableParts = append(tableParts, rangeVar.Schemaname)
+			}
+			tableParts = append(tableParts, rangeVar.Relname)
+			
+			joinClause.TableName = strings.Join(tableParts, ".")
 			if rangeVar.Alias != nil {
 				joinClause.TableAlias = rangeVar.Alias.Aliasname
 			}

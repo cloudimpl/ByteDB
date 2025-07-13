@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -10,19 +11,23 @@ import (
 	"strings"
 	"sync"
 	"time"
+	
+	"bytedb/catalog"
 )
 
 type QueryEngine struct {
-	parser        *SQLParser
-	dataPath      string
-	httpTables    map[string]string // Map table names to HTTP URLs
-	openReaders   map[string]*ParquetReader
-	readersMu     sync.RWMutex
-	cache         *QueryCache
-	planner       *QueryPlanner
-	optimizer     *QueryOptimizer
-	functions     *FunctionRegistry
-	tableRegistry *TableRegistry // New: manages table name to file mappings
+	parser          *SQLParser
+	dataPath        string
+	httpTables      map[string]string // Map table names to HTTP URLs
+	openReaders     map[string]*ParquetReader
+	readersMu       sync.RWMutex
+	cache           *QueryCache
+	planner         *QueryPlanner
+	optimizer       *QueryOptimizer
+	functions       *FunctionRegistry
+	tableRegistry   *TableRegistry   // Legacy: manages table name to file mappings
+	catalogManager  *catalog.Manager // New: catalog/schema/table hierarchy
+	useCatalog      bool            // Flag to enable catalog system
 }
 
 type QueryResult struct {
@@ -47,15 +52,17 @@ func NewQueryEngine(dataPath string) *QueryEngine {
 	optimizer := NewQueryOptimizer(planner)
 
 	return &QueryEngine{
-		parser:        NewSQLParser(),
-		dataPath:      dataPath,
-		httpTables:    make(map[string]string),
-		openReaders:   make(map[string]*ParquetReader),
-		cache:         NewQueryCache(cacheConfig),
-		planner:       planner,
-		optimizer:     optimizer,
-		functions:     NewFunctionRegistry(),
-		tableRegistry: NewTableRegistry(dataPath),
+		parser:          NewSQLParser(),
+		dataPath:        dataPath,
+		httpTables:      make(map[string]string),
+		openReaders:     make(map[string]*ParquetReader),
+		cache:           NewQueryCache(cacheConfig),
+		planner:         planner,
+		optimizer:       optimizer,
+		functions:       NewFunctionRegistry(),
+		tableRegistry:   NewTableRegistry(dataPath),
+		catalogManager:  nil, // Will be initialized when catalog is enabled
+		useCatalog:      false,
 	}
 }
 
@@ -65,6 +72,10 @@ func (qe *QueryEngine) Close() {
 
 	for _, reader := range qe.openReaders {
 		reader.Close()
+	}
+	
+	if qe.catalogManager != nil {
+		qe.catalogManager.Close()
 	}
 }
 
@@ -96,6 +107,86 @@ func (qe *QueryEngine) SaveTableMappings(configPath string) error {
 // GetTableRegistry returns the table registry for direct access
 func (qe *QueryEngine) GetTableRegistry() *TableRegistry {
 	return qe.tableRegistry
+}
+
+// EnableCatalog enables the catalog system with the specified metadata store
+func (qe *QueryEngine) EnableCatalog(storeType string, config map[string]interface{}) error {
+	store, err := catalog.CreateMetadataStore(storeType, config)
+	if err != nil {
+		return fmt.Errorf("failed to create metadata store: %w", err)
+	}
+	
+	manager := catalog.NewManager(store, "default", "default")
+	ctx := context.Background()
+	if err := manager.Initialize(ctx); err != nil {
+		return fmt.Errorf("failed to initialize catalog manager: %w", err)
+	}
+	
+	qe.catalogManager = manager
+	qe.useCatalog = true
+	
+	// Migrate existing table registry entries to catalog if requested
+	if migrate, ok := config["migrate_registry"].(bool); ok && migrate {
+		if err := qe.migrateRegistryToCatalog(ctx); err != nil {
+			return fmt.Errorf("failed to migrate table registry: %w", err)
+		}
+	}
+	
+	return nil
+}
+
+// GetCatalogManager returns the catalog manager for direct access
+func (qe *QueryEngine) GetCatalogManager() *catalog.Manager {
+	return qe.catalogManager
+}
+
+// SetDefaultCatalog sets the default catalog and schema
+func (qe *QueryEngine) SetDefaultCatalog(catalog, schema string) {
+	if qe.catalogManager != nil {
+		qe.catalogManager.SetDefaults(catalog, schema)
+	}
+}
+
+// RegisterTableInCatalog registers a table in the catalog system
+func (qe *QueryEngine) RegisterTableInCatalog(identifier string, location string, format string) error {
+	if qe.catalogManager == nil {
+		return fmt.Errorf("catalog system is not enabled")
+	}
+	
+	ctx := context.Background()
+	return qe.catalogManager.RegisterTable(ctx, identifier, location, format)
+}
+
+// migrateRegistryToCatalog migrates existing table registry entries to the catalog
+func (qe *QueryEngine) migrateRegistryToCatalog(ctx context.Context) error {
+	if qe.tableRegistry == nil || qe.catalogManager == nil {
+		return nil
+	}
+	
+	// Get all table mappings from the registry
+	mappings := qe.tableRegistry.GetAllMappings()
+	
+	var catalogMappings []catalog.TableMapping
+	for _, mapping := range mappings {
+		catalogMapping := catalog.TableMapping{
+			TableName:  mapping.TableName,
+			FilePath:   mapping.FilePath,
+			Properties: make(map[string]string),
+		}
+		
+		// Convert properties to string map
+		if mapping.Properties != nil {
+			for k, v := range mapping.Properties {
+				if strVal, ok := v.(string); ok {
+					catalogMapping.Properties[k] = strVal
+				}
+			}
+		}
+		
+		catalogMappings = append(catalogMappings, catalogMapping)
+	}
+	
+	return qe.catalogManager.LoadFromTableRegistry(ctx, catalogMappings)
 }
 
 // EvaluateFunction implements the SubqueryExecutor interface
@@ -1008,6 +1099,24 @@ func (qe *QueryEngine) getReader(tableName string) (*ParquetReader, error) {
 	// Check if this table is registered as an HTTP table
 	if httpURL, exists := qe.httpTables[tableName]; exists {
 		filePath = httpURL
+	} else if qe.useCatalog && qe.catalogManager != nil {
+		// Try catalog system first
+		ctx := context.Background()
+		resolvedPath, err := qe.catalogManager.ResolveTablePath(ctx, tableName, qe.dataPath)
+		if err == nil {
+			filePath = resolvedPath
+		} else if err == catalog.ErrTableNotFound {
+			// Try table registry as fallback
+			registeredPath, regErr := qe.tableRegistry.GetTablePath(tableName)
+			if regErr != nil {
+				// Final fallback to default behavior
+				filePath = filepath.Join(qe.dataPath, tableName+".parquet")
+			} else {
+				filePath = registeredPath
+			}
+		} else {
+			return nil, fmt.Errorf("catalog error for table %s: %w", tableName, err)
+		}
 	} else {
 		// Use table registry to get the file path
 		registeredPath, err := qe.tableRegistry.GetTablePath(tableName)
