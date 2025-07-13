@@ -3,8 +3,10 @@ package catalog
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // SchemaReader is an interface for reading parquet schemas
@@ -67,42 +69,14 @@ func (m *Manager) GetMetadataStore() MetadataStore {
 	return m.store
 }
 
-// RegisterTable registers a table in the catalog
-func (m *Manager) RegisterTable(ctx context.Context, identifier string, location string, format string) error {
+// CreateTable creates an empty table in the catalog
+func (m *Manager) CreateTable(ctx context.Context, identifier string, format string, columns []ColumnMetadata) error {
 	// Parse the identifier
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
 	
-	// Ensure catalog exists
-	_, err := m.store.GetCatalog(ctx, tableID.Catalog)
-	if err == ErrCatalogNotFound {
-		// Create default catalog if it doesn't exist
-		catalog := &CatalogMetadata{
-			Name:        tableID.Catalog,
-			Description: fmt.Sprintf("Auto-created catalog for %s", tableID.Catalog),
-			Properties:  make(map[string]string),
-		}
-		if err := m.store.CreateCatalog(ctx, catalog); err != nil {
-			return fmt.Errorf("failed to create catalog: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("failed to check catalog: %w", err)
-	}
-	
-	// Ensure schema exists
-	_, err = m.store.GetSchema(ctx, tableID.Catalog, tableID.Schema)
-	if err == ErrSchemaNotFound {
-		// Create default schema if it doesn't exist
-		schema := &SchemaMetadata{
-			Name:        tableID.Schema,
-			CatalogName: tableID.Catalog,
-			Description: fmt.Sprintf("Auto-created schema for %s.%s", tableID.Catalog, tableID.Schema),
-			Properties:  make(map[string]string),
-		}
-		if err := m.store.CreateSchema(ctx, schema); err != nil {
-			return fmt.Errorf("failed to create schema: %w", err)
-		}
-	} else if err != nil {
-		return fmt.Errorf("failed to check schema: %w", err)
+	// Ensure catalog and schema exist
+	if err := m.ensureCatalogAndSchema(ctx, tableID.Catalog, tableID.Schema); err != nil {
+		return err
 	}
 	
 	// Create table metadata
@@ -110,25 +84,93 @@ func (m *Manager) RegisterTable(ctx context.Context, identifier string, location
 		Name:        tableID.Table,
 		SchemaName:  tableID.Schema,
 		CatalogName: tableID.Catalog,
-		Location:    location,
-		Locations:   []string{location}, // Initialize with first file
+		Location:    "", // No primary location for empty table
+		Locations:   []string{}, // Empty table has no files
 		Format:      format,
-		Columns:     []ColumnMetadata{}, // Will be populated when table is analyzed
+		Columns:     columns,
 		Properties:  make(map[string]string),
+		Statistics: &TableStatistics{
+			RowCount:     0,
+			SizeBytes:    0,
+			LastAnalyzed: time.Now(),
+			LastModified: time.Now(),
+		},
 	}
 	
-	// Try to create the table
-	err = m.store.CreateTable(ctx, table)
-	if err == ErrTableExists {
-		// Update existing table
-		existingTable, _ := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
-		existingTable.Location = location
-		existingTable.Locations = []string{location}
-		existingTable.Format = format
-		return m.store.UpdateTable(ctx, existingTable)
+	return m.store.CreateTable(ctx, table)
+}
+
+// RegisterTable registers a table with an initial file in the catalog
+// This is a convenience method that creates a table and adds the first file
+func (m *Manager) RegisterTable(ctx context.Context, identifier string, location string, format string) error {
+	// Parse the identifier
+	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
+	
+	// Check if table already exists
+	_, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
+	if err == nil {
+		// Table exists, add the file to it
+		return m.AddFileToTable(ctx, identifier, location, true)
+	} else if err != ErrTableNotFound {
+		return fmt.Errorf("failed to check table existence: %w", err)
 	}
 	
-	return err
+	// Table doesn't exist, create it with schema from the file
+	var columns []ColumnMetadata
+	if m.schemaReader != nil {
+		columns, err = m.schemaReader.ReadParquetSchema(location)
+		if err != nil {
+			// Log warning but continue with empty schema
+			fmt.Printf("Warning: Failed to read schema from %s: %v\n", location, err)
+			columns = []ColumnMetadata{}
+		}
+	}
+	
+	// Create the table
+	if err := m.CreateTable(ctx, identifier, format, columns); err != nil {
+		return fmt.Errorf("failed to create table: %w", err)
+	}
+	
+	// Add the file to the newly created table
+	return m.AddFileToTable(ctx, identifier, location, false) // Skip validation since we just created with this schema
+}
+
+// ensureCatalogAndSchema ensures catalog and schema exist, creating them if necessary
+func (m *Manager) ensureCatalogAndSchema(ctx context.Context, catalogName, schemaName string) error {
+	// Ensure catalog exists
+	_, err := m.store.GetCatalog(ctx, catalogName)
+	if err == ErrCatalogNotFound {
+		// Create default catalog if it doesn't exist
+		catalog := &CatalogMetadata{
+			Name:        catalogName,
+			Description: fmt.Sprintf("Auto-created catalog for %s", catalogName),
+			Properties:  make(map[string]string),
+		}
+		if err := m.store.CreateCatalog(ctx, catalog); err != nil && err != ErrCatalogExists {
+			return fmt.Errorf("failed to create catalog: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to check catalog: %w", err)
+	}
+	
+	// Ensure schema exists
+	_, err = m.store.GetSchema(ctx, catalogName, schemaName)
+	if err == ErrSchemaNotFound {
+		// Create default schema if it doesn't exist
+		schema := &SchemaMetadata{
+			Name:        schemaName,
+			CatalogName: catalogName,
+			Description: fmt.Sprintf("Auto-created schema for %s.%s", catalogName, schemaName),
+			Properties:  make(map[string]string),
+		}
+		if err := m.store.CreateSchema(ctx, schema); err != nil && err != ErrSchemaExists {
+			return fmt.Errorf("failed to create schema: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to check schema: %w", err)
+	}
+	
+	return nil
 }
 
 // GetTableLocation resolves a table identifier to its physical location
@@ -288,6 +330,35 @@ func (m *Manager) UpdateTableStatistics(ctx context.Context, identifier string, 
 	return m.store.UpdateTableStatistics(ctx, tableID.Catalog, tableID.Schema, tableID.Table, stats)
 }
 
+// GetTableFiles returns all file paths for a table
+func (m *Manager) GetTableFiles(ctx context.Context, identifier string) ([]string, error) {
+	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
+	
+	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
+	if err != nil {
+		return nil, fmt.Errorf("table %s not found: %w", tableID.String(), err)
+	}
+	
+	return table.Locations, nil
+}
+
+// RefreshTableStatistics recalculates statistics for a table from its files
+func (m *Manager) RefreshTableStatistics(ctx context.Context, identifier string) error {
+	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
+	
+	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
+	if err != nil {
+		return fmt.Errorf("table %s not found: %w", tableID.String(), err)
+	}
+	
+	// Calculate aggregated statistics for all files in the table
+	if stats, err := m.calculateTableStatistics(table.Locations); err == nil {
+		return m.UpdateTableStatistics(ctx, identifier, stats)
+	} else {
+		return fmt.Errorf("failed to calculate statistics for table %s: %w", identifier, err)
+	}
+}
+
 // AddFileToTable adds a parquet file to an existing table with schema validation
 func (m *Manager) AddFileToTable(ctx context.Context, identifier string, filePath string, validateSchema bool) error {
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
@@ -298,10 +369,17 @@ func (m *Manager) AddFileToTable(ctx context.Context, identifier string, filePat
 		return fmt.Errorf("failed to get table: %w", err)
 	}
 	
+	// Check if file already exists in the table
+	for _, existingPath := range table.Locations {
+		if existingPath == filePath {
+			return fmt.Errorf("file %s already exists in table %s", filePath, identifier)
+		}
+	}
+	
 	// If schema validation is requested and table has schema
-	if validateSchema && len(table.Columns) > 0 {
+	if validateSchema && len(table.Columns) > 0 && m.schemaReader != nil {
 		// Read schema from the new parquet file
-		newSchema, err := m.readParquetSchema(filePath)
+		newSchema, err := m.schemaReader.ReadParquetSchema(filePath)
 		if err != nil {
 			return fmt.Errorf("failed to read parquet schema: %w", err)
 		}
@@ -313,34 +391,101 @@ func (m *Manager) AddFileToTable(ctx context.Context, identifier string, filePat
 		}
 		
 		// Log any differences (like new columns) even if compatible
-		// In a real system, you might want to log these differences
-	} else if len(table.Columns) == 0 {
+		if len(differences) > 0 {
+			fmt.Printf("Info: Schema differences detected for file %s: %v\n", filePath, differences)
+		}
+	} else if len(table.Columns) == 0 && m.schemaReader != nil {
 		// If table has no schema yet, read it from the first file
-		newSchema, err := m.readParquetSchema(filePath)
+		newSchema, err := m.schemaReader.ReadParquetSchema(filePath)
 		if err == nil {
 			table.Columns = newSchema
 			// Update the table with the schema
 			if err := m.store.UpdateTable(ctx, table); err != nil {
 				return fmt.Errorf("failed to update table schema: %w", err)
 			}
+		} else {
+			fmt.Printf("Warning: Failed to read schema from %s: %v\n", filePath, err)
 		}
 	}
 	
 	// Add the file to the table
-	return m.store.AddFileToTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table, filePath)
+	err = m.store.AddFileToTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table, filePath)
+	if err != nil {
+		return fmt.Errorf("failed to add file to table: %w", err)
+	}
+	
+	// Recalculate table statistics after adding the file
+	updatedTable, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
+	if err != nil {
+		return fmt.Errorf("failed to get updated table: %w", err)
+	}
+	
+	// Update the primary location if it was empty
+	if updatedTable.Location == "" {
+		updatedTable.Location = filePath
+		if err := m.store.UpdateTable(ctx, updatedTable); err != nil {
+			fmt.Printf("Warning: Failed to update primary location: %v\n", err)
+		}
+	}
+	
+	// Calculate aggregated statistics for all files in the table
+	if stats, err := m.calculateTableStatistics(updatedTable.Locations); err == nil {
+		return m.UpdateTableStatistics(ctx, identifier, stats)
+	} else {
+		fmt.Printf("Warning: Failed to recalculate statistics for table %s: %v\n", identifier, err)
+		return nil // Don't fail the operation if statistics calculation fails
+	}
 }
 
 // RemoveFileFromTable removes a file from a table
 func (m *Manager) RemoveFileFromTable(ctx context.Context, identifier string, filePath string) error {
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
-	err := m.store.RemoveFileFromTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table, filePath)
+	
+	// Get table before removal to check primary location
+	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
+	if err != nil {
+		return fmt.Errorf("failed to get table: %w", err)
+	}
+	
+	// Check if we're removing the last file
+	if len(table.Locations) <= 1 {
+		return fmt.Errorf("cannot remove last file from table %s; use DropTable instead", identifier)
+	}
+	
+	err = m.store.RemoveFileFromTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table, filePath)
 	if err != nil {
 		return err
 	}
 	
-	// Notify that table metadata has changed (for cache invalidation)
-	// This would be handled by the query engine if it has a reference to the manager
-	return nil
+	// If we removed the primary location, update it
+	if table.Location == filePath {
+		// Get updated table to find a new primary location
+		updatedTable, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
+		if err != nil {
+			return fmt.Errorf("failed to get updated table: %w", err)
+		}
+		
+		if len(updatedTable.Locations) > 0 {
+			updatedTable.Location = updatedTable.Locations[0]
+			if err := m.store.UpdateTable(ctx, updatedTable); err != nil {
+				fmt.Printf("Warning: Failed to update primary location: %v\n", err)
+			}
+		}
+	}
+	
+	// Recalculate table statistics after removing the file
+	updatedTable, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
+	if err != nil {
+		return fmt.Errorf("failed to get updated table after file removal: %w", err)
+	}
+	
+	// Calculate aggregated statistics for remaining files in the table
+	if stats, err := m.calculateTableStatistics(updatedTable.Locations); err == nil {
+		return m.UpdateTableStatistics(ctx, identifier, stats)
+	} else {
+		fmt.Printf("Warning: Failed to recalculate statistics for table %s after file removal: %v\n", identifier, err)
+		return nil // Don't fail the operation if statistics calculation fails
+	}
 }
 
 // readParquetSchema reads the schema from a parquet file
@@ -369,4 +514,65 @@ type TableMapping struct {
 	TableName  string            `json:"table_name"`
 	FilePath   string            `json:"file_path"`
 	Properties map[string]string `json:"properties,omitempty"`
+}
+
+// calculateFileStatistics calculates statistics for a single parquet file
+func (m *Manager) calculateFileStatistics(filePath string) (*TableStatistics, error) {
+	// Get file info
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat file %s: %w", filePath, err)
+	}
+	
+	// For now, estimate row count based on file size
+	// In production, this would read actual parquet metadata using a parquet library
+	estimatedRowCount := fileInfo.Size() / 100 // Rough estimate: 100 bytes per row
+	if estimatedRowCount < 1 {
+		estimatedRowCount = 1 // Minimum of 1 row
+	}
+	
+	return &TableStatistics{
+		RowCount:     estimatedRowCount,
+		SizeBytes:    fileInfo.Size(),
+		LastAnalyzed: time.Now(),
+		LastModified: fileInfo.ModTime(),
+	}, nil
+}
+
+// calculateTableStatistics calculates aggregated statistics for all files in a table
+func (m *Manager) calculateTableStatistics(filePaths []string) (*TableStatistics, error) {
+	if len(filePaths) == 0 {
+		return &TableStatistics{
+			RowCount:     0,
+			SizeBytes:    0,
+			LastAnalyzed: time.Now(),
+			LastModified: time.Now(),
+		}, nil
+	}
+	
+	var totalRowCount int64 = 0
+	var totalSizeBytes int64 = 0
+	var latestModTime time.Time
+	
+	for _, filePath := range filePaths {
+		fileStats, err := m.calculateFileStatistics(filePath)
+		if err != nil {
+			fmt.Printf("Warning: Failed to calculate statistics for file %s: %v\n", filePath, err)
+			continue
+		}
+		
+		totalRowCount += fileStats.RowCount
+		totalSizeBytes += fileStats.SizeBytes
+		
+		if fileStats.LastModified.After(latestModTime) {
+			latestModTime = fileStats.LastModified
+		}
+	}
+	
+	return &TableStatistics{
+		RowCount:     totalRowCount,
+		SizeBytes:    totalSizeBytes,
+		LastAnalyzed: time.Now(),
+		LastModified: latestModTime,
+	}, nil
 }

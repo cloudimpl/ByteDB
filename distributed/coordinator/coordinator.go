@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"bytedb/catalog"
 	"bytedb/core"
 	"bytedb/distributed/communication"
 	"bytedb/distributed/monitoring"
@@ -8,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -22,6 +24,8 @@ type Coordinator struct {
 	distributedPlanner *planner.DistributedQueryPlanner
 	optimizer          *core.QueryOptimizer
 	transport          communication.Transport
+	catalogManager     *catalog.Manager
+	dataPath           string
 	mutex              sync.RWMutex
 	queryID            int64
 	queryIDMux         sync.Mutex
@@ -38,21 +42,30 @@ type WorkerConnection struct {
 }
 
 // NewCoordinator creates a new coordinator instance
-func NewCoordinator(transport communication.Transport) *Coordinator {
+func NewCoordinator(transport communication.Transport, dataPath string) *Coordinator {
 	tracer := core.GetTracer()
 	tracer.Info(core.TraceComponentCoordinator, "Initializing distributed coordinator")
 	
 	return &Coordinator{
-		workers:      make(map[string]*WorkerConnection),
-		parser:       core.NewSQLParser(),
-		planner:      core.NewQueryPlanner(),
-		optimizer:    core.NewQueryOptimizer(core.NewQueryPlanner()),
-		transport:    transport,
-		monitor:      monitoring.NewCoordinatorMonitor(),
-		queryMonitor: monitoring.NewQueryMonitor(),
+		workers:        make(map[string]*WorkerConnection),
+		parser:         core.NewSQLParser(),
+		planner:        core.NewQueryPlanner(),
+		optimizer:      core.NewQueryOptimizer(core.NewQueryPlanner()),
+		transport:      transport,
+		catalogManager: nil, // Will be set via SetCatalogManager
+		dataPath:       dataPath,
+		monitor:        monitoring.NewCoordinatorMonitor(),
+		queryMonitor:   monitoring.NewQueryMonitor(),
 		// Will initialize distributed planner when workers are registered
 		distributedPlanner: nil,
 	}
+}
+
+// SetCatalogManager sets the catalog manager for the coordinator
+func (c *Coordinator) SetCatalogManager(catalogManager *catalog.Manager) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.catalogManager = catalogManager
 }
 
 // ExecuteQuery implements the CoordinatorService interface
@@ -366,44 +379,135 @@ func (c *Coordinator) updateDistributedPlanner() {
 	))
 }
 
-// createTableStatistics creates table statistics for the planner
+// createTableStatistics reads table statistics from catalog for query planning
 func (c *Coordinator) createTableStatistics() map[string]*planner.TableStatistics {
-	// In production, this would be loaded from metadata store
-	// For now, return basic statistics
-	return map[string]*planner.TableStatistics{
-		"employees": {
-			TableName: "employees",
-			RowCount:  10000,
-			SizeBytes: 10 * 1024 * 1024, // 10MB
-			ColumnStats: map[string]*planner.ColumnStatistics{
-				"id": {
-					ColumnName:    "id",
-					DataType:      "int",
-					DistinctCount: 10000,
-					MinValue:      1,
-					MaxValue:      10000,
-				},
-				"department": {
-					ColumnName:    "department",
-					DataType:      "varchar",
-					DistinctCount: 5,
-					MinValue:      "Engineering",
-					MaxValue:      "Sales",
-				},
-				"salary": {
-					ColumnName:    "salary",
-					DataType:      "int",
-					DistinctCount: 1000,
-					MinValue:      30000,
-					MaxValue:      200000,
-				},
-			},
-		},
+	stats := make(map[string]*planner.TableStatistics)
+	
+	// If no catalog manager is set, return empty statistics
+	if c.catalogManager == nil {
+		log.Printf("Warning: No catalog manager set, using empty statistics")
+		return stats
+	}
+	
+	ctx := context.Background()
+	
+	// Ensure catalog is initialized with existing files (bootstrap only)
+	if err := c.ensureCatalogInitialized(ctx); err != nil {
+		log.Printf("Warning: Failed to ensure catalog initialized: %v", err)
+		return stats
+	}
+	
+	// Get all tables from catalog
+	tables, err := c.catalogManager.ListTables(ctx, "*")
+	if err != nil {
+		log.Printf("Warning: Failed to list tables from catalog: %v", err)
+		return stats
+	}
+	
+	for _, table := range tables {
+		// Convert catalog statistics to planner format
+		if table.Statistics != nil {
+			stats[table.Name] = c.convertCatalogStatsToPlanner(table.Statistics, table.Columns)
+		} else {
+			// If no statistics exist, trigger background calculation
+			log.Printf("Warning: No statistics for table %s, using defaults", table.Name)
+			stats[table.Name] = c.createDefaultTableStats(table)
+		}
+	}
+	
+	return stats
+}
+
+// ensureCatalogInitialized ensures catalog is bootstrapped with existing files (one-time setup)
+func (c *Coordinator) ensureCatalogInitialized(ctx context.Context) error {
+	// If no catalog manager, nothing to do
+	if c.catalogManager == nil {
+		return fmt.Errorf("no catalog manager set")
+	}
+	
+	// Check if catalog already has tables - if so, skip bootstrap
+	tables, err := c.catalogManager.ListTables(ctx, "*")
+	if err == nil && len(tables) > 0 {
+		return nil // Catalog already initialized
+	}
+	
+	// Bootstrap: discover existing parquet files and register them
+	pattern := filepath.Join(c.dataPath, "*.parquet")
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("failed to scan for parquet files: %v", err)
+	}
+	
+	for _, file := range files {
+		tableName := strings.TrimSuffix(filepath.Base(file), ".parquet")
+		
+		// Register table in catalog (this should calculate and store statistics)
+		if err := c.catalogManager.RegisterTable(ctx, tableName, file, "parquet"); err != nil {
+			log.Printf("Warning: Failed to register table %s: %v", tableName, err)
+			continue
+		}
+		log.Printf("Bootstrapped table '%s' from parquet file", tableName)
+	}
+	
+	return nil
+}
+
+// convertCatalogStatsToPlanner converts catalog statistics to planner format
+func (c *Coordinator) convertCatalogStatsToPlanner(catalogStats *catalog.TableStatistics, columns []catalog.ColumnMetadata) *planner.TableStatistics {
+	columnStats := make(map[string]*planner.ColumnStatistics)
+	
+	// Convert column metadata to column statistics
+	for _, column := range columns {
+		columnStats[column.Name] = &planner.ColumnStatistics{
+			ColumnName:    column.Name,
+			DataType:      column.Type,
+			DistinctCount: 0, // Would come from catalog if available
+			MinValue:      nil,
+			MaxValue:      nil,
+		}
+	}
+	
+	return &planner.TableStatistics{
+		TableName:   "", // Will be set by caller
+		RowCount:    catalogStats.RowCount,
+		SizeBytes:   catalogStats.SizeBytes,
+		ColumnStats: columnStats,
+		Partitions:  []planner.PartitionInfo{},
+	}
+}
+
+// createDefaultTableStats creates default statistics when catalog stats are missing
+func (c *Coordinator) createDefaultTableStats(table *catalog.TableMetadata) *planner.TableStatistics {
+	columnStats := make(map[string]*planner.ColumnStatistics)
+	
+	for _, column := range table.Columns {
+		columnStats[column.Name] = &planner.ColumnStatistics{
+			ColumnName:    column.Name,
+			DataType:      column.Type,
+			DistinctCount: 100, // Default estimate
+			MinValue:      nil,
+			MaxValue:      nil,
+		}
+	}
+	
+	// Estimate based on number of files
+	fileCount := len(table.Locations)
+	if fileCount == 0 {
+		fileCount = 1
+	}
+	
+	return &planner.TableStatistics{
+		TableName:   table.Name,
+		RowCount:    int64(fileCount * 1000), // 1000 rows per file default
+		SizeBytes:   int64(fileCount * 100 * 1024), // 100KB per file default
+		ColumnStats: columnStats,
+		Partitions:  []planner.PartitionInfo{},
 	}
 }
 
 // createDistributedPlan creates a distributed execution plan
 func (c *Coordinator) createDistributedPlan(query *core.ParsedQuery) (*DistributedPlan, error) {
+	fmt.Printf("DEBUG: createDistributedPlan called for query: %s\n", query.RawSQL)
 	c.mutex.RLock()
 	distributedPlanner := c.distributedPlanner
 	c.mutex.RUnlock()
@@ -452,6 +556,7 @@ func (c *Coordinator) createDistributedPlan(query *core.ParsedQuery) (*Distribut
 	}
 	
 	// Fall back to simple planning
+	fmt.Printf("DEBUG: Falling back to simple distributed plan\n")
 	return c.createSimpleDistributedPlan(query)
 }
 
@@ -477,6 +582,7 @@ func (c *Coordinator) createSimpleDistributedPlan(query *core.ParsedQuery) (*Dis
 	}
 	
 	// Simple scan fragments for each worker
+	fmt.Printf("DEBUG: Creating fragments for %d available workers\n", len(availableWorkers))
 	for _, worker := range availableWorkers {
 		fragmentID := c.generateFragmentID()
 		fragment := &communication.QueryFragment{
@@ -688,7 +794,9 @@ func (c *Coordinator) executePlan(ctx context.Context, plan *DistributedPlan) (*
 	
 	// Send fragments to workers
 	for i, fragment := range plan.Fragments {
-		go func(workerIdx int, frag *communication.QueryFragment) {
+		go func(fragmentIdx int, frag *communication.QueryFragment) {
+			// Use round-robin assignment to distribute fragments across available workers
+			workerIdx := fragmentIdx % len(plan.Workers)
 			worker := plan.Workers[workerIdx]
 			result, err := worker.Client.ExecuteFragment(ctx, frag)
 			resultChan <- fragmentResult{

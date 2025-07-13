@@ -151,6 +151,12 @@ func (do *DistributedOptimizer) copyPlan(plan *DistributedPlan) *DistributedPlan
 	newPlan.Stages = make([]ExecutionStage, len(plan.Stages))
 	copy(newPlan.Stages, plan.Stages)
 	
+	// Copy statistics if present
+	if plan.Statistics != nil {
+		statsCopy := *plan.Statistics
+		newPlan.Statistics = &statsCopy
+	}
+	
 	return &newPlan
 }
 

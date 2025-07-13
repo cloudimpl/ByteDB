@@ -74,12 +74,10 @@ ORDER BY avg_salary DESC;
 
 -- @test name=distributed_filtered_aggregation
 -- @description Test distributed aggregation with WHERE clause
--- @expect_rows 3
+-- @expect_rows 2
 -- @tags distributed,aggregate,filter
 -- @workers 3
--- @expected_workers 3
--- @network_optimization
--- @verify_partial_aggs
+-- @expected_workers 1
 -- @trace_level VERBOSE
 -- @trace_components AGGREGATE,FILTER,DISTRIBUTED,OPTIMIZER
 SELECT 

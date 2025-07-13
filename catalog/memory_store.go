@@ -288,6 +288,12 @@ func (m *MemoryMetadataStore) CreateTable(ctx context.Context, table *TableMetad
 	tableCopy.Columns = make([]ColumnMetadata, len(table.Columns))
 	copy(tableCopy.Columns, table.Columns)
 	
+	// Copy locations array
+	if table.Locations != nil {
+		tableCopy.Locations = make([]string, len(table.Locations))
+		copy(tableCopy.Locations, table.Locations)
+	}
+	
 	// Initialize Locations if empty
 	if len(tableCopy.Locations) == 0 && tableCopy.Location != "" {
 		tableCopy.Locations = []string{tableCopy.Location}
@@ -322,6 +328,12 @@ func (m *MemoryMetadataStore) GetTable(ctx context.Context, catalogName, schemaN
 	tableCopy.Columns = make([]ColumnMetadata, len(table.Columns))
 	copy(tableCopy.Columns, table.Columns)
 	
+	// Copy locations array
+	if table.Locations != nil {
+		tableCopy.Locations = make([]string, len(table.Locations))
+		copy(tableCopy.Locations, table.Locations)
+	}
+	
 	return &tableCopy, nil
 }
 
@@ -348,6 +360,13 @@ func (m *MemoryMetadataStore) ListTables(ctx context.Context, catalogName, schem
 		tableCopy := *table
 		tableCopy.Columns = make([]ColumnMetadata, len(table.Columns))
 		copy(tableCopy.Columns, table.Columns)
+		
+		// Copy locations array
+		if table.Locations != nil {
+			tableCopy.Locations = make([]string, len(table.Locations))
+			copy(tableCopy.Locations, table.Locations)
+		}
+		
 		result = append(result, &tableCopy)
 	}
 	
@@ -376,6 +395,12 @@ func (m *MemoryMetadataStore) UpdateTable(ctx context.Context, table *TableMetad
 	tableCopy.UpdatedAt = time.Now()
 	tableCopy.Columns = make([]ColumnMetadata, len(table.Columns))
 	copy(tableCopy.Columns, table.Columns)
+	
+	// Copy locations array
+	if table.Locations != nil {
+		tableCopy.Locations = make([]string, len(table.Locations))
+		copy(tableCopy.Locations, table.Locations)
+	}
 	
 	m.tables[table.CatalogName][table.SchemaName][table.Name] = &tableCopy
 	
@@ -409,15 +434,25 @@ func (m *MemoryMetadataStore) UpdateTableStatistics(ctx context.Context, catalog
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	
-	table, err := m.GetTable(ctx, catalogName, schemaName, tableName)
-	if err != nil {
-		return err
+	// Direct access to avoid deadlock (we already have the write lock)
+	catalogTables, exists := m.tables[catalogName]
+	if !exists {
+		return ErrCatalogNotFound
 	}
 	
+	schemaTables, exists := catalogTables[schemaName]
+	if !exists {
+		return ErrSchemaNotFound
+	}
+	
+	table, exists := schemaTables[tableName]
+	if !exists {
+		return ErrTableNotFound
+	}
+	
+	// Update statistics
 	table.Statistics = stats
 	table.UpdatedAt = time.Now()
-	
-	m.tables[catalogName][schemaName][tableName] = table
 	
 	return nil
 }
@@ -479,6 +514,9 @@ func (m *MemoryMetadataStore) AddFileToTable(ctx context.Context, catalogName, s
 	table.Locations = append(table.Locations, filePath)
 	table.UpdatedAt = time.Now()
 	
+	// Write back to map since we modified the table
+	m.tables[catalogName][schemaName][tableName] = table
+	
 	return nil
 }
 
@@ -528,6 +566,9 @@ func (m *MemoryMetadataStore) RemoveFileFromTable(ctx context.Context, catalogNa
 	if table.Location == filePath && len(newLocations) > 0 {
 		table.Location = newLocations[0]
 	}
+	
+	// Write back to map since we modified the table
+	m.tables[catalogName][schemaName][tableName] = table
 	
 	return nil
 }

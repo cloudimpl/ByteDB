@@ -1,6 +1,7 @@
 package testing
 
 import (
+	"bytedb/catalog"
 	"bytedb/core"
 	"bytedb/distributed/communication"
 	"bytedb/distributed/coordinator"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -89,7 +91,21 @@ func (r *DistributedTestRunner) SetupCluster(numWorkers int, transportType strin
 	}
 
 	// Create coordinator
-	r.coordinator = coordinator.NewCoordinator(r.transport)
+	r.coordinator = coordinator.NewCoordinator(r.transport, r.dataPath)
+	
+	// Create and set catalog manager if needed
+	// For testing, we'll use a file-based catalog store
+	store := catalog.NewFileMetadataStore(filepath.Join(r.dataPath, "catalog"))
+	catalogManager := catalog.NewManager(store, "default", "main")
+	
+	// Initialize catalog
+	if err := catalogManager.Initialize(context.Background()); err != nil {
+		return fmt.Errorf("failed to initialize catalog: %v", err)
+	}
+	
+	// Set catalog manager on coordinator
+	r.coordinator.SetCatalogManager(catalogManager)
+	
 	coordAddr := "test-coordinator:8080"
 	
 	// Start coordinator server
@@ -729,6 +745,7 @@ func ParseTraceComponent(comp string) core.TraceComponent {
 		return ""
 	}
 }
+
 
 // generateDistributedTestData creates deterministic test data for distributed testing
 func generateDistributedTestData(dataPath string) error {
