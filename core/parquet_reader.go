@@ -877,6 +877,7 @@ func (pr *ParquetReader) SelectColumnsWithEngine(rows []Row, columns []Column, e
 				// Evaluate CASE expression to get the value
 				caseValue := pr.evaluateCaseExpression(col.CaseExpr, row, engine)
 				newRow[key] = caseValue
+				
 			} else if col.Function != nil {
 				// Handle function columns
 				key := col.Name
@@ -1108,20 +1109,30 @@ func (pr *ParquetReader) hasColumnSubqueries(columns []Column) bool {
 
 // evaluateCaseExpression evaluates a CASE expression for a given row
 func (pr *ParquetReader) evaluateCaseExpression(caseExpr *CaseExpression, row Row, engine SubqueryExecutor) interface{} {
+	// Get tracer and log CASE expression evaluation
+	tracer := GetTracer()
+	tracer.Debug(TraceComponentCase, "Evaluating CASE expression", TraceContext("alias", caseExpr.Alias, "when_clauses", len(caseExpr.WhenClauses)))
+	
 	// Evaluate each WHEN clause in order
-	for _, whenClause := range caseExpr.WhenClauses {
+	for i, whenClause := range caseExpr.WhenClauses {
+		tracer.Verbose(TraceComponentCase, "Evaluating WHEN clause", TraceContext("clause_index", i, "alias", caseExpr.Alias))
 		if pr.evaluateCondition(whenClause.Condition, row, engine) {
 			// Condition is true, return the THEN result
-			return pr.evaluateExpressionValue(whenClause.Result, row, engine)
+			result := pr.evaluateExpressionValue(whenClause.Result, row, engine)
+			tracer.Debug(TraceComponentCase, "WHEN clause matched", TraceContext("clause_index", i, "result", result, "alias", caseExpr.Alias))
+			return result
 		}
 	}
 
 	// No WHEN clause matched, return ELSE value if present
 	if caseExpr.ElseClause != nil {
-		return pr.evaluateExpressionValue(*caseExpr.ElseClause, row, engine)
+		result := pr.evaluateExpressionValue(*caseExpr.ElseClause, row, engine)
+		tracer.Debug(TraceComponentCase, "Using ELSE clause", TraceContext("result", result, "alias", caseExpr.Alias))
+		return result
 	}
 
 	// No ELSE clause, return nil
+	tracer.Debug(TraceComponentCase, "No WHEN/ELSE matched, returning nil", TraceContext("alias", caseExpr.Alias))
 	return nil
 }
 

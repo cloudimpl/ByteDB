@@ -1609,6 +1609,10 @@ func (q *ParsedQuery) GetRequiredColumns() []string {
 		if col.Function != nil {
 			q.addFunctionColumns(col.Function, requiredCols)
 		}
+		// Add columns referenced in CASE expressions
+		if col.CaseExpr != nil {
+			q.addCaseExpressionColumns(col.CaseExpr, requiredCols)
+		}
 		// Skip constant columns
 		if !q.isConstantColumn(col.Name) {
 			requiredCols[col.Name] = true
@@ -1690,6 +1694,54 @@ func (q *ParsedQuery) addFunctionColumns(fn *FunctionCall, requiredCols map[stri
 		case *FunctionCall:
 			// Recursively process nested functions
 			q.addFunctionColumns(v, requiredCols)
+		}
+	}
+}
+
+// addCaseExpressionColumns recursively adds all columns referenced in a CASE expression
+func (q *ParsedQuery) addCaseExpressionColumns(caseExpr *CaseExpression, requiredCols map[string]bool) {
+	// Process each WHEN clause
+	for _, whenClause := range caseExpr.WhenClauses {
+		// Add columns from the condition
+		if whenClause.Condition.Column != "" {
+			requiredCols[whenClause.Condition.Column] = true
+		}
+		if whenClause.Condition.ValueColumn != "" {
+			requiredCols[whenClause.Condition.ValueColumn] = true
+		}
+		// Handle nested CASE expressions in conditions
+		if whenClause.Condition.CaseExpr != nil {
+			q.addCaseExpressionColumns(whenClause.Condition.CaseExpr, requiredCols)
+		}
+		if whenClause.Condition.ValueCaseExpr != nil {
+			q.addCaseExpressionColumns(whenClause.Condition.ValueCaseExpr, requiredCols)
+		}
+		// Handle function calls in conditions
+		if whenClause.Condition.Function != nil {
+			q.addFunctionColumns(whenClause.Condition.Function, requiredCols)
+		}
+		if whenClause.Condition.ValueFunction != nil {
+			q.addFunctionColumns(whenClause.Condition.ValueFunction, requiredCols)
+		}
+		
+		// Add columns from the result expression
+		if whenClause.Result.ColumnName != "" {
+			requiredCols[whenClause.Result.ColumnName] = true
+		}
+		// Handle nested CASE expressions in results
+		if whenClause.Result.CaseExpr != nil {
+			q.addCaseExpressionColumns(whenClause.Result.CaseExpr, requiredCols)
+		}
+	}
+	
+	// Process ELSE clause if present
+	if caseExpr.ElseClause != nil {
+		if caseExpr.ElseClause.ColumnName != "" {
+			requiredCols[caseExpr.ElseClause.ColumnName] = true
+		}
+		// Handle nested CASE expressions in ELSE clause
+		if caseExpr.ElseClause.CaseExpr != nil {
+			q.addCaseExpressionColumns(caseExpr.ElseClause.CaseExpr, requiredCols)
 		}
 	}
 }

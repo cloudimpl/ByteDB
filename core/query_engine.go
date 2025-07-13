@@ -28,6 +28,7 @@ type QueryEngine struct {
 	tableRegistry   *TableRegistry   // Legacy: manages table name to file mappings
 	catalogManager  *catalog.Manager // New: catalog/schema/table hierarchy
 	useCatalog      bool            // Flag to enable catalog system
+	tracer          *Tracer         // Tracing system for debugging and monitoring
 }
 
 type QueryResult struct {
@@ -63,6 +64,7 @@ func NewQueryEngine(dataPath string) *QueryEngine {
 		tableRegistry:   NewTableRegistry(dataPath),
 		catalogManager:  nil, // Will be initialized when catalog is enabled
 		useCatalog:      false,
+		tracer:          GetTracer(),
 	}
 }
 
@@ -244,18 +246,25 @@ func (qe *QueryEngine) EvaluateFunction(fn *FunctionCall, row Row) (interface{},
 }
 
 func (qe *QueryEngine) Execute(sql string) (*QueryResult, error) {
+	qe.tracer.Info(TraceComponentQuery, "Starting query execution", TraceContext("sql", sql))
+	
 	// Check cache first
 	if cachedResult, found := qe.cache.Get(sql); found {
+		qe.tracer.Debug(TraceComponentCache, "Cache hit for query", TraceContext("sql", sql))
 		return cachedResult, nil
 	}
+	qe.tracer.Debug(TraceComponentCache, "Cache miss for query", TraceContext("sql", sql))
 
+	qe.tracer.Debug(TraceComponentParser, "Parsing SQL query", TraceContext("sql", sql))
 	parsedQuery, err := qe.parser.Parse(sql)
 	if err != nil {
+		qe.tracer.Error(TraceComponentParser, "Failed to parse SQL query", TraceContext("sql", sql, "error", err.Error()))
 		return &QueryResult{
 			Query: sql,
 			Error: err.Error(),
 		}, nil
 	}
+	qe.tracer.Debug(TraceComponentParser, "Successfully parsed SQL query", TraceContext("sql", sql, "table", parsedQuery.TableName, "type", parsedQuery.Type))
 
 	var result *QueryResult
 	switch parsedQuery.Type {
@@ -623,21 +632,28 @@ func (qe *QueryEngine) executeSelectWithCTEs(query *ParsedQuery, parentCTEs map[
 		rows = qe.executeWindowFunctions(query, rows, reader)
 	}
 
+	// Check if ORDER BY references any column aliases from CASE expressions
+	needsCaseEvalFirst := qe.orderByReferencesCaseAlias(query.OrderBy, query.Columns)
+	
 	// Regular non-aggregate query processing
-	if reader.hasColumnSubqueries(query.Columns) {
+	if reader.hasColumnSubqueries(query.Columns) || needsCaseEvalFirst {
+		// For queries with CASE expressions/subqueries, handle in two phases:
+		// 1. First evaluate all computed columns
 		rows = reader.SelectColumnsWithEngine(rows, query.Columns, qe)
+		// 2. Then sort using the computed columns
+		rows = qe.sortRows(rows, query.OrderBy, nil)
 	} else {
+		// For simple queries, sort before column selection to avoid losing data
+		rows = qe.sortRows(rows, query.OrderBy, reader)
 		rows = reader.SelectColumns(rows, query.Columns)
+		// Evaluate function calls and compute column values AFTER sorting
+		rows = qe.evaluateQueryColumns(rows, query.Columns)
 	}
-	rows = qe.sortRows(rows, query.OrderBy, reader)
 
 	// Apply LIMIT after filtering and sorting
 	if query.Limit > 0 && len(rows) > query.Limit {
 		rows = rows[:query.Limit]
 	}
-
-	// Evaluate function calls and compute column values
-	rows = qe.evaluateQueryColumns(rows, query.Columns)
 
 	columns := qe.getResultColumns(rows, query.Columns)
 
@@ -1552,17 +1568,19 @@ func (qe *QueryEngine) sortRows(rows []Row, orderBy []OrderByColumn, reader *Par
 	sortedRows := make([]Row, len(rows))
 	copy(sortedRows, rows)
 
-	sort.Slice(sortedRows, func(i, j int) bool {
+	sort.SliceStable(sortedRows, func(i, j int) bool {
 		return qe.compareRows(sortedRows[i], sortedRows[j], orderBy, reader)
 	})
 
 	return sortedRows
 }
 
+
 func (qe *QueryEngine) compareRows(row1, row2 Row, orderBy []OrderByColumn, reader *ParquetReader) bool {
 	for _, orderCol := range orderBy {
 		val1, exists1 := row1[orderCol.Column]
 		val2, exists2 := row2[orderCol.Column]
+
 
 		// Handle missing columns
 		if !exists1 && !exists2 {
@@ -1576,7 +1594,14 @@ func (qe *QueryEngine) compareRows(row1, row2 Row, orderBy []OrderByColumn, read
 		}
 
 		// Compare values using the same logic as WHERE clause filtering
-		comparison := reader.CompareValues(val1, val2)
+		var comparison int
+		if reader != nil {
+			comparison = reader.CompareValues(val1, val2)
+		} else {
+			// Fallback comparison for when reader is nil
+			comparison = qe.compareValues(val1, val2)
+		}
+
 
 		if comparison != 0 {
 			if orderCol.Direction == "DESC" {
@@ -2423,6 +2448,38 @@ func (qe *QueryEngine) compareRowsForRanking(row1, row2 Row, orderBy []OrderByCo
 }
 
 // compareValues compares two interface{} values
+func getKeys(row Row) []string {
+	var keys []string
+	for k := range row {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// orderByReferencesCaseAlias checks if any ORDER BY column references a CASE expression alias
+func (qe *QueryEngine) orderByReferencesCaseAlias(orderBy []OrderByColumn, columns []Column) bool {
+	if len(orderBy) == 0 {
+		return false
+	}
+	
+	// Create a map of CASE expression aliases
+	caseAliases := make(map[string]bool)
+	for _, col := range columns {
+		if col.CaseExpr != nil && col.Alias != "" {
+			caseAliases[col.Alias] = true
+		}
+	}
+	
+	// Check if any ORDER BY column matches a CASE alias
+	for _, orderCol := range orderBy {
+		if caseAliases[orderCol.Column] {
+			return true
+		}
+	}
+	
+	return false
+}
+
 func (qe *QueryEngine) compareValues(val1, val2 interface{}) int {
 	// Handle nil values
 	if val1 == nil && val2 == nil {

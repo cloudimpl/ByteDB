@@ -6,8 +6,18 @@ import (
 
 // executeOptimized attempts to execute a query using optimization
 func (qe *QueryEngine) executeOptimized(query *ParsedQuery) *QueryResult {
+	qe.tracer.Debug(TraceComponentOptimizer, "Attempting optimized execution", TraceContext("table", query.TableName))
+	
 	// Skip optimization for subqueries to avoid issues
 	if query.IsSubquery {
+		qe.tracer.Info(TraceComponentOptimizer, "Skipping optimization for subquery", TraceContext("table", query.TableName))
+		return nil
+	}
+
+	// Skip optimization for queries with ORDER BY referencing CASE expression aliases
+	// This ensures CASE expressions are properly evaluated before sorting
+	if qe.orderByReferencesCaseAlias(query.OrderBy, query.Columns) {
+		qe.tracer.Info(TraceComponentOptimizer, "Skipping optimization due to CASE expression ORDER BY", TraceContext("table", query.TableName))
 		return nil
 	}
 

@@ -13,6 +13,7 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 - 📊 [Monitoring & Observability Guide](MONITORING.md) - Comprehensive monitoring system documentation
 - 🗂️ [Catalog System Guide](CATALOG_SYSTEM.md) - Advanced table organization with catalog.schema.table hierarchy
 - 📑 [Table Registry Guide](USING_TABLE_REGISTRY.md) - Legacy table name mapping system
+- 🔍 [Tracing System Guide](docs/TRACING.md) - Comprehensive debugging and performance analysis
 
 ## 🎉 Recent Updates
 
