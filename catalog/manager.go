@@ -529,19 +529,51 @@ func (m *Manager) calculateFileStatistics(filePath string) (*TableStatistics, er
 		return nil, fmt.Errorf("failed to stat file %s: %w", filePath, err)
 	}
 
-	// For now, estimate row count based on file size
-	// In production, this would read actual parquet metadata using a parquet library
-	estimatedRowCount := fileInfo.Size() / 100 // Rough estimate: 100 bytes per row
-	if estimatedRowCount < 1 {
-		estimatedRowCount = 1 // Minimum of 1 row
+	// Read actual parquet metadata to get precise row count
+	actualRowCount, err := m.getParquetRowCount(filePath)
+	if err != nil {
+		// Fallback to file size estimation if parquet reading fails
+		fmt.Printf("Warning: Failed to read parquet metadata from %s, using size estimation: %v\n", filePath, err)
+		estimatedRowCount := fileInfo.Size() / 100 // Rough estimate: 100 bytes per row
+		if estimatedRowCount < 1 {
+			estimatedRowCount = 1 // Minimum of 1 row
+		}
+		actualRowCount = estimatedRowCount
 	}
 
 	return &TableStatistics{
-		RowCount:     estimatedRowCount,
+		RowCount:     actualRowCount,
 		SizeBytes:    fileInfo.Size(),
 		LastAnalyzed: time.Now(),
 		LastModified: fileInfo.ModTime(),
 	}, nil
+}
+
+// getParquetRowCount reads the actual row count from parquet file metadata
+func (m *Manager) getParquetRowCount(filePath string) (int64, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get file stats: %w", err)
+	}
+
+	reader, err := parquet.OpenFile(file, stat.Size())
+	if err != nil {
+		return 0, fmt.Errorf("failed to open parquet file: %w", err)
+	}
+
+	// Calculate total rows across all row groups
+	totalRows := int64(0)
+	for _, rg := range reader.RowGroups() {
+		totalRows += rg.NumRows()
+	}
+
+	return totalRows, nil
 }
 
 // calculateTableStatistics calculates aggregated statistics for all files in a table
