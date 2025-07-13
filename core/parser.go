@@ -478,6 +478,8 @@ func (p *SQLParser) parseSelect(stmt *pg_query.SelectStmt, query *ParsedQuery) (
 				p.parseColumnTarget(resTarget, query)
 			}
 		}
+		// Ensure unique column names for aggregates
+		p.EnsureUniqueAggregateAliases(query)
 	}
 
 	if stmt.WhereClause != nil {
@@ -2070,4 +2072,34 @@ func (p *SQLParser) parseExpressionValue(expr *pg_query.Node) *ExpressionValue {
 	result.Type = "literal"
 	result.LiteralValue = nil
 	return result
+}
+
+// EnsureUniqueAggregateAliases ensures all aggregate functions have unique column aliases
+func (p *SQLParser) EnsureUniqueAggregateAliases(query *ParsedQuery) {
+	if len(query.Aggregates) == 0 {
+		return
+	}
+
+	// Track aliases and their occurrence counters
+	aliasCounters := make(map[string]int)
+
+	// Process each aggregate and make aliases unique
+	for i := range query.Aggregates {
+		baseAlias := query.Aggregates[i].Alias
+		if baseAlias == "" {
+			continue
+		}
+
+		// Check if we've seen this base alias before
+		if count, exists := aliasCounters[baseAlias]; exists {
+			// This is a duplicate, increment counter and create unique alias
+			count++
+			aliasCounters[baseAlias] = count
+			query.Aggregates[i].Alias = fmt.Sprintf("%s_%d", baseAlias, count)
+		} else {
+			// First occurrence of this alias
+			aliasCounters[baseAlias] = 1
+			// Keep the original alias unchanged
+		}
+	}
 }

@@ -1532,3 +1532,55 @@ func TestCacheClear(t *testing.T) {
 		t.Error("Should not get cache hit after cache clear")
 	}
 }
+
+
+func TestUniqueAggregateColumnNames(t *testing.T) {
+	parser := core.NewSQLParser()
+
+	t.Run("Test unique alias generation", func(t *testing.T) {
+		// Create a scenario with duplicate aliases
+		query := &core.ParsedQuery{
+			Type: core.SELECT,
+			Aggregates: []core.AggregateFunction{
+				{Function: "COUNT", Column: "*", Alias: "count"},
+				{Function: "COUNT", Column: "*", Alias: "count"}, // Duplicate
+				{Function: "SUM", Column: "salary", Alias: "sum_salary"},
+				{Function: "SUM", Column: "age", Alias: "sum_salary"}, // Duplicate
+				{Function: "COUNT", Column: "*", Alias: "count"}, // Another duplicate
+			},
+		}
+		
+		t.Log("Before applying unique aliases:")
+		for i, agg := range query.Aggregates {
+			t.Logf("  Aggregate %d: Function=%s, Column=%s, Alias=%s", i, agg.Function, agg.Column, agg.Alias)
+		}
+		
+		// Apply the unique alias function
+		parser.EnsureUniqueAggregateAliases(query)
+		
+		t.Log("After applying unique aliases:")
+		for i, agg := range query.Aggregates {
+			t.Logf("  Aggregate %d: Function=%s, Column=%s, Alias=%s", i, agg.Function, agg.Column, agg.Alias)
+		}
+		
+		// Verify aliases are unique
+		aliasMap := make(map[string]int)
+		for _, agg := range query.Aggregates {
+			aliasMap[agg.Alias]++
+		}
+		
+		for alias, count := range aliasMap {
+			if count > 1 {
+				t.Errorf("Alias %s appears %d times, expected to be unique", alias, count)
+			}
+		}
+		
+		// Verify expected aliases
+		expectedAliases := []string{"count", "count_2", "sum_salary", "sum_salary_2", "count_3"}
+		for i, expected := range expectedAliases {
+			if query.Aggregates[i].Alias != expected {
+				t.Errorf("Aggregate %d: expected alias %s, got %s", i, expected, query.Aggregates[i].Alias)
+			}
+		}
+	})
+}
