@@ -119,6 +119,8 @@ GROUP BY department
 - **Table Registry**: Legacy support for simple table name to file mappings
 - **SQL Standard Compliance**: Support for qualified table names in queries
 - **Automatic Migration**: Seamlessly migrate from table registry to catalog system
+- **Multi-File Tables**: Tables can span multiple parquet files with schema validation
+- **Dynamic File Management**: Add or remove files from tables without recreating them
 
 ### Interface & Tools
 - **Interactive CLI**: Rich command-line interface with help system
@@ -246,6 +248,44 @@ SELECT * FROM "default"."default".employees;
 \dc                    -- List all catalogs
 \dn sales             -- List schemas in sales catalog
 \dt sales.*           -- List all tables in sales schema
+```
+
+### Multi-File Table Support
+
+ByteDB supports tables with multiple Parquet files, enabling:
+- Incremental data ingestion
+- Time-partitioned tables  
+- Large datasets split across files
+
+```sql
+-- Register a table with initial file
+\catalog register sales.events events_2024_01.parquet
+
+-- Add more files to the same table
+\catalog add-file sales.events events_2024_02.parquet
+\catalog add-file sales.events events_2024_03.parquet
+
+-- Query reads from all files transparently
+SELECT COUNT(*) FROM sales.events;  -- Returns total across all files
+
+-- Remove old files
+\catalog remove-file sales.events events_2024_01.parquet
+
+-- List table info including all files
+\d sales.events
+```
+
+#### Schema Validation
+
+- First file determines the table schema
+- Additional files must have compatible schemas
+- New columns are allowed in later files
+- Type mismatches are rejected
+
+```sql
+-- This will fail if schemas are incompatible
+\catalog add-file sales.events events_bad_schema.parquet
+-- Error: Schema incompatible: Column 'id' has type mismatch: int32 vs string
 ```
 
 ### Arithmetic Expressions
@@ -746,6 +786,8 @@ stats, err := engine.GetOptimizationStats(sql)
 - `\catalog enable <type>` - Enable catalog system (memory/file)
 - `\catalog register <table> <path>` - Register table in catalog
 - `\catalog drop <table>` - Drop table from catalog
+- `\catalog add-file <table> <path>` - Add parquet file to existing table (with schema validation)
+- `\catalog remove-file <table> <path>` - Remove file from table (cannot remove last file)
 
 ## 🏗️ Architecture
 

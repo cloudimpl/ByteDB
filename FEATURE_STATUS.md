@@ -87,6 +87,9 @@ This document provides a comprehensive overview of SQL feature support in ByteDB
 | Memory Metadata Store | ✅ Working | Non-persistent catalog storage |
 | File Metadata Store | ✅ Working | JSON-based persistent storage |
 | Catalog CLI Commands | ✅ Working | `\dc`, `\dn`, `\dt`, `\catalog` |
+| Multi-File Tables | ✅ Working | Tables can span multiple parquet files |
+| Schema Validation | ✅ Working | Validates schema when adding files |
+| Add/Remove Files | ✅ Working | `\catalog add-file`, `\catalog remove-file` |
 
 ## ⚠️ Partially Working Features
 

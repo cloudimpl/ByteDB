@@ -7,12 +7,18 @@ import (
 	"sync"
 )
 
+// SchemaReader is an interface for reading parquet schemas
+type SchemaReader interface {
+	ReadParquetSchema(filePath string) ([]ColumnMetadata, error)
+}
+
 // Manager manages catalog metadata and provides high-level operations
 type Manager struct {
 	store          MetadataStore
 	defaultCatalog string
 	defaultSchema  string
 	mu             sync.RWMutex
+	schemaReader   SchemaReader
 }
 
 // NewManager creates a new catalog manager
@@ -22,6 +28,13 @@ func NewManager(store MetadataStore, defaultCatalog, defaultSchema string) *Mana
 		defaultCatalog: defaultCatalog,
 		defaultSchema:  defaultSchema,
 	}
+}
+
+// SetSchemaReader sets the schema reader for reading parquet schemas
+func (m *Manager) SetSchemaReader(reader SchemaReader) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.schemaReader = reader
 }
 
 // Initialize initializes the catalog manager
@@ -98,6 +111,7 @@ func (m *Manager) RegisterTable(ctx context.Context, identifier string, location
 		SchemaName:  tableID.Schema,
 		CatalogName: tableID.Catalog,
 		Location:    location,
+		Locations:   []string{location}, // Initialize with first file
 		Format:      format,
 		Columns:     []ColumnMetadata{}, // Will be populated when table is analyzed
 		Properties:  make(map[string]string),
@@ -109,6 +123,7 @@ func (m *Manager) RegisterTable(ctx context.Context, identifier string, location
 		// Update existing table
 		existingTable, _ := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
 		existingTable.Location = location
+		existingTable.Locations = []string{location}
 		existingTable.Format = format
 		return m.store.UpdateTable(ctx, existingTable)
 	}
@@ -148,6 +163,34 @@ func (m *Manager) ResolveTablePath(ctx context.Context, tableName string, dataPa
 	}
 	
 	return "", fmt.Errorf("failed to resolve table path: %w", err)
+}
+
+// ResolveTablePaths resolves a table name to all its file paths
+// This returns all files associated with a table for multi-file tables
+func (m *Manager) ResolveTablePaths(ctx context.Context, tableName string, dataPath string) ([]string, error) {
+	tableID := ParseTableIdentifier(tableName, m.defaultCatalog, m.defaultSchema)
+	
+	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
+	if err != nil {
+		return nil, fmt.Errorf("table %s not found: %w", tableID.String(), err)
+	}
+	
+	// If no locations array, use the single location
+	if len(table.Locations) == 0 && table.Location != "" {
+		table.Locations = []string{table.Location}
+	}
+	
+	// Resolve all paths
+	paths := make([]string, 0, len(table.Locations))
+	for _, location := range table.Locations {
+		if filepath.IsAbs(location) {
+			paths = append(paths, location)
+		} else {
+			paths = append(paths, filepath.Join(dataPath, location))
+		}
+	}
+	
+	return paths, nil
 }
 
 // ListTables lists all tables matching the pattern
@@ -243,6 +286,71 @@ func (m *Manager) GetTableMetadata(ctx context.Context, identifier string) (*Tab
 func (m *Manager) UpdateTableStatistics(ctx context.Context, identifier string, stats *TableStatistics) error {
 	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
 	return m.store.UpdateTableStatistics(ctx, tableID.Catalog, tableID.Schema, tableID.Table, stats)
+}
+
+// AddFileToTable adds a parquet file to an existing table with schema validation
+func (m *Manager) AddFileToTable(ctx context.Context, identifier string, filePath string, validateSchema bool) error {
+	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
+	
+	// Get existing table
+	table, err := m.store.GetTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table)
+	if err != nil {
+		return fmt.Errorf("failed to get table: %w", err)
+	}
+	
+	// If schema validation is requested and table has schema
+	if validateSchema && len(table.Columns) > 0 {
+		// Read schema from the new parquet file
+		newSchema, err := m.readParquetSchema(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to read parquet schema: %w", err)
+		}
+		
+		// Compare schemas
+		compatible, differences := CompareSchemas(table.Columns, newSchema)
+		if !compatible {
+			return fmt.Errorf("%w: %v", ErrSchemaIncompatible, differences)
+		}
+		
+		// Log any differences (like new columns) even if compatible
+		// In a real system, you might want to log these differences
+	} else if len(table.Columns) == 0 {
+		// If table has no schema yet, read it from the first file
+		newSchema, err := m.readParquetSchema(filePath)
+		if err == nil {
+			table.Columns = newSchema
+			// Update the table with the schema
+			if err := m.store.UpdateTable(ctx, table); err != nil {
+				return fmt.Errorf("failed to update table schema: %w", err)
+			}
+		}
+	}
+	
+	// Add the file to the table
+	return m.store.AddFileToTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table, filePath)
+}
+
+// RemoveFileFromTable removes a file from a table
+func (m *Manager) RemoveFileFromTable(ctx context.Context, identifier string, filePath string) error {
+	tableID := ParseTableIdentifier(identifier, m.defaultCatalog, m.defaultSchema)
+	err := m.store.RemoveFileFromTable(ctx, tableID.Catalog, tableID.Schema, tableID.Table, filePath)
+	if err != nil {
+		return err
+	}
+	
+	// Notify that table metadata has changed (for cache invalidation)
+	// This would be handled by the query engine if it has a reference to the manager
+	return nil
+}
+
+// readParquetSchema reads the schema from a parquet file
+func (m *Manager) readParquetSchema(filePath string) ([]ColumnMetadata, error) {
+	if m.schemaReader == nil {
+		// If no schema reader is set, just return empty schema
+		return nil, nil
+	}
+	
+	return m.schemaReader.ReadParquetSchema(filePath)
 }
 
 // LoadFromTableRegistry loads table mappings from the existing table registry format

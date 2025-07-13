@@ -110,6 +110,35 @@ func (qe *QueryEngine) GetTableRegistry() *TableRegistry {
 }
 
 // EnableCatalog enables the catalog system with the specified metadata store
+// catalogSchemaReader implements the catalog.SchemaReader interface
+type catalogSchemaReader struct {
+	dataPath string
+}
+
+func (csr *catalogSchemaReader) ReadParquetSchema(filePath string) ([]catalog.ColumnMetadata, error) {
+	reader, err := NewParquetReader(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open parquet file: %w", err)
+	}
+	defer reader.Close()
+	
+	// Get schema from the reader
+	schema := reader.GetSchema()
+	
+	// Convert to ColumnMetadata
+	columns := make([]catalog.ColumnMetadata, 0, len(schema))
+	for _, field := range schema {
+		col := catalog.ColumnMetadata{
+			Name:     field.Name,
+			Type:     field.Type,
+			Nullable: !field.Required,
+		}
+		columns = append(columns, col)
+	}
+	
+	return columns, nil
+}
+
 func (qe *QueryEngine) EnableCatalog(storeType string, config map[string]interface{}) error {
 	store, err := catalog.CreateMetadataStore(storeType, config)
 	if err != nil {
@@ -117,6 +146,11 @@ func (qe *QueryEngine) EnableCatalog(storeType string, config map[string]interfa
 	}
 	
 	manager := catalog.NewManager(store, "default", "default")
+	
+	// Set the schema reader
+	schemaReader := &catalogSchemaReader{dataPath: qe.dataPath}
+	manager.SetSchemaReader(schemaReader)
+	
 	ctx := context.Background()
 	if err := manager.Initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize catalog manager: %w", err)
@@ -138,6 +172,21 @@ func (qe *QueryEngine) EnableCatalog(storeType string, config map[string]interfa
 // GetCatalogManager returns the catalog manager for direct access
 func (qe *QueryEngine) GetCatalogManager() *catalog.Manager {
 	return qe.catalogManager
+}
+
+// InvalidateTableReader removes the cached reader for a table
+// This should be called when table metadata changes (e.g., files added/removed)
+func (qe *QueryEngine) InvalidateTableReader(tableName string) {
+	qe.readersMu.Lock()
+	defer qe.readersMu.Unlock()
+	
+	if reader, exists := qe.openReaders[tableName]; exists {
+		reader.Close()
+		delete(qe.openReaders, tableName)
+	}
+	
+	// Also clear cached queries that reference this table
+	qe.cache.ClearForTable(tableName)
 }
 
 // SetDefaultCatalog sets the default catalog and schema
@@ -1170,12 +1219,45 @@ func (qe *QueryEngine) getReader(tableName string) (*ParquetReader, error) {
 		return reader, nil
 	}
 
-	var filePath string
-
 	// Check if this table is registered as an HTTP table
 	if httpURL, exists := qe.httpTables[tableName]; exists {
-		filePath = httpURL
-	} else if qe.useCatalog && qe.catalogManager != nil {
+		reader, err := NewParquetReader(httpURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open HTTP table %s: %w", tableName, err)
+		}
+		qe.openReaders[tableName] = reader
+		return reader, nil
+	}
+
+	// Check if catalog system is enabled and table has multiple files
+	if qe.useCatalog && qe.catalogManager != nil {
+		ctx := context.Background()
+		filePaths, err := qe.catalogManager.ResolveTablePaths(ctx, tableName, qe.dataPath)
+		if err == nil && len(filePaths) > 0 {
+			if len(filePaths) == 1 {
+				// Single file, use regular reader
+				reader, err := NewParquetReader(filePaths[0])
+				if err != nil {
+					return nil, fmt.Errorf("failed to open table %s: %w", tableName, err)
+				}
+				qe.openReaders[tableName] = reader
+				return reader, nil
+			} else {
+				// Multiple files, create multi-file reader
+				reader, err := NewMultiFileParquetReader(filePaths)
+				if err != nil {
+					return nil, fmt.Errorf("failed to open multi-file table %s: %w", tableName, err)
+				}
+				qe.openReaders[tableName] = reader
+				return reader, nil
+			}
+		}
+		// Fall through to single-file handling if ResolveTablePaths fails
+	}
+
+	// Single file path resolution (legacy behavior)
+	var filePath string
+	if qe.useCatalog && qe.catalogManager != nil {
 		// Try catalog system first
 		ctx := context.Background()
 		resolvedPath, err := qe.catalogManager.ResolveTablePath(ctx, tableName, qe.dataPath)
@@ -1732,10 +1814,27 @@ func (qe *QueryEngine) GetTableInfo(tableName string) (string, error) {
 	var info strings.Builder
 
 	info.WriteString(fmt.Sprintf("Table: %s\n", tableName))
+	
+	// Check if this is a multi-file table
+	if strings.Contains(reader.filePath, ";") {
+		files := strings.Split(reader.filePath, ";")
+		info.WriteString(fmt.Sprintf("Files: %d\n", len(files)))
+		for i, file := range files {
+			info.WriteString(fmt.Sprintf("  [%d] %s\n", i+1, file))
+		}
+	} else {
+		info.WriteString(fmt.Sprintf("File: %s\n", reader.filePath))
+	}
+	
+	info.WriteString(fmt.Sprintf("Row Count: %d\n", reader.GetRowCount()))
 	info.WriteString("Columns:\n")
 
-	for _, field := range schema.Fields() {
-		info.WriteString(fmt.Sprintf("  - %s (%s)\n", field.Name(), field.Type()))
+	for _, field := range schema {
+		nullable := "NOT NULL"
+		if !field.Required {
+			nullable = "NULL"
+		}
+		info.WriteString(fmt.Sprintf("  - %s (%s %s)\n", field.Name, field.Type, nullable))
 	}
 
 	return info.String(), nil

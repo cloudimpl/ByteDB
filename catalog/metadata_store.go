@@ -28,6 +28,10 @@ type MetadataStore interface {
 	ListTables(ctx context.Context, catalogName, schemaName string) ([]*TableMetadata, error)
 	UpdateTable(ctx context.Context, table *TableMetadata) error
 	DeleteTable(ctx context.Context, catalogName, schemaName, tableName string) error
+	
+	// File operations
+	AddFileToTable(ctx context.Context, catalogName, schemaName, tableName string, filePath string) error
+	RemoveFileFromTable(ctx context.Context, catalogName, schemaName, tableName string, filePath string) error
 
 	// Table statistics
 	UpdateTableStatistics(ctx context.Context, catalogName, schemaName, tableName string, stats *TableStatistics) error

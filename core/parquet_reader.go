@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"bytedb/common"
 	"github.com/parquet-go/parquet-go"
 	"howett.net/ranger"
 )
@@ -20,6 +21,9 @@ type ParquetReader struct {
 	reader     *parquet.File
 	httpReader io.ReaderAt
 	closer     io.Closer
+	
+	// Multi-file support
+	multiFileReader *MultiFileParquetReader
 }
 
 type Row map[string]interface{}
@@ -135,17 +139,19 @@ func newHTTPParquetReader(urlStr string) (*ParquetReader, error) {
 }
 
 func (pr *ParquetReader) Close() error {
+	if pr.multiFileReader != nil {
+		return pr.multiFileReader.Close()
+	}
 	if pr.closer != nil {
 		return pr.closer.Close()
 	}
 	return nil
 }
 
-func (pr *ParquetReader) GetSchema() *parquet.Schema {
-	return pr.schema
-}
-
 func (pr *ParquetReader) GetColumnNames() []string {
+	if pr.multiFileReader != nil {
+		return pr.multiFileReader.GetColumnNames()
+	}
 	var names []string
 	for _, field := range pr.schema.Fields() {
 		names = append(names, field.Name())
@@ -154,7 +160,37 @@ func (pr *ParquetReader) GetColumnNames() []string {
 }
 
 func (pr *ParquetReader) GetRowCount() int {
+	if pr.multiFileReader != nil {
+		// Sum up row counts from all files
+		total := 0
+		for _, reader := range pr.multiFileReader.readers {
+			total += reader.GetRowCount()
+		}
+		return total
+	}
 	return int(pr.reader.NumRows())
+}
+
+// GetSchema returns the schema as a slice of field information
+func (pr *ParquetReader) GetSchema() []common.Field {
+	if pr.multiFileReader != nil {
+		return pr.multiFileReader.GetSchema()
+	}
+	
+	var fields []common.Field
+	for _, field := range pr.schema.Fields() {
+		fields = append(fields, common.Field{
+			Name:     field.Name(),
+			Type:     field.GoType().String(),
+			Required: field.Required(),
+		})
+	}
+	return fields
+}
+
+// GetParquetSchema returns the underlying parquet schema
+func (pr *ParquetReader) GetParquetSchema() *parquet.Schema {
+	return pr.schema
 }
 
 // GetSchemaInfo returns detailed information about the schema
@@ -178,6 +214,9 @@ func (pr *ParquetReader) GetSchemaInfo() map[string]interface{} {
 }
 
 func (pr *ParquetReader) ReadAll() ([]Row, error) {
+	if pr.multiFileReader != nil {
+		return pr.multiFileReader.ReadAll()
+	}
 	return pr.readRows(0, nil)
 }
 
@@ -187,6 +226,9 @@ func (pr *ParquetReader) ReadWithLimit(limit int) ([]Row, error) {
 
 // ReadAllWithColumns reads all rows but only the specified columns for performance
 func (pr *ParquetReader) ReadAllWithColumns(requiredColumns []string) ([]Row, error) {
+	if pr.multiFileReader != nil {
+		return pr.multiFileReader.ReadAllWithColumns(requiredColumns)
+	}
 	return pr.readRows(0, requiredColumns)
 }
 
@@ -196,6 +238,32 @@ func (pr *ParquetReader) ReadWithLimitAndColumns(limit int, requiredColumns []st
 }
 
 func (pr *ParquetReader) readRows(limit int, requiredColumns []string) ([]Row, error) {
+	// Handle multi-file reader
+	if pr.multiFileReader != nil {
+		if len(requiredColumns) > 0 {
+			rows, err := pr.multiFileReader.ReadAllWithColumns(requiredColumns)
+			if err != nil {
+				return nil, err
+			}
+			// Apply limit if specified
+			if limit > 0 && len(rows) > limit {
+				return rows[:limit], nil
+			}
+			return rows, nil
+		} else {
+			rows, err := pr.multiFileReader.ReadAll()
+			if err != nil {
+				return nil, err
+			}
+			// Apply limit if specified
+			if limit > 0 && len(rows) > limit {
+				return rows[:limit], nil
+			}
+			return rows, nil
+		}
+	}
+
+	// Single file reader
 	// If no specific columns requested or empty list, read all columns
 	if len(requiredColumns) == 0 {
 		return pr.readAllColumns(limit)

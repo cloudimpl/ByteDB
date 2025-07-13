@@ -199,6 +199,26 @@ func (qc *QueryCache) Clear() {
 	qc.stats.CurrentSize = 0
 }
 
+// ClearForTable removes all cached queries that reference a specific table
+func (qc *QueryCache) ClearForTable(tableName string) {
+	qc.mutex.Lock()
+	defer qc.mutex.Unlock()
+
+	var keysToRemove []string
+	
+	// This is a simple implementation that clears all cached queries
+	// In a more sophisticated implementation, we would parse the SQL
+	// to determine which queries reference the table
+	// For now, we'll clear the entire cache when a table changes
+	for key := range qc.entries {
+		keysToRemove = append(keysToRemove, key)
+	}
+	
+	for _, key := range keysToRemove {
+		qc.removeEntry(key)
+	}
+}
+
 // GetStats returns current cache statistics
 func (qc *QueryCache) GetStats() CacheStats {
 	qc.mutex.RLock()

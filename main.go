@@ -173,6 +173,8 @@ func printHelp() {
 	fmt.Println("  \\catalog enable <type> [options]   - Enable catalog system")
 	fmt.Println("  \\catalog register <table> <path>   - Register table in catalog")
 	fmt.Println("  \\catalog drop <table>              - Drop table from catalog")
+	fmt.Println("  \\catalog add-file <table> <path>   - Add parquet file to existing table")
+	fmt.Println("  \\catalog remove-file <table> <path> - Remove file from table")
 	fmt.Println()
 	fmt.Println("Notes:")
 	fmt.Println("  - Table names correspond to .parquet files in the data directory")
@@ -249,6 +251,50 @@ func handleCatalogCommand(engine *core.QueryEngine, command string) {
 				fmt.Printf("Error dropping table: %v\n", err)
 			} else {
 				fmt.Printf("Table %s dropped\n", table)
+			}
+		} else {
+			fmt.Println("Catalog system is not enabled")
+		}
+		
+	case "add-file":
+		if len(parts) < 3 {
+			fmt.Println("Usage: \\catalog add-file <table> <path> [validate-schema]")
+			return
+		}
+		
+		table := parts[1]
+		path := parts[2]
+		validateSchema := true
+		if len(parts) > 3 && parts[3] == "false" {
+			validateSchema = false
+		}
+		
+		if manager := engine.GetCatalogManager(); manager != nil {
+			ctx := context.Background()
+			if err := manager.AddFileToTable(ctx, table, path, validateSchema); err != nil {
+				fmt.Printf("Error adding file to table: %v\n", err)
+			} else {
+				fmt.Printf("File %s added to table %s\n", path, table)
+			}
+		} else {
+			fmt.Println("Catalog system is not enabled")
+		}
+		
+	case "remove-file":
+		if len(parts) < 3 {
+			fmt.Println("Usage: \\catalog remove-file <table> <path>")
+			return
+		}
+		
+		table := parts[1]
+		path := parts[2]
+		
+		if manager := engine.GetCatalogManager(); manager != nil {
+			ctx := context.Background()
+			if err := manager.RemoveFileFromTable(ctx, table, path); err != nil {
+				fmt.Printf("Error removing file from table: %v\n", err)
+			} else {
+				fmt.Printf("File %s removed from table %s\n", path, table)
 			}
 		} else {
 			fmt.Println("Catalog system is not enabled")

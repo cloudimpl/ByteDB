@@ -33,7 +33,8 @@ type TableMetadata struct {
 	CatalogName  string            `json:"catalog_name"`
 	Description  string            `json:"description"`
 	Owner        string            `json:"owner"`
-	Location     string            `json:"location"`      // File path or URI
+	Location     string            `json:"location"`      // Primary file path or URI (for backward compatibility)
+	Locations    []string          `json:"locations"`     // All file paths for this table
 	Format       string            `json:"format"`        // parquet, csv, json, etc.
 	Columns      []ColumnMetadata  `json:"columns"`
 	PartitionKeys []string         `json:"partition_keys"`
@@ -114,6 +115,51 @@ func (ti TableIdentifier) QualifiedName() string {
 	return fmt.Sprintf("%s.%s", ti.Schema, ti.Table)
 }
 
+// CompareSchemas compares two column schemas and returns if they are compatible
+func CompareSchemas(existing, new []ColumnMetadata) (compatible bool, differences []string) {
+	compatible = true
+	
+	// Create maps for easier lookup
+	existingMap := make(map[string]ColumnMetadata)
+	for _, col := range existing {
+		existingMap[col.Name] = col
+	}
+	
+	newMap := make(map[string]ColumnMetadata)
+	for _, col := range new {
+		newMap[col.Name] = col
+	}
+	
+	// Check for missing columns in new schema
+	for _, col := range existing {
+		if newCol, exists := newMap[col.Name]; !exists {
+			differences = append(differences, fmt.Sprintf("column '%s' missing in new schema", col.Name))
+			compatible = false
+		} else {
+			// Check type compatibility
+			if col.Type != newCol.Type {
+				differences = append(differences, fmt.Sprintf("column '%s' type mismatch: %s vs %s", col.Name, col.Type, newCol.Type))
+				compatible = false
+			}
+			// Check nullability (new schema can be more permissive)
+			if !col.Nullable && newCol.Nullable {
+				differences = append(differences, fmt.Sprintf("column '%s' nullability mismatch: existing is NOT NULL, new is NULL", col.Name))
+				// This is actually compatible - nullable can accept non-null values
+			}
+		}
+	}
+	
+	// Check for extra columns in new schema (these are allowed but noted)
+	for _, col := range new {
+		if _, exists := existingMap[col.Name]; !exists {
+			differences = append(differences, fmt.Sprintf("new column '%s' in schema", col.Name))
+			// Extra columns don't make schemas incompatible
+		}
+	}
+	
+	return compatible, differences
+}
+
 // Errors
 var (
 	ErrCatalogNotFound = fmt.Errorf("catalog not found")
@@ -122,4 +168,5 @@ var (
 	ErrCatalogExists   = fmt.Errorf("catalog already exists")
 	ErrSchemaExists    = fmt.Errorf("schema already exists")
 	ErrTableExists     = fmt.Errorf("table already exists")
+	ErrSchemaIncompatible = fmt.Errorf("schema incompatible")
 )

@@ -429,6 +429,11 @@ func (f *FileMetadataStore) CreateTable(ctx context.Context, table *TableMetadat
 	tableCopy.Columns = make([]ColumnMetadata, len(table.Columns))
 	copy(tableCopy.Columns, table.Columns)
 	
+	// Initialize Locations if empty
+	if len(tableCopy.Locations) == 0 && tableCopy.Location != "" {
+		tableCopy.Locations = []string{tableCopy.Location}
+	}
+	
 	f.tables[table.CatalogName][table.SchemaName][table.Name] = &tableCopy
 	
 	return f.saveMetadata()
@@ -594,6 +599,89 @@ func hasSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func (f *FileMetadataStore) AddFileToTable(ctx context.Context, catalogName, schemaName, tableName string, filePath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	
+	catalogTables, exists := f.tables[catalogName]
+	if !exists {
+		return ErrCatalogNotFound
+	}
+	
+	schemaTables, exists := catalogTables[schemaName]
+	if !exists {
+		return ErrSchemaNotFound
+	}
+	
+	table, exists := schemaTables[tableName]
+	if !exists {
+		return ErrTableNotFound
+	}
+	
+	// Check if file already exists
+	for _, loc := range table.Locations {
+		if loc == filePath {
+			return fmt.Errorf("file already registered: %s", filePath)
+		}
+	}
+	
+	// Add the file
+	table.Locations = append(table.Locations, filePath)
+	table.UpdatedAt = time.Now()
+	
+	return f.saveMetadata()
+}
+
+func (f *FileMetadataStore) RemoveFileFromTable(ctx context.Context, catalogName, schemaName, tableName string, filePath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	
+	catalogTables, exists := f.tables[catalogName]
+	if !exists {
+		return ErrCatalogNotFound
+	}
+	
+	schemaTables, exists := catalogTables[schemaName]
+	if !exists {
+		return ErrSchemaNotFound
+	}
+	
+	table, exists := schemaTables[tableName]
+	if !exists {
+		return ErrTableNotFound
+	}
+	
+	// Find and remove the file
+	found := false
+	newLocations := make([]string, 0, len(table.Locations))
+	for _, loc := range table.Locations {
+		if loc != filePath {
+			newLocations = append(newLocations, loc)
+		} else {
+			found = true
+		}
+	}
+	
+	if !found {
+		return fmt.Errorf("file not found in table: %s", filePath)
+	}
+	
+	// Don't allow removing the last file
+	if len(newLocations) == 0 {
+		return fmt.Errorf("cannot remove last file from table")
+	}
+	
+	table.Locations = newLocations
+	table.UpdatedAt = time.Now()
+	
+	// Update primary location if it was removed
+	if table.Location == filePath && len(newLocations) > 0 {
+		table.Location = newLocations[0]
+	}
+	
+	return f.saveMetadata()
 }
 
 // Transaction support

@@ -19,6 +19,13 @@ All notable changes to ByteDB will be documented in this file.
   - New arithmetic functions: ADD, SUBTRACT, MULTIPLY, DIVIDE, MODULO
   - Expressions like `SELECT salary * 1.1 as new_salary` now work correctly
 
+- **Multi-File Table Support**
+  - Tables can now consist of multiple parquet files
+  - New catalog commands: `\catalog add-file` and `\catalog remove-file`
+  - Schema validation when adding files to existing tables
+  - Automatic schema detection for new tables
+  - File information displayed in `\d table_name` command
+
 ### Fixed
 - **SELECT * Queries**
   - Fixed SELECT * returning no data (columns were returned as ["*"] instead of actual column names)
