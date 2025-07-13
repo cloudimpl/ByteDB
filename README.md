@@ -19,6 +19,8 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 ## 🎉 Recent Updates
 
 ### New Features (Latest - 2025-07-13)
+- ✅ **DuckDB-style Table Creation** - Support for `CREATE TABLE AS SELECT * FROM read_parquet()` syntax
+- ✅ **Table Functions** - Direct querying of parquet files with `read_parquet()` function
 - ✅ **SQL Testing Framework** - Comprehensive testing system with traceability and clean SQL test files
 - ✅ **Catalog System** - Three-level hierarchy (catalog.schema.table) with pluggable metadata stores
 - ✅ **Arithmetic Expressions** - Support for +, -, *, /, % operators in SELECT clause
@@ -32,6 +34,20 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 - ✅ Fixed EXISTS and IN subqueries
 - ✅ Fixed query optimization rules (column pruning, join ordering)
 - ✅ Added support for subqueries in SELECT clause
+
+### New: DuckDB-style Table Creation (Latest)
+ByteDB now supports DuckDB-style syntax for creating tables from Parquet files:
+
+```sql
+-- Create table from parquet file
+CREATE TABLE employees AS SELECT * FROM read_parquet('employees.parquet');
+
+-- Query parquet files directly without registration
+SELECT * FROM read_parquet('data/sales_2024.parquet') WHERE amount > 1000;
+
+-- Create table with IF NOT EXISTS
+CREATE TABLE IF NOT EXISTS users AS SELECT * FROM read_parquet('users.parquet');
+```
 
 ### Breaking Changes
 - **Table Registration Required**: Tables must now be explicitly registered before use. The automatic fallback to `<table_name>.parquet` files has been removed for security and consistency. See [Breaking Changes](BREAKING_CHANGES.md) for migration guide.
@@ -183,6 +199,21 @@ go test -run TestDistributedDemo -v
 ```
 
 ### Example Queries
+
+#### DuckDB-style Table Functions
+```sql
+-- Query parquet files directly without registration
+SELECT * FROM read_parquet('data/sales_2024.parquet') WHERE total > 1000;
+
+-- Create tables from parquet files
+CREATE TABLE employees AS SELECT * FROM read_parquet('employees.parquet');
+CREATE TABLE IF NOT EXISTS users AS SELECT * FROM read_parquet('users.parquet');
+
+-- Join data from multiple parquet files directly
+SELECT e.name, d.department_name 
+FROM read_parquet('employees.parquet') e 
+JOIN read_parquet('departments.parquet') d ON e.dept_id = d.id;
+```
 
 #### Single-Node Queries
 ```sql

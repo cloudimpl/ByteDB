@@ -17,6 +17,7 @@ const (
 	DELETE
 	EXPLAIN
 	UNION
+	CREATE
 	UNSUPPORTED
 )
 
@@ -35,6 +36,8 @@ func (qt QueryType) String() string {
 		return "EXPLAIN"
 	case UNION:
 		return "UNION"
+	case CREATE:
+		return "CREATE"
 	case UNSUPPORTED:
 		return "UNSUPPORTED"
 	default:
@@ -186,6 +189,31 @@ type UnionQuery struct {
 	UnionAll bool         // True for UNION ALL, false for UNION
 }
 
+// CreateTableStmt represents a CREATE TABLE statement
+type CreateTableStmt struct {
+	TableName    string   // Name of the table to create
+	IfNotExists  bool     // CREATE TABLE IF NOT EXISTS
+	Replace      bool     // CREATE OR REPLACE TABLE
+	AsSelect     bool     // CREATE TABLE AS SELECT
+	FromFile     string   // File path for CREATE TABLE FROM 'file.parquet'
+	Columns      []ColumnDef // Column definitions (for standard CREATE TABLE)
+	SelectQuery  *ParsedQuery // Query for CREATE TABLE AS SELECT
+}
+
+// ColumnDef represents a column definition in CREATE TABLE
+type ColumnDef struct {
+	Name     string
+	DataType string
+	Nullable bool
+}
+
+// TableFunction represents a table-valued function in FROM clause
+type TableFunction struct {
+	Name      string        // Function name (e.g., "read_parquet")
+	Arguments []interface{} // Function arguments
+	Alias     string        // Optional alias
+}
+
 type ParsedQuery struct {
 	Type              QueryType
 	TableName         string
@@ -214,6 +242,15 @@ type ParsedQuery struct {
 	// UNION specific fields
 	UnionQueries []UnionQuery // List of queries to union
 	HasUnion     bool         // True if query contains UNION/UNION ALL
+	
+	// CREATE TABLE specific fields
+	CreateTable    *CreateTableStmt // CREATE TABLE statement details
+	
+	// Table function support
+	TableFunction  *TableFunction   // Table function in FROM clause
+	
+	// Subquery in FROM clause
+	Subquery       *ParsedQuery     // For subqueries in FROM clause
 }
 
 type SQLParser struct{}
@@ -241,6 +278,14 @@ func (p *SQLParser) Parse(sql string) (*ParsedQuery, error) {
 
 	if explainStmt := stmt.GetExplainStmt(); explainStmt != nil {
 		return p.parseExplain(explainStmt, query)
+	}
+	
+	if createStmt := stmt.GetCreateStmt(); createStmt != nil {
+		return p.parseCreateTable(createStmt, query)
+	}
+	
+	if createTableAsStmt := stmt.GetCreateTableAsStmt(); createTableAsStmt != nil {
+		return p.parseCreateTableAs(createTableAsStmt, query)
 	}
 
 	query.Type = UNSUPPORTED
@@ -280,6 +325,31 @@ func (p *SQLParser) parseFromClause(fromClause []*pg_query.Node, query *ParsedQu
 	// Check if it's a JOIN expression
 	if joinExpr := fromNode.GetJoinExpr(); joinExpr != nil {
 		return p.parseJoinExpression(joinExpr, query)
+	}
+	
+	// Check if it's a table function (e.g., read_parquet('file.parquet'))
+	if rangeFunc := fromNode.GetRangeFunction(); rangeFunc != nil {
+		return p.parseRangeFunction(rangeFunc, query)
+	}
+	
+	// Check if it's a subquery
+	if rangeSubselect := fromNode.GetRangeSubselect(); rangeSubselect != nil {
+		if rangeSubselect.Subquery != nil {
+			// Parse the subquery
+			if selectStmt := rangeSubselect.Subquery.GetSelectStmt(); selectStmt != nil {
+				subquery := &ParsedQuery{RawSQL: query.RawSQL}
+				parsedSubquery, err := p.parseSelect(selectStmt, subquery)
+				if err != nil {
+					return fmt.Errorf("failed to parse subquery: %w", err)
+				}
+				query.TableName = "(subquery)"
+				query.Subquery = parsedSubquery
+				if rangeSubselect.Alias != nil {
+					query.TableAlias = rangeSubselect.Alias.Aliasname
+				}
+				return nil
+			}
+		}
 	}
 
 	return fmt.Errorf("unsupported FROM clause type")
@@ -2102,4 +2172,205 @@ func (p *SQLParser) EnsureUniqueAggregateAliases(query *ParsedQuery) {
 			// Keep the original alias unchanged
 		}
 	}
+}
+
+// parseCreateTable parses a CREATE TABLE statement
+func (p *SQLParser) parseCreateTable(createStmt *pg_query.CreateStmt, query *ParsedQuery) (*ParsedQuery, error) {
+	query.Type = CREATE
+	query.CreateTable = &CreateTableStmt{}
+	
+	// Get table name
+	if createStmt.Relation != nil {
+		var tableParts []string
+		if createStmt.Relation.Catalogname != "" {
+			tableParts = append(tableParts, createStmt.Relation.Catalogname)
+		}
+		if createStmt.Relation.Schemaname != "" {
+			tableParts = append(tableParts, createStmt.Relation.Schemaname)
+		}
+		tableParts = append(tableParts, createStmt.Relation.Relname)
+		query.CreateTable.TableName = strings.Join(tableParts, ".")
+	}
+	
+	// Check for IF NOT EXISTS
+	query.CreateTable.IfNotExists = createStmt.IfNotExists
+	
+	// Check if this is a CREATE TABLE FROM 'file.parquet' style statement
+	// We'll parse this from the raw SQL since pg_query doesn't directly support this syntax
+	// We'll look for patterns like:
+	// CREATE TABLE tablename FROM 'file.parquet'
+	// CREATE OR REPLACE TABLE tablename FROM 'file.parquet'
+	sql := strings.ToUpper(query.RawSQL)
+	if strings.Contains(sql, " FROM '") || strings.Contains(sql, " FROM \"") {
+		// Extract the file path
+		fromIndex := strings.LastIndex(strings.ToUpper(query.RawSQL), " FROM ")
+		if fromIndex != -1 {
+			remainder := query.RawSQL[fromIndex+6:] // Skip " FROM "
+			remainder = strings.TrimSpace(remainder)
+			
+			// Handle quoted file paths
+			if (strings.HasPrefix(remainder, "'") && strings.Contains(remainder[1:], "'")) ||
+			   (strings.HasPrefix(remainder, "\"") && strings.Contains(remainder[1:], "\"")) {
+				quote := remainder[0:1]
+				endIndex := strings.Index(remainder[1:], quote)
+				if endIndex != -1 {
+					query.CreateTable.FromFile = remainder[1:endIndex+1]
+				}
+			}
+		}
+	}
+	
+	// Check for CREATE OR REPLACE
+	if strings.Contains(sql, "CREATE OR REPLACE") {
+		query.CreateTable.Replace = true
+	}
+	
+	// Check if this is CREATE TABLE AS SELECT by looking at raw SQL
+	// pg_query doesn't directly support this, so we parse from raw SQL
+	upperSQL := strings.ToUpper(query.RawSQL)
+	if strings.Contains(upperSQL, " AS SELECT ") {
+		query.CreateTable.AsSelect = true
+		// Extract and parse the SELECT portion
+		asIndex := strings.Index(upperSQL, " AS SELECT ")
+		if asIndex != -1 {
+			selectSQL := query.RawSQL[asIndex+4:] // Skip " AS "
+			selectQuery, err := p.Parse(selectSQL)
+			if err == nil && selectQuery.Type == SELECT {
+				query.CreateTable.SelectQuery = selectQuery
+			}
+		}
+	}
+	
+	// Parse column definitions for standard CREATE TABLE
+	if len(createStmt.TableElts) > 0 && !query.CreateTable.AsSelect && query.CreateTable.FromFile == "" {
+		for _, elt := range createStmt.TableElts {
+			if colDef := elt.GetColumnDef(); colDef != nil {
+				col := ColumnDef{
+					Name: colDef.Colname,
+				}
+				
+				// Parse data type
+				if colDef.TypeName != nil && len(colDef.TypeName.Names) > 0 {
+					var typeNames []string
+					for _, name := range colDef.TypeName.Names {
+						if str := name.GetString_(); str != nil {
+							typeNames = append(typeNames, str.Sval)
+						}
+					}
+					col.DataType = strings.Join(typeNames, ".")
+				}
+				
+				// Check for NOT NULL constraint
+				col.Nullable = true // Default to nullable
+				for _, constraint := range colDef.Constraints {
+					if constraint.GetConstraint() != nil {
+						if constraint.GetConstraint().Contype == pg_query.ConstrType_CONSTR_NOTNULL {
+							col.Nullable = false
+						}
+					}
+				}
+				
+				query.CreateTable.Columns = append(query.CreateTable.Columns, col)
+			}
+		}
+	}
+	
+	return query, nil
+}
+
+// parseRangeFunction parses a table function in FROM clause (e.g., read_parquet('file.parquet'))
+func (p *SQLParser) parseRangeFunction(rangeFunc *pg_query.RangeFunction, query *ParsedQuery) error {
+	if rangeFunc == nil || len(rangeFunc.Functions) == 0 {
+		return fmt.Errorf("empty range function")
+	}
+	
+	// Get the first function (we only support one for now)
+	funcNode := rangeFunc.Functions[0]
+	
+	// The function might be wrapped in a List node
+	if listNode := funcNode.GetList(); listNode != nil && len(listNode.Items) > 0 {
+		funcNode = listNode.Items[0]
+	}
+	
+	if funcCall := funcNode.GetFuncCall(); funcCall != nil {
+		tableFunc := &TableFunction{
+			Arguments: make([]interface{}, 0),
+		}
+		
+		// Get function name
+		if len(funcCall.Funcname) > 0 {
+			if str := funcCall.Funcname[0].GetString_(); str != nil {
+				tableFunc.Name = str.Sval
+			}
+		}
+		
+		// Parse arguments
+		for _, arg := range funcCall.Args {
+			if constVal := arg.GetAConst(); constVal != nil {
+				tableFunc.Arguments = append(tableFunc.Arguments, p.parseConstantNode(constVal))
+			} else if columnRef := arg.GetColumnRef(); columnRef != nil && len(columnRef.Fields) > 0 {
+				if str := columnRef.Fields[0].GetString_(); str != nil {
+					tableFunc.Arguments = append(tableFunc.Arguments, str.Sval)
+				}
+			}
+		}
+		
+		// Get alias if present
+		if rangeFunc.Alias != nil {
+			tableFunc.Alias = rangeFunc.Alias.Aliasname
+			query.TableAlias = rangeFunc.Alias.Aliasname
+		}
+		
+		query.TableFunction = tableFunc
+		// Set table name to function for compatibility
+		query.TableName = fmt.Sprintf("%s(...)", tableFunc.Name)
+		
+		return nil
+	}
+	
+	return fmt.Errorf("unsupported range function type")
+}
+
+// parseCreateTableAs parses a CREATE TABLE AS SELECT statement
+func (p *SQLParser) parseCreateTableAs(createTableAsStmt *pg_query.CreateTableAsStmt, query *ParsedQuery) (*ParsedQuery, error) {
+	query.Type = CREATE
+	query.CreateTable = &CreateTableStmt{
+		AsSelect: true,
+	}
+	
+	// Get table name
+	if createTableAsStmt.Into != nil && createTableAsStmt.Into.Rel != nil {
+		var tableParts []string
+		if createTableAsStmt.Into.Rel.Catalogname != "" {
+			tableParts = append(tableParts, createTableAsStmt.Into.Rel.Catalogname)
+		}
+		if createTableAsStmt.Into.Rel.Schemaname != "" {
+			tableParts = append(tableParts, createTableAsStmt.Into.Rel.Schemaname)
+		}
+		tableParts = append(tableParts, createTableAsStmt.Into.Rel.Relname)
+		query.CreateTable.TableName = strings.Join(tableParts, ".")
+	}
+	
+	// Check for IF NOT EXISTS
+	query.CreateTable.IfNotExists = createTableAsStmt.IfNotExists
+	
+	// Check for CREATE OR REPLACE
+	sql := strings.ToUpper(query.RawSQL)
+	if strings.Contains(sql, "CREATE OR REPLACE") {
+		query.CreateTable.Replace = true
+	}
+	
+	// Parse the SELECT query
+	if createTableAsStmt.Query != nil {
+		if selectStmt := createTableAsStmt.Query.GetSelectStmt(); selectStmt != nil {
+			selectQuery := &ParsedQuery{RawSQL: query.RawSQL}
+			var err error
+			query.CreateTable.SelectQuery, err = p.parseSelect(selectStmt, selectQuery)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse SELECT in CREATE TABLE AS: %w", err)
+			}
+		}
+	}
+	
+	return query, nil
 }
