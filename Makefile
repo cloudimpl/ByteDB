@@ -1,84 +1,99 @@
 # ByteDB Makefile
-# Provides automated testing and build commands
 
-.PHONY: build test test-case test-joins test-window test-subqueries bench clean data help
+.PHONY: build clean test test-sql test-unit test-all help run-basic run-case run-error run-performance build-test-runner
 
-# Default target
-all: build
-
-# Build ByteDB
+# Build the main ByteDB binary
 build:
-	@echo "Building ByteDB..."
-	@go build -o bytedb main.go parser.go query_engine.go parquet_reader.go cache.go
-	@echo "✅ Build completed successfully"
+	go build -o bytedb main.go
 
-# Run all tests
-test: build
-	@echo "Running all tests..."
-	@go test -v ./...
-	@echo "✅ All tests completed"
-
-# Run CASE expression tests specifically
-test-case: build
-	@echo "Running CASE expression tests..."
-	@go test -v -run "TestBasicCaseExpressions|TestCaseExpressionDataTypes|TestCaseExpressionErrors"
-
-# Run JOIN tests
-test-joins: build
-	@echo "Running JOIN tests..."
-	@go test -v -run "TestJoin"
-
-# Run window function tests
-test-window: build
-	@echo "Running window function tests..."
-	@go test -v -run "TestWindow"
-
-# Run subquery tests
-test-subqueries: build
-	@echo "Running subquery tests..."
-	@go test -v -run "TestSubquery"
-
-# Run benchmarks
-bench: build
-	@echo "Running benchmarks..."
-	@go test -bench=. -benchmem
-
-# Generate sample data
-data:
-	@echo "Generating sample data..."
-	@go run gen_data.go
-	@echo "✅ Sample data generated in ./data/"
-
-# Run quick smoke test
-smoke-test: build data
-	@echo "Running smoke test..."
-	@echo "SELECT name, department FROM employees LIMIT 1" | ./bytedb ./data
-	@echo "✅ Smoke test passed - ByteDB is working!"
+# Build the SQL test runner
+build-test-runner:
+	go build -o sql_test_runner cmd/sql_test_runner.go
 
 # Clean build artifacts
 clean:
-	@echo "Cleaning build artifacts..."
-	@rm -f bytedb
-	@rm -rf ./data/*.parquet
-	@rm -rf ./testdata
-	@echo "✅ Clean completed"
+	rm -f bytedb sql_test_runner
+	go clean
 
-# Show help
+# Generate sample data
+gen-data:
+	go run demos/gen_data.go
+
+# Run all tests (unit + SQL)
+test-all: test-unit test-sql
+
+# Run Go unit tests
+test-unit:
+	go test -v ./...
+
+# Run SQL tests
+test-sql: build-test-runner
+	./sql_test_runner -dir tests/ -verbose
+
+# Run basic SQL tests only
+test-basic: build-test-runner
+	./sql_test_runner -file tests/basic_queries.sql -verbose
+
+# Run CASE expression tests (regression tests)
+test-case: build-test-runner
+	./sql_test_runner -file tests/case_expressions.sql -verbose -trace-level DEBUG
+
+# Run error handling tests
+test-error: build-test-runner
+	./sql_test_runner -file tests/error_handling.sql -verbose
+
+# Run performance tests
+test-performance: build-test-runner
+	./sql_test_runner -file tests/performance_tests.json -verbose
+
+# Run SQL tests with tracing enabled
+test-trace: build-test-runner
+	./sql_test_runner -dir tests/ -verbose -trace-level DEBUG -trace-components ALL
+
+# Run only tests with specific tags
+test-tags-%: build-test-runner
+	./sql_test_runner -dir tests/ -verbose -tags $*
+
+# Quick test for basic functionality
+test-quick: build-test-runner
+	./sql_test_runner -dir tests/ -tags basic
+
+# Development workflow - build, generate data, and test
+dev: build gen-data test-basic
+
+# Show available targets
 help:
-	@echo "ByteDB Build & Test System"
+	@echo "ByteDB Makefile Targets:"
 	@echo ""
-	@echo "Available commands:"
-	@echo "  make build        - Build ByteDB binary"
-	@echo "  make test         - Run all Go tests"
-	@echo "  make test-case    - Run CASE expression tests"
-	@echo "  make test-joins   - Run JOIN operation tests"
-	@echo "  make test-window  - Run window function tests"
-	@echo "  make test-subqueries - Run subquery tests"
-	@echo "  make bench        - Run performance benchmarks"
-	@echo "  make data         - Generate sample Parquet data"
-	@echo "  make smoke-test   - Run quick functionality test"
-	@echo "  make clean        - Clean build artifacts and data"
-	@echo "  make help         - Show this help"
+	@echo "Build targets:"
+	@echo "  build              - Build the main ByteDB binary"
+	@echo "  build-test-runner  - Build the SQL test runner"
+	@echo "  clean              - Clean build artifacts"
 	@echo ""
-	@echo "Example usage:"
-	@echo "  make build && make data && make smoke-test"
+	@echo "Data targets:"
+	@echo "  gen-data           - Generate sample data files"
+	@echo ""
+	@echo "Test targets:"
+	@echo "  test-all           - Run all tests (unit + SQL)"
+	@echo "  test-unit          - Run Go unit tests"
+	@echo "  test-sql           - Run all SQL tests"
+	@echo "  test-basic         - Run basic SQL tests only"
+	@echo "  test-case          - Run CASE expression tests with DEBUG tracing"
+	@echo "  test-error         - Run error handling tests"
+	@echo "  test-performance   - Run performance tests"
+	@echo "  test-trace         - Run SQL tests with full tracing"
+	@echo "  test-quick         - Quick test for basic functionality"
+	@echo "  test-tags-TAG      - Run tests with specific tags (e.g., make test-tags-basic)"
+	@echo ""
+	@echo "Development targets:"
+	@echo "  dev                - Build, generate data, and run basic tests"
+	@echo "  help               - Show this help message"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make dev                    # Quick development setup"
+	@echo "  make test-case              # Test CASE expressions with tracing"
+	@echo "  make test-tags-performance  # Run only performance tests"
+	@echo "  make test-trace             # Run all tests with full tracing"
+
+# Default target
+all: build build-test-runner

@@ -14,10 +14,12 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 - 🗂️ [Catalog System Guide](CATALOG_SYSTEM.md) - Advanced table organization with catalog.schema.table hierarchy
 - 📑 [Table Registry Guide](USING_TABLE_REGISTRY.md) - Legacy table name mapping system
 - 🔍 [Tracing System Guide](docs/TRACING.md) - Comprehensive debugging and performance analysis
+- 🧪 [SQL Testing Framework](tests/README.md) - Comprehensive SQL query testing with traceability
 
 ## 🎉 Recent Updates
 
 ### New Features (Latest - 2025-07-13)
+- ✅ **SQL Testing Framework** - Comprehensive testing system with traceability and clean SQL test files
 - ✅ **Catalog System** - Three-level hierarchy (catalog.schema.table) with pluggable metadata stores
 - ✅ **Arithmetic Expressions** - Support for +, -, *, /, % operators in SELECT clause
 - ✅ **Fixed SELECT *** - Now properly returns all columns with data
@@ -26,7 +28,7 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 - ✅ Fixed WHERE clause operators (AND, OR, BETWEEN, NOT BETWEEN)
 - ✅ Fixed SQL string functions (CONCAT, UPPER, LOWER, LENGTH) 
 - ✅ Fixed GROUP BY with aggregate functions
-- ✅ Fixed CASE expression evaluation
+- ✅ Fixed CASE expression evaluation and ORDER BY compatibility
 - ✅ Fixed EXISTS and IN subqueries
 - ✅ Fixed query optimization rules (column pruning, join ordering)
 - ✅ Added support for subqueries in SELECT clause
@@ -477,19 +479,131 @@ GROUP BY e.name, e.salary, d.budget;
 
 ## 🧪 Testing
 
+ByteDB provides multiple testing approaches: Go unit tests for core functionality and a comprehensive SQL Testing Framework for query validation with traceability.
+
+### SQL Testing Framework
+
+ByteDB includes a powerful SQL testing framework that enables testing any SELECT query with full traceability support. This keeps testing clean, readable, and maintainable.
+
+#### Quick Start
+```bash
+# Generate test data
+make gen-data
+
+# Run all SQL tests
+make test-sql
+
+# Run specific test suites
+make test-basic      # Basic SQL functionality
+make test-case       # CASE expressions with debugging
+make test-error      # Error handling
+make test-performance # Performance validation
+```
+
+#### Test File Examples
+
+**SQL Format with Annotations** (`tests/basic_queries.sql`):
+```sql
+-- @test name=salary_filter
+-- @description Test filtering by salary range
+-- @expect_rows 7
+-- @tags basic,where,numeric
+-- @trace_level INFO
+-- @trace_components QUERY,FILTER
+SELECT name, salary 
+FROM employees 
+WHERE salary > 65000
+ORDER BY salary DESC;
+
+-- @test name=case_with_order_by
+-- @description Test CASE expression with ORDER BY - regression test
+-- @expect_rows 10
+-- @expect_columns name,salary,salary_grade
+-- @tags case,order_by,regression
+-- @trace_level DEBUG
+-- @trace_components CASE,SORT,OPTIMIZER,EXECUTION
+SELECT name, salary,
+       CASE 
+           WHEN salary > 80000 THEN 'High'
+           WHEN salary > 60000 THEN 'Medium'
+           ELSE 'Low'
+       END as salary_grade
+FROM employees
+ORDER BY salary_grade DESC;
+```
+
+**JSON Format** (`tests/performance_tests.json`):
+```json
+{
+  "name": "performance_tests",
+  "test_cases": [
+    {
+      "name": "large_table_scan",
+      "description": "Test performance of scanning all employees",
+      "sql": "SELECT * FROM employees",
+      "expected": {
+        "row_count": 10,
+        "performance": {
+          "max_duration": "1s"
+        }
+      },
+      "trace": {
+        "level": "INFO",
+        "components": ["QUERY", "EXECUTION"]
+      },
+      "tags": ["performance", "scan"]
+    }
+  ]
+}
+```
+
+#### Available Test Targets
+```bash
+# Basic SQL functionality tests
+make test-basic
+
+# CASE expression tests (with the fixed ORDER BY bug)
+make test-case
+
+# Error handling and edge cases
+make test-error
+
+# Performance validation
+make test-performance
+
+# Run tests with specific tags
+./sql_test_runner -dir tests/ -tags regression
+
+# Run with full tracing enabled
+./sql_test_runner -dir tests/ -trace-level DEBUG -trace-components ALL
+```
+
+#### Framework Features
+
+- **Annotation-Based Testing**: Define tests with simple SQL comments
+- **Traceability Integration**: 6 trace levels, 10 components for debugging
+- **Rich Assertions**: Row count, columns, data content, performance, errors
+- **Tag-Based Filtering**: Organize and run specific test subsets
+- **JSON and SQL Formats**: Choose the format that fits your workflow
+- **Performance Validation**: Built-in timing and performance assertions
+- **Error Testing**: Validate expected error conditions
+- **Setup/Cleanup**: Test-level and suite-level setup and cleanup scripts
+
+### Go Unit Tests
+
 ByteDB uses a fixed test data system to ensure deterministic and reliable tests.
 
-### Test Data System
+#### Test Data System
 
 Tests use fixed data stored in `./testdata/` directory (automatically created):
 - 10 employees with known salaries, departments, and ages
 - 10 products with specific prices and categories
 - 6 departments with defined budgets
 
-### Running Tests
+#### Running Unit Tests
 
 ```bash
-# Run all tests
+# Run all Go unit tests
 go test -v
 
 # Run specific test categories
@@ -505,7 +619,7 @@ go test -bench=.
 make clean
 ```
 
-### Writing Tests
+#### Writing Unit Tests
 
 Use the test helpers for consistent test data:
 
@@ -916,8 +1030,10 @@ We welcome contributions! Please feel free to submit issues, feature requests, a
 
 1. Clone the repository
 2. Run `go mod tidy` to install dependencies
-3. Run `make test` to execute the test suite
-4. Run `make build` to build the binary
+3. Run `make gen-data` to generate sample data
+4. Run `make test-basic` to execute basic SQL tests
+5. Run `make test-case` to test CASE expressions (demonstrates the bug fix)
+6. Run `make build` to build the binary
 
 ### Testing
 
