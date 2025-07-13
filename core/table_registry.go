@@ -116,11 +116,7 @@ func (tr *TableRegistry) GetTablePath(tableName string) (string, error) {
 
 	mapping, exists := tr.mappings[tableName]
 	if !exists {
-		// Fallback to default behavior (table_name.parquet)
-		defaultPath := filepath.Join(tr.basePath, tableName+".parquet")
-		if _, err := os.Stat(defaultPath); err == nil {
-			return defaultPath, nil
-		}
+		// No longer fallback to filename - require explicit table registration
 		return "", fmt.Errorf("table not registered: %s", tableName)
 	}
 

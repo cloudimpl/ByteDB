@@ -33,6 +33,9 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 - ✅ Fixed query optimization rules (column pruning, join ordering)
 - ✅ Added support for subqueries in SELECT clause
 
+### Breaking Changes
+- **Table Registration Required**: Tables must now be explicitly registered before use. The automatic fallback to `<table_name>.parquet` files has been removed for security and consistency. See [Breaking Changes](BREAKING_CHANGES.md) for migration guide.
+
 ### Known Issues
 - Multiple subqueries in SELECT may intermittently fail
 - Some complex JOIN queries may return unexpected results
@@ -156,6 +159,16 @@ This creates sample Parquet files in `./data/` directory with employee and depar
 #### Single-Node Mode
 ```bash
 ./bytedb ./data
+```
+
+**Note**: Tables must be registered before use. Use one of these methods:
+```sql
+-- Using catalog system (recommended)
+\catalog enable file
+\catalog register employees employees.parquet
+
+-- Or using table registry
+\register employees employees.parquet
 ```
 
 #### Distributed Mode (Demo)
