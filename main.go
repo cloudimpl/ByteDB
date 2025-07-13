@@ -11,43 +11,83 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: bytedb <data_directory>")
-		fmt.Println("Example: bytedb ./data")
-		os.Exit(1)
+	// Parse command line arguments
+	var catalogPath string
+	var persistCatalog bool
+	
+	for i := 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		if arg == "--persist" || arg == "-p" {
+			persistCatalog = true
+		} else if !strings.HasPrefix(arg, "-") {
+			catalogPath = arg
+		}
 	}
 
-	dataPath := os.Args[1]
-	engine := core.NewQueryEngine(dataPath)
+	// Use current working directory as the base for relative paths in queries
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Printf("Warning: Could not determine current directory: %v\n", err)
+		cwd = "."
+	}
+
+	// Create query engine with current working directory
+	engine := core.NewQueryEngine(cwd)
 	defer engine.Close()
 
-	// Check if there's a table mappings configuration file
-	configPath := fmt.Sprintf("%s/table_mappings.json", dataPath)
-	if _, err := os.Stat(configPath); err == nil {
-		if err := engine.LoadTableMappings(configPath); err != nil {
-			fmt.Printf("Warning: Failed to load table mappings from %s: %v\n", configPath, err)
-		} else {
-			fmt.Printf("Loaded table mappings from %s\n", configPath)
+	// Enable catalog system - default to in-memory for console
+	if persistCatalog {
+		// Use file-based catalog if persistence is requested
+		if catalogPath == "" {
+			catalogPath = "."
 		}
-	}
-	
-	// Check if there's a catalog configuration file
-	catalogConfigPath := fmt.Sprintf("%s/catalog.json", dataPath)
-	if _, err := os.Stat(catalogConfigPath); err == nil {
-		// Load catalog configuration
-		config := make(map[string]interface{})
-		config["base_path"] = fmt.Sprintf("%s/.catalog", dataPath)
-		config["migrate_registry"] = true
+		catalogConfig := make(map[string]interface{})
+		catalogConfig["base_path"] = fmt.Sprintf("%s/.catalog", catalogPath)
 		
-		if err := engine.EnableCatalog("file", config); err != nil {
-			fmt.Printf("Warning: Failed to enable catalog: %v\n", err)
+		if err := engine.EnableCatalog("file", catalogConfig); err != nil {
+			fmt.Printf("Warning: Failed to enable file-based catalog: %v\n", err)
+			// Fall back to memory catalog
+			if err := engine.EnableCatalog("memory", nil); err != nil {
+				fmt.Printf("Error: Failed to enable catalog system: %v\n", err)
+			}
 		} else {
-			fmt.Printf("Catalog system enabled with file-based metadata store\n")
+			fmt.Printf("Catalog persistence enabled in %s/.catalog\n", catalogPath)
+		}
+	} else {
+		// Default to in-memory catalog
+		if err := engine.EnableCatalog("memory", nil); err != nil {
+			fmt.Printf("Warning: Failed to enable in-memory catalog: %v\n", err)
 		}
 	}
 
-	fmt.Println("ByteDB - Simple SQL Query Engine for Parquet Files")
-	fmt.Println("Type 'help' for available commands, 'exit' to quit")
+	// Check if there's a table mappings configuration file
+	configPaths := []string{"table_mappings.json"}
+	if catalogPath != "" {
+		configPaths = append(configPaths, fmt.Sprintf("%s/table_mappings.json", catalogPath))
+	}
+	
+	for _, configPath := range configPaths {
+		if _, err := os.Stat(configPath); err == nil {
+			if err := engine.LoadTableMappings(configPath); err != nil {
+				fmt.Printf("Warning: Failed to load table mappings from %s: %v\n", configPath, err)
+			} else {
+				fmt.Printf("Loaded table mappings from %s\n", configPath)
+			}
+			break
+		}
+	}
+
+	fmt.Println("ByteDB - Advanced SQL Query Engine for Parquet Files")
+	fmt.Println("Usage: bytedb [options] [catalog_path]")
+	fmt.Println()
+	fmt.Println("Options:")
+	fmt.Println("  --persist, -p    Enable persistent catalog (default: in-memory)")
+	fmt.Println()
+	fmt.Println("Quick start:")
+	fmt.Println("  - Query files directly: SELECT * FROM read_parquet('data/sales.parquet')")
+	fmt.Println("  - Create tables: CREATE TABLE sales AS SELECT * FROM read_parquet('sales.parquet')")
+	fmt.Println()
+	fmt.Println("Type 'help' for more commands, 'exit' to quit")
 	fmt.Println()
 
 	scanner := bufio.NewScanner(os.Stdin)
@@ -154,14 +194,24 @@ func main() {
 
 func printHelp() {
 	fmt.Println("Available commands:")
-	fmt.Println("  SELECT * FROM table_name           - Query a parquet file")
+	fmt.Println()
+	fmt.Println("Table Creation (DuckDB-style):")
+	fmt.Println("  CREATE TABLE employees AS SELECT * FROM read_parquet('employees.parquet')")
+	fmt.Println("  CREATE TABLE IF NOT EXISTS users AS SELECT * FROM read_parquet('/path/to/users.parquet')")
+	fmt.Println()
+	fmt.Println("Direct File Queries:")
+	fmt.Println("  SELECT * FROM read_parquet('data/sales_2024.parquet')  - Query file directly")
+	fmt.Println("  SELECT * FROM read_parquet('s3://bucket/file.parquet') - Query from S3 (if supported)")
+	fmt.Println()
+	fmt.Println("Standard Queries:")
+	fmt.Println("  SELECT * FROM table_name           - Query a registered table")
 	fmt.Println("  SELECT col1, col2 FROM table_name  - Select specific columns")
 	fmt.Println("  SELECT * FROM table_name WHERE col = 'value'  - Filter rows")
 	fmt.Println("  SELECT * FROM table_name LIMIT 10  - Limit results")
 	fmt.Println()
 	fmt.Println("Meta commands:")
 	fmt.Println("  \\d table_name                     - Describe table schema")
-	fmt.Println("  \\l                                 - List all tables")
+	fmt.Println("  \\l                                 - List all registered tables")
 	fmt.Println("  \\json <sql>                        - Return results as JSON")
 	fmt.Println("  help                               - Show this help")
 	fmt.Println("  exit, quit                         - Exit the program")
@@ -170,16 +220,15 @@ func printHelp() {
 	fmt.Println("  \\dc                                - List catalogs")
 	fmt.Println("  \\dn [catalog]                      - List schemas in catalog")
 	fmt.Println("  \\dt [pattern]                      - List tables matching pattern")
-	fmt.Println("  \\catalog enable <type> [options]   - Enable catalog system")
-	fmt.Println("  \\catalog register <table> <path>   - Register table in catalog")
+	fmt.Println("  \\catalog register <table> <path>   - Register table in catalog (legacy)")
 	fmt.Println("  \\catalog drop <table>              - Drop table from catalog")
 	fmt.Println("  \\catalog add-file <table> <path>   - Add parquet file to existing table")
 	fmt.Println("  \\catalog remove-file <table> <path> - Remove file from table")
 	fmt.Println()
 	fmt.Println("Notes:")
-	fmt.Println("  - Table names correspond to .parquet files in the data directory")
-	fmt.Println("  - Use table_name.parquet for files in the data directory")
-	fmt.Println("  - Supported WHERE operators: =, !=, <, <=, >, >=, LIKE")
+	fmt.Println("  - File paths in read_parquet() are relative to current directory")
+	fmt.Println("  - Use absolute paths for files outside current directory")
+	fmt.Println("  - Supported WHERE operators: =, !=, <, <=, >, >=, LIKE, BETWEEN, IN")
 }
 
 func handleCatalogCommand(engine *core.QueryEngine, command string) {

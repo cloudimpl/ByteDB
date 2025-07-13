@@ -172,20 +172,28 @@ This creates sample Parquet files in `./data/` directory with employee and depar
 
 ### Start the Query Engine
 
-#### Single-Node Mode
 ```bash
-./bytedb ./data
+# Start with in-memory catalog (default)
+./bytedb
+
+# Start with persistent catalog
+./bytedb --persist
+./bytedb -p /path/to/catalog
 ```
 
-**Note**: Tables must be registered before use. Use one of these methods:
+**Quick Start - No Registration Required!**
 ```sql
--- Using catalog system (recommended)
-\catalog enable file
-\catalog register employees employees.parquet
+-- Query parquet files directly
+SELECT * FROM read_parquet('data/employees.parquet');
 
--- Or using table registry
-\register employees employees.parquet
+-- Create tables from parquet files (stored in memory by default)
+CREATE TABLE employees AS SELECT * FROM read_parquet('data/employees.parquet');
+
+-- Then query the registered table
+SELECT * FROM employees WHERE salary > 50000;
 ```
+
+**Note**: By default, ByteDB uses an in-memory catalog. Tables created with `CREATE TABLE` will be lost when you exit. Use `--persist` flag to save tables between sessions.
 
 #### Distributed Mode (Demo)
 ```bash

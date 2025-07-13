@@ -1,6 +1,44 @@
 # Breaking Changes
 
-## Table Name Resolution (Latest)
+## Command Line Usage Change (Latest)
+
+### Previous Behavior
+- ByteDB required a data directory as the first argument: `bytedb ./data`
+- All table queries were relative to this data directory
+
+### New Behavior
+- ByteDB now uses an in-memory catalog by default
+- Optional persistent catalog with `--persist` flag: `bytedb --persist [catalog_path]`
+- File paths in queries are relative to current working directory
+- No required command line arguments
+
+### Migration Guide
+
+#### Old way:
+```bash
+./bytedb ./data
+bytedb> SELECT * FROM employees;  # Looks for ./data/employees.parquet
+```
+
+#### New way:
+```bash
+# For quick exploration (in-memory catalog)
+./bytedb
+bytedb> SELECT * FROM read_parquet('data/employees.parquet');
+
+# For persistent tables
+./bytedb --persist
+bytedb> CREATE TABLE employees AS SELECT * FROM read_parquet('data/employees.parquet');
+bytedb> SELECT * FROM employees;
+```
+
+### Benefits
+- More flexible file access - can query files from any location
+- No need to copy files to a specific data directory
+- Direct querying without registration using `read_parquet()`
+- Better alignment with DuckDB usage patterns
+
+## Table Name Resolution (Previous)
 
 ### Previous Behavior
 - If a table was not explicitly registered, ByteDB would automatically look for a file named `<table_name>.parquet` in the data directory
