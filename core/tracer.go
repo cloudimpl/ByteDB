@@ -54,6 +54,16 @@ const (
 	TraceComponentFilter      TraceComponent = "FILTER"
 	TraceComponentAggregate   TraceComponent = "AGGREGATE"
 	TraceComponentCache       TraceComponent = "CACHE"
+	// Distributed components
+	TraceComponentDistributed    TraceComponent = "DISTRIBUTED"
+	TraceComponentCoordinator    TraceComponent = "COORDINATOR"
+	TraceComponentWorker         TraceComponent = "WORKER"
+	TraceComponentPlanning       TraceComponent = "PLANNING"
+	TraceComponentFragment       TraceComponent = "FRAGMENT"
+	TraceComponentNetwork        TraceComponent = "NETWORK"
+	TraceComponentPartitioning   TraceComponent = "PARTITIONING"
+	TraceComponentAggregation    TraceComponent = "AGGREGATION"
+	TraceComponentMonitoring     TraceComponent = "MONITORING"
 )
 
 // TraceEntry represents a single trace entry
@@ -127,7 +137,10 @@ func (t *Tracer) configureFromEnv() {
 				TraceComponentQuery, TraceComponentParser, TraceComponentOptimizer,
 				TraceComponentExecution, TraceComponentCase, TraceComponentSort,
 				TraceComponentJoin, TraceComponentFilter, TraceComponentAggregate,
-				TraceComponentCache,
+				TraceComponentCache, TraceComponentDistributed, TraceComponentCoordinator,
+				TraceComponentWorker, TraceComponentPlanning, TraceComponentFragment,
+				TraceComponentNetwork, TraceComponentPartitioning, TraceComponentAggregation,
+				TraceComponentMonitoring,
 			} {
 				t.enabledComponents[comp] = true
 			}

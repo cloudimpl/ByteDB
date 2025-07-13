@@ -707,6 +707,24 @@ func ParseTraceComponent(comp string) core.TraceComponent {
 		return core.TraceComponentAggregate
 	case "CACHE":
 		return core.TraceComponentCache
+	case "DISTRIBUTED":
+		return core.TraceComponentDistributed
+	case "COORDINATOR":
+		return core.TraceComponentCoordinator
+	case "WORKER":
+		return core.TraceComponentWorker
+	case "PLANNING":
+		return core.TraceComponentPlanning
+	case "FRAGMENT":
+		return core.TraceComponentFragment
+	case "NETWORK":
+		return core.TraceComponentNetwork
+	case "PARTITIONING":
+		return core.TraceComponentPartitioning
+	case "AGGREGATION":
+		return core.TraceComponentAggregation
+	case "MONITORING":
+		return core.TraceComponentMonitoring
 	default:
 		return ""
 	}

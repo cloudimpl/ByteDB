@@ -23,6 +23,8 @@ ByteDB Distributed extends the single-node query engine to support distributed q
 
 7. **🆕 Metrics Export Integration**: Added Prometheus-compatible metrics export and JSON format support for integration with external monitoring systems like Grafana, Elasticsearch, and custom analytics platforms.
 
+8. **🆕 Enhanced Distributed Tracing**: Implemented comprehensive structured tracing across coordinator and worker components with 9 new distributed-specific trace components, providing deep observability into query execution, performance optimization, and system health monitoring.
+
 ## Architecture
 
 ### Components
@@ -396,10 +398,12 @@ worker:
    - Worker utilization
    - Cache hit rates
 
-2. **Logging**
-   - Distributed tracing
-   - Query execution logs
-   - Error tracking
+2. **Enhanced Distributed Tracing System**
+   - **9 Distributed Components**: COORDINATOR, WORKER, FRAGMENT, PLANNING, NETWORK, AGGREGATION, PARTITIONING, MONITORING
+   - **Structured Context**: Rich contextual information with performance metrics
+   - **Environment Control**: `BYTEDB_TRACE_LEVEL` and `BYTEDB_TRACE_COMPONENTS` configuration
+   - **Test Integration**: Built-in tracing support in distributed test framework
+   - **Production Ready**: Minimal overhead with configurable verbosity levels
 
 3. **Dashboard**
    - Cluster health
@@ -468,3 +472,52 @@ GROUP BY department
 4. **Result**:
    - Network transfer: ~1KB instead of ~1MB
    - Execution time: Sub-second for millions of rows
+
+## Distributed Tracing in Action
+
+### Example: Tracing a COUNT Query
+
+```bash
+# Enable comprehensive distributed tracing
+export BYTEDB_TRACE_LEVEL=INFO
+export BYTEDB_TRACE_COMPONENTS=COORDINATOR,WORKER,FRAGMENT,AGGREGATION
+
+# Run distributed query
+./distributed_sql_test_runner -file tests/distributed_simple_test.json -verbose
+```
+
+**Trace Output**:
+```
+[18:24:37.043] INFO/COORDINATOR: Initializing distributed coordinator
+[18:24:37.066] INFO/COORDINATOR: Executing distributed query | requestID=test-123 sql=SELECT COUNT(*) FROM employees timeout=30s
+[18:24:37.067] INFO/WORKER: Initializing worker | workerID=worker-1 dataPath=/data/worker-1
+[18:24:37.089] INFO/FRAGMENT: Executing query fragment | workerID=worker-1 fragmentID=scan_fragment_0_agg sql=SELECT COUNT(*) activeQueries=1
+[18:24:37.092] INFO/FRAGMENT: Fragment execution completed | workerID=worker-1 fragmentID=scan_fragment_0_agg duration=3.422ms rowsReturned=1 bytesRead=4096 cacheHits=0
+[18:24:37.094] INFO/AGGREGATION: Partial aggregation applied | function=COUNT partialResults=3 finalResult=10
+```
+
+### Trace Analysis Insights
+
+1. **Coordinator Orchestration**: Query distribution and management
+2. **Worker Efficiency**: Fragment execution in ~3.4ms per worker
+3. **Network Optimization**: Partial aggregation reduces transfer
+4. **Performance Metrics**: Detailed timing and resource usage
+
+### Production Monitoring Example
+
+```bash
+# Production-safe tracing configuration
+export BYTEDB_TRACE_LEVEL=INFO
+export BYTEDB_TRACE_COMPONENTS=COORDINATOR,MONITORING
+
+# Automated monitoring setup
+./distributed_sql_test_runner -workers 5 -transport memory | \
+  grep -E "(COORDINATOR|MONITORING)" | \
+  tee /var/log/bytedb/distributed_trace.log
+```
+
+This provides continuous monitoring of:
+- Query distribution and coordination
+- Worker health and resource utilization  
+- System performance and optimization effectiveness
+- Error detection and troubleshooting information

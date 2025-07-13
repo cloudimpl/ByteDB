@@ -173,6 +173,53 @@ The tracing system is organized by components, allowing granular control:
 - **Traces**: Cache hits, misses, evictions
 - **Example**: `Cache miss for query | sql=SELECT ...`
 
+## Distributed Components
+
+### TraceComponentDistributed
+- **Purpose**: General distributed operations
+- **Traces**: Cluster operations, coordination activities
+- **Example**: `Distributed cluster initialized | workers=3 transport=memory`
+
+### TraceComponentCoordinator
+- **Purpose**: Coordinator-specific operations
+- **Traces**: Worker management, query distribution, result aggregation
+- **Example**: `Executing distributed query | requestID=12345 sql=SELECT COUNT(*) workers=3`
+
+### TraceComponentWorker
+- **Purpose**: Worker-specific operations
+- **Traces**: Worker initialization, status updates, resource monitoring
+- **Example**: `Worker initialized | workerID=worker-1 dataPath=/data/worker-1`
+
+### TraceComponentPlanning
+- **Purpose**: Distributed query planning
+- **Traces**: Plan generation, cost estimation, optimization decisions
+- **Example**: `Creating distributed plan | fragments=3 estimatedCost=1024 optimization=partial_agg`
+
+### TraceComponentFragment
+- **Purpose**: Query fragment execution
+- **Traces**: Fragment lifecycle, execution statistics, performance metrics
+- **Example**: `Fragment execution completed | fragmentID=scan_0 duration=250ms rows=1000`
+
+### TraceComponentNetwork
+- **Purpose**: Network communications
+- **Traces**: Data transfer, connection management, network optimization
+- **Example**: `Data transfer optimized | originalBytes=1048576 transferredBytes=128 reduction=99.99%`
+
+### TraceComponentPartitioning
+- **Purpose**: Data partitioning strategies
+- **Traces**: Partition assignment, data distribution, load balancing
+- **Example**: `Data partitioned across workers | strategy=round_robin workers=3 fragments=6`
+
+### TraceComponentAggregation
+- **Purpose**: Distributed aggregation operations
+- **Traces**: Partial aggregation, result combination, optimization effectiveness
+- **Example**: `Partial aggregation applied | function=COUNT partialResults=3 finalResult=1000`
+
+### TraceComponentMonitoring
+- **Purpose**: System monitoring and metrics
+- **Traces**: Performance metrics, health checks, resource utilization
+- **Example**: `Worker health check completed | cpuUsage=45% memoryUsage=60% status=healthy`
+
 ## Usage Examples
 
 ### Debugging CASE Expression Issues
@@ -412,6 +459,110 @@ export BYTEDB_TRACE_COMPONENTS=PARSER,QUERY
 ```bash
 export BYTEDB_TRACE_LEVEL=DEBUG
 export BYTEDB_TRACE_COMPONENTS=JOIN,EXECUTION
+```
+
+## Distributed Tracing Examples
+
+### Debugging Distributed Query Performance
+
+```bash
+# Enable comprehensive distributed tracing
+export BYTEDB_TRACE_LEVEL=INFO
+export BYTEDB_TRACE_COMPONENTS=COORDINATOR,WORKER,FRAGMENT,AGGREGATION
+
+# Run distributed query
+./distributed_sql_test_runner -file tests/distributed_basic_queries.sql -verbose
+```
+
+**Output:**
+```
+[18:24:37.043] INFO/COORDINATOR: Initializing distributed coordinator
+[18:24:37.066] INFO/COORDINATOR: Executing distributed query | requestID=test-123 sql=SELECT COUNT(*) FROM employees timeout=30s
+[18:24:37.067] INFO/WORKER: Initializing worker | workerID=worker-1 dataPath=/data/worker-1
+[18:24:37.089] INFO/FRAGMENT: Executing query fragment | workerID=worker-1 fragmentID=scan_fragment_0_agg sql=SELECT COUNT(*) as total_count FROM employees activeQueries=1
+[18:24:37.092] INFO/FRAGMENT: Fragment execution completed | workerID=worker-1 fragmentID=scan_fragment_0_agg duration=3.422ms rowsReturned=1 bytesRead=4096 cacheHits=0 cacheMisses=1
+[18:24:37.094] INFO/AGGREGATION: Partial aggregation applied | function=COUNT partialResults=3 finalResult=10
+```
+
+### Monitoring Worker Health and Performance
+
+```bash
+# Monitor worker performance and health
+export BYTEDB_TRACE_LEVEL=DEBUG
+export BYTEDB_TRACE_COMPONENTS=WORKER,MONITORING,NETWORK
+
+# Run with worker monitoring
+./distributed_sql_test_runner -workers 3 -transport memory -verbose
+```
+
+**Output:**
+```
+[18:24:37.030] INFO/WORKER: Initializing worker | workerID=test-worker-1 dataPath=./data/worker-1
+[18:24:37.031] INFO/WORKER: Loaded table mappings | workerID=test-worker-1 configPath=./data/worker-1/table_mappings.json
+[18:24:37.032] DEBUG/MONITORING: Worker health check completed | cpuUsage=15% memoryUsage=45% status=healthy
+[18:24:37.094] DEBUG/NETWORK: Data transfer optimized | originalBytes=1048576 transferredBytes=256 reduction=99.98%
+```
+
+### Tracing Query Planning and Optimization
+
+```bash
+# Debug distributed query planning
+export BYTEDB_TRACE_LEVEL=DEBUG
+export BYTEDB_TRACE_COMPONENTS=PLANNING,OPTIMIZER,PARTITIONING
+
+# Run complex distributed query
+```
+
+**Output:**
+```
+[18:24:37.055] DEBUG/PLANNING: Creating distributed plan | fragments=3 estimatedCost=610.46 optimization=partial_aggregation
+[18:24:37.056] DEBUG/PARTITIONING: Data partitioned across workers | strategy=physical_partitioning workers=3 fragments=3
+[18:24:37.057] DEBUG/OPTIMIZER: Applied query optimization | type=partial_aggregation costReduction=40% networkSavings=99.99%
+```
+
+### Comprehensive Distributed System Debugging
+
+```bash
+# Enable all distributed components for maximum visibility
+export BYTEDB_TRACE_LEVEL=VERBOSE
+export BYTEDB_TRACE_COMPONENTS=COORDINATOR,WORKER,FRAGMENT,PLANNING,NETWORK,AGGREGATION,MONITORING
+
+# Run distributed tests
+./distributed_sql_test_runner -dir tests -verbose
+```
+
+This will provide complete visibility into:
+- Coordinator query processing and worker management
+- Worker fragment execution and resource utilization
+- Network optimization and data transfer efficiency
+- Query planning decisions and cost optimizations
+- Aggregation strategies and result combination
+- System health and performance monitoring
+
+### Environment Variable Examples for Different Scenarios
+
+**Production Monitoring:**
+```bash
+export BYTEDB_TRACE_LEVEL=INFO
+export BYTEDB_TRACE_COMPONENTS=COORDINATOR,MONITORING
+```
+
+**Development Debugging:**
+```bash
+export BYTEDB_TRACE_LEVEL=DEBUG
+export BYTEDB_TRACE_COMPONENTS=ALL
+```
+
+**Performance Analysis:**
+```bash
+export BYTEDB_TRACE_LEVEL=INFO
+export BYTEDB_TRACE_COMPONENTS=FRAGMENT,AGGREGATION,NETWORK
+```
+
+**Worker Troubleshooting:**
+```bash
+export BYTEDB_TRACE_LEVEL=VERBOSE
+export BYTEDB_TRACE_COMPONENTS=WORKER,FRAGMENT,MONITORING
 ```
 
 ### Getting Help

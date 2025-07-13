@@ -39,6 +39,9 @@ type WorkerConnection struct {
 
 // NewCoordinator creates a new coordinator instance
 func NewCoordinator(transport communication.Transport) *Coordinator {
+	tracer := core.GetTracer()
+	tracer.Info(core.TraceComponentCoordinator, "Initializing distributed coordinator")
+	
 	return &Coordinator{
 		workers:      make(map[string]*WorkerConnection),
 		parser:       core.NewSQLParser(),
@@ -55,16 +58,29 @@ func NewCoordinator(transport communication.Transport) *Coordinator {
 // ExecuteQuery implements the CoordinatorService interface
 func (c *Coordinator) ExecuteQuery(ctx context.Context, req *communication.DistributedQueryRequest) (*communication.DistributedQueryResponse, error) {
 	startTime := time.Now()
+	tracer := core.GetTracer()
 	
 	// Start query monitoring
 	queryExecution := c.queryMonitor.StartQueryMonitoring(req.RequestID, req.SQL)
 	
-	log.Printf("Coordinator: Executing distributed query: %s", req.SQL)
+	tracer.Info(core.TraceComponentCoordinator, "Executing distributed query", core.TraceContext(
+		"requestID", req.RequestID,
+		"sql", req.SQL,
+		"timeout", req.Timeout,
+	))
 	
 	// Parse the query
 	queryExecution.StartPlanning()
+	tracer.Debug(core.TraceComponentParser, "Parsing distributed query", core.TraceContext(
+		"requestID", req.RequestID,
+	))
+	
 	parsedQuery, err := c.parser.Parse(req.SQL)
 	if err != nil {
+		tracer.Error(core.TraceComponentParser, "Query parsing failed", core.TraceContext(
+			"requestID", req.RequestID,
+			"error", err.Error(),
+		))
 		queryExecution.SetError(err)
 		queryExecution.Finish()
 		return &communication.DistributedQueryResponse{
@@ -73,6 +89,13 @@ func (c *Coordinator) ExecuteQuery(ctx context.Context, req *communication.Distr
 			Duration:  time.Since(startTime),
 		}, nil
 	}
+	
+	tracer.Debug(core.TraceComponentParser, "Query parsed successfully", core.TraceContext(
+		"requestID", req.RequestID,
+		"queryType", parsedQuery.Type.String(),
+		"isAggregate", parsedQuery.IsAggregate,
+		"hasGroupBy", len(parsedQuery.GroupBy) > 0,
+	))
 	
 	// Set query type for monitoring
 	queryType := parsedQuery.Type.String()
@@ -161,16 +184,31 @@ func (c *Coordinator) RegisterWorker(ctx context.Context, info *communication.Wo
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	
-	log.Printf("Coordinator: Registering worker %s at %s", info.ID, info.Address)
+	tracer := core.GetTracer()
+	tracer.Info(core.TraceComponentCoordinator, "Registering worker", core.TraceContext(
+		"workerID", info.ID,
+		"address", info.Address,
+		"resources", info.Resources,
+	))
 	
 	// Create client connection to worker
 	client, err := c.transport.NewWorkerClient(info.Address)
 	if err != nil {
+		tracer.Error(core.TraceComponentCoordinator, "Failed to connect to worker", core.TraceContext(
+			"workerID", info.ID,
+			"address", info.Address,
+			"error", err.Error(),
+		))
 		return fmt.Errorf("failed to connect to worker %s: %v", info.ID, err)
 	}
 	
 	// Test connection
 	if err := client.Health(ctx); err != nil {
+		tracer.Error(core.TraceComponentCoordinator, "Worker health check failed", core.TraceContext(
+			"workerID", info.ID,
+			"address", info.Address,
+			"error", err.Error(),
+		))
 		client.Close()
 		return fmt.Errorf("worker %s health check failed: %v", info.ID, err)
 	}
@@ -178,6 +216,11 @@ func (c *Coordinator) RegisterWorker(ctx context.Context, info *communication.Wo
 	// Get initial status
 	status, err := client.GetStatus(ctx)
 	if err != nil {
+		tracer.Error(core.TraceComponentCoordinator, "Failed to get worker status", core.TraceContext(
+			"workerID", info.ID,
+			"address", info.Address,
+			"error", err.Error(),
+		))
 		client.Close()
 		return fmt.Errorf("failed to get worker %s status: %v", info.ID, err)
 	}
@@ -189,7 +232,14 @@ func (c *Coordinator) RegisterWorker(ctx context.Context, info *communication.Wo
 		LastSeen: time.Now(),
 	}
 	
-	log.Printf("Coordinator: Worker %s registered successfully", info.ID)
+	tracer.Info(core.TraceComponentCoordinator, "Worker registered successfully", core.TraceContext(
+		"workerID", info.ID,
+		"address", info.Address,
+		"dataPath", info.DataPath,
+		"status", status.Status,
+		"cpuUsage", status.CPUUsage,
+		"memoryUsage", status.MemoryUsage,
+	))
 	
 	// Initialize or update distributed planner with current workers
 	c.updateDistributedPlanner()
@@ -203,9 +253,18 @@ func (c *Coordinator) UnregisterWorker(ctx context.Context, workerID string) err
 	defer c.mutex.Unlock()
 	
 	if worker, exists := c.workers[workerID]; exists {
+		tracer := core.GetTracer()
+		tracer.Info(core.TraceComponentCoordinator, "Unregistering worker", core.TraceContext(
+			"workerID", workerID,
+			"address", worker.Info.Address,
+		))
+		
 		worker.Client.Close()
 		delete(c.workers, workerID)
-		log.Printf("Coordinator: Worker %s unregistered", workerID)
+		
+		tracer.Info(core.TraceComponentCoordinator, "Worker unregistered successfully", core.TraceContext(
+			"workerID", workerID,
+		))
 	}
 	
 	return nil
@@ -241,7 +300,10 @@ func (c *Coordinator) Health(ctx context.Context) error {
 func (c *Coordinator) Shutdown(ctx context.Context) error {
 	c.mutex.Lock()
 	
-	log.Println("Coordinator: Shutting down...")
+	tracer := core.GetTracer()
+	tracer.Info(core.TraceComponentCoordinator, "Shutting down coordinator", core.TraceContext(
+		"activeWorkers", len(c.workers),
+	))
 	
 	workers := make(map[string]*WorkerConnection)
 	for id, worker := range c.workers {
@@ -253,11 +315,19 @@ func (c *Coordinator) Shutdown(ctx context.Context) error {
 	
 	// Close worker connections outside the lock
 	for workerID, worker := range workers {
+		tracer.Debug(core.TraceComponentCoordinator, "Disconnecting from worker", core.TraceContext(
+			"workerID", workerID,
+			"address", worker.Info.Address,
+		))
 		worker.Client.Close()
-		log.Printf("Coordinator: Disconnected from worker %s", workerID)
+		tracer.Info(core.TraceComponentCoordinator, "Disconnected from worker", core.TraceContext(
+			"workerID", workerID,
+		))
 	}
 	
-	log.Println("Coordinator: Shutdown complete")
+	tracer.Info(core.TraceComponentCoordinator, "Coordinator shutdown complete", core.TraceContext(
+		"disconnectedWorkers", len(workers),
+	))
 	return nil
 }
 
@@ -288,7 +358,12 @@ func (c *Coordinator) updateDistributedPlanner() {
 	
 	// Create new distributed planner
 	c.distributedPlanner = planner.NewDistributedQueryPlanner(workers, tableStats, preferences)
-	log.Printf("Coordinator: Updated distributed planner with %d workers", len(workers))
+	tracer := core.GetTracer()
+	tracer.Info(core.TraceComponentCoordinator, "Updated distributed planner", core.TraceContext(
+		"activeWorkers", len(workers),
+		"totalWorkers", len(c.workers),
+		"preferences", preferences,
+	))
 }
 
 // createTableStatistics creates table statistics for the planner

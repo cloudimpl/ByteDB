@@ -27,6 +27,12 @@ type Worker struct {
 
 // NewWorker creates a new worker instance
 func NewWorker(id, dataPath string) *Worker {
+	tracer := core.GetTracer()
+	tracer.Info(core.TraceComponentWorker, "Initializing worker", core.TraceContext(
+		"workerID", id,
+		"dataPath", dataPath,
+	))
+	
 	// Create query engine for this worker's data
 	engine := core.NewQueryEngine(dataPath)
 	
@@ -34,9 +40,16 @@ func NewWorker(id, dataPath string) *Worker {
 	workerConfigPath := fmt.Sprintf("%s/table_mappings.json", dataPath)
 	if _, err := os.Stat(workerConfigPath); err == nil {
 		if err := engine.LoadTableMappings(workerConfigPath); err != nil {
-			log.Printf("Worker %s: Failed to load table mappings: %v", id, err)
+			tracer.Error(core.TraceComponentWorker, "Failed to load table mappings", core.TraceContext(
+				"workerID", id,
+				"configPath", workerConfigPath,
+				"error", err.Error(),
+			))
 		} else {
-			log.Printf("Worker %s: Loaded table mappings from %s", id, workerConfigPath)
+			tracer.Info(core.TraceComponentWorker, "Loaded table mappings", core.TraceContext(
+				"workerID", id,
+				"configPath", workerConfigPath,
+			))
 		}
 	}
 	
@@ -60,6 +73,7 @@ func NewWorker(id, dataPath string) *Worker {
 // ExecuteFragment implements the WorkerService interface
 func (w *Worker) ExecuteFragment(ctx context.Context, fragment *communication.QueryFragment) (*communication.FragmentResult, error) {
 	startTime := time.Now()
+	tracer := core.GetTracer()
 	
 	w.queryMutex.Lock()
 	w.activeQueries++
@@ -72,12 +86,22 @@ func (w *Worker) ExecuteFragment(ctx context.Context, fragment *communication.Qu
 		w.queryMutex.Unlock()
 	}()
 	
-	log.Printf("Worker %s: Executing fragment %s: %s", w.id, fragment.ID, fragment.SQL)
+	tracer.Info(core.TraceComponentFragment, "Executing query fragment", core.TraceContext(
+		"workerID", w.id,
+		"fragmentID", fragment.ID,
+		"sql", fragment.SQL,
+		"activeQueries", w.activeQueries,
+	))
 	
 	// Execute the fragment using the core query engine
 	result, err := w.executeQueryFragment(ctx, fragment)
 	if err != nil {
-		log.Printf("Worker %s: Fragment %s execution failed: %v", w.id, fragment.ID, err)
+		tracer.Error(core.TraceComponentFragment, "Fragment execution failed", core.TraceContext(
+			"workerID", w.id,
+			"fragmentID", fragment.ID,
+			"error", err.Error(),
+			"duration", time.Since(startTime),
+		))
 		return &communication.FragmentResult{
 			FragmentID: fragment.ID,
 			Error:      err.Error(),
@@ -107,8 +131,15 @@ func (w *Worker) ExecuteFragment(ctx context.Context, fragment *communication.Qu
 		Stats:      stats,
 	}
 	
-	log.Printf("Worker %s: Fragment %s completed in %v, returned %d rows", 
-		w.id, fragment.ID, duration, result.Count)
+	tracer.Info(core.TraceComponentFragment, "Fragment execution completed", core.TraceContext(
+		"workerID", w.id,
+		"fragmentID", fragment.ID,
+		"duration", duration,
+		"rowsReturned", result.Count,
+		"bytesRead", stats.BytesRead,
+		"cacheHits", stats.CacheHits,
+		"cacheMisses", stats.CacheMisses,
+	))
 	
 	return fragmentResult, nil
 }
