@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -54,6 +55,9 @@ func NewFunctionRegistry() *FunctionRegistry {
 
 	// Register date functions
 	registry.registerDateFunctions()
+	
+	// Register arithmetic functions
+	registry.registerArithmeticFunctions()
 
 	return registry
 }
@@ -385,6 +389,136 @@ func (fr *FunctionRegistry) EvaluateFunction(call *FunctionCall, row Row) (inter
 
 	// Evaluate the function
 	return fn.Evaluator(evaluatedArgs)
+}
+
+// registerArithmeticFunctions registers arithmetic operations
+func (fr *FunctionRegistry) registerArithmeticFunctions() {
+	// ADD
+	fr.functions["add"] = FunctionDefinition{
+		Name:        "ADD",
+		Type:        MathFunc,
+		MinArgs:     2,
+		MaxArgs:     2,
+		Description: "Adds two numbers",
+		Evaluator: func(args []interface{}) (interface{}, error) {
+			return arithmeticOp(args[0], args[1], "+")
+		},
+	}
+	
+	// SUBTRACT
+	fr.functions["subtract"] = FunctionDefinition{
+		Name:        "SUBTRACT",
+		Type:        MathFunc,
+		MinArgs:     2,
+		MaxArgs:     2,
+		Description: "Subtracts second number from first",
+		Evaluator: func(args []interface{}) (interface{}, error) {
+			return arithmeticOp(args[0], args[1], "-")
+		},
+	}
+	
+	// MULTIPLY
+	fr.functions["multiply"] = FunctionDefinition{
+		Name:        "MULTIPLY",
+		Type:        MathFunc,
+		MinArgs:     2,
+		MaxArgs:     2,
+		Description: "Multiplies two numbers",
+		Evaluator: func(args []interface{}) (interface{}, error) {
+			return arithmeticOp(args[0], args[1], "*")
+		},
+	}
+	
+	// DIVIDE
+	fr.functions["divide"] = FunctionDefinition{
+		Name:        "DIVIDE",
+		Type:        MathFunc,
+		MinArgs:     2,
+		MaxArgs:     2,
+		Description: "Divides first number by second",
+		Evaluator: func(args []interface{}) (interface{}, error) {
+			return arithmeticOp(args[0], args[1], "/")
+		},
+	}
+	
+	// MODULO
+	fr.functions["modulo"] = FunctionDefinition{
+		Name:        "MODULO",
+		Type:        MathFunc,
+		MinArgs:     2,
+		MaxArgs:     2,
+		Description: "Returns remainder of division",
+		Evaluator: func(args []interface{}) (interface{}, error) {
+			return arithmeticOp(args[0], args[1], "%")
+		},
+	}
+}
+
+// arithmeticOp performs arithmetic operations on two values
+func arithmeticOp(a, b interface{}, op string) (interface{}, error) {
+	if a == nil || b == nil {
+		return nil, nil
+	}
+	
+	// Try to convert both to float64 for arithmetic
+	aFloat, err := toFloat64(a)
+	if err != nil {
+		return nil, fmt.Errorf("arithmetic: %v", err)
+	}
+	
+	bFloat, err := toFloat64(b)
+	if err != nil {
+		return nil, fmt.Errorf("arithmetic: %v", err)
+	}
+	
+	switch op {
+	case "+":
+		return aFloat + bFloat, nil
+	case "-":
+		return aFloat - bFloat, nil
+	case "*":
+		return aFloat * bFloat, nil
+	case "/":
+		if bFloat == 0 {
+			return nil, fmt.Errorf("division by zero")
+		}
+		return aFloat / bFloat, nil
+	case "%":
+		if bFloat == 0 {
+			return nil, fmt.Errorf("modulo by zero")
+		}
+		// For modulo, convert to int
+		aInt := int(aFloat)
+		bInt := int(bFloat)
+		return aInt % bInt, nil
+	default:
+		return nil, fmt.Errorf("unknown operator: %s", op)
+	}
+}
+
+// toFloat64 converts a value to float64
+func toFloat64(v interface{}) (float64, error) {
+	switch val := v.(type) {
+	case float64:
+		return val, nil
+	case float32:
+		return float64(val), nil
+	case int:
+		return float64(val), nil
+	case int32:
+		return float64(val), nil
+	case int64:
+		return float64(val), nil
+	case string:
+		// Try to parse as float
+		f, err := strconv.ParseFloat(val, 64)
+		if err != nil {
+			return 0, fmt.Errorf("cannot convert string to float: %s", val)
+		}
+		return f, nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to float", v)
+	}
 }
 
 // Helper functions

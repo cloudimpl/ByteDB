@@ -32,6 +32,15 @@ This document provides a comprehensive overview of SQL feature support in ByteDB
 | SUBSTRING | ✅ Working | `SELECT SUBSTRING(name, 1, 3)` |
 | TRIM | ✅ Working | `SELECT TRIM(name)` |
 
+### Arithmetic Operations
+| Operation | Status | Example |
+|-----------|--------|---------|
+| Addition (+) | ✅ Working | `SELECT salary + 1000` |
+| Subtraction (-) | ✅ Working | `SELECT salary - tax` |
+| Multiplication (*) | ✅ Working | `SELECT salary * 1.1 as new_salary` |
+| Division (/) | ✅ Working | `SELECT total / quantity` |
+| Modulo (%) | ✅ Working | `SELECT id % 10` |
+
 ### Aggregate Functions
 | Function | Status | Example |
 |----------|--------|---------|
@@ -66,6 +75,18 @@ This document provides a comprehensive overview of SQL feature support in ByteDB
 | CTE (WITH clause) | ✅ Working | `WITH high_earners AS (SELECT...)` |
 | UNION | ✅ Working | `SELECT ... UNION SELECT ...` |
 | UNION ALL | ✅ Working | `SELECT ... UNION ALL SELECT ...` |
+| SELECT * | ✅ Fixed | `SELECT * FROM employees` |
+| SELECT * with expressions | ✅ Fixed | `SELECT *, salary * 1.1 as new_salary` |
+
+### Catalog & Metadata
+| Feature | Status | Example |
+|---------|--------|---------|
+| Catalog.Schema.Table notation | ✅ Working | `SELECT * FROM mydb.sales.orders` |
+| Table Registry | ✅ Working | Map logical names to files |
+| Catalog System | ✅ Working | Three-level hierarchy |
+| Memory Metadata Store | ✅ Working | Non-persistent catalog storage |
+| File Metadata Store | ✅ Working | JSON-based persistent storage |
+| Catalog CLI Commands | ✅ Working | `\dc`, `\dn`, `\dt`, `\catalog` |
 
 ## ⚠️ Partially Working Features
 
@@ -73,7 +94,7 @@ This document provides a comprehensive overview of SQL feature support in ByteDB
 |---------|--------|-------|
 | Multiple subqueries in SELECT | ⚠️ Intermittent | May return 0 rows occasionally |
 | Complex nested JOINs | ⚠️ Limited | Some complex join patterns may fail |
-| SELECT * in optimized path | ⚠️ Buggy | May return only 1 column |
+| Catalog with reserved keywords | ⚠️ Requires quoting | `SELECT * FROM "default"."default".table` |
 
 ## 🚧 Not Implemented
 

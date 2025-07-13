@@ -1202,11 +1202,14 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 			}
 		}
 
-		// Handle qualified column names (table.column)
+		// Handle qualified column names (table.column or table.*)
 		if len(columnRef.Fields) > 1 {
 			if str := columnRef.Fields[1].GetString_(); str != nil {
 				column.TableName = column.Name
 				column.Name = str.Sval
+			} else if columnRef.Fields[1].GetAStar() != nil {
+				column.TableName = column.Name
+				column.Name = "*"
 			}
 		}
 	} else if aConst := resTarget.Val.GetAConst(); aConst != nil {
@@ -1242,6 +1245,22 @@ func (p *SQLParser) parseColumnTarget(resTarget *pg_query.ResTarget, query *Pars
 			} else {
 				column.Name = "case_expr"
 			}
+		}
+	} else if aExpr := resTarget.Val.GetAExpr(); aExpr != nil {
+		// Handle arithmetic expressions like salary * 1.1
+		fn := p.parseArithmeticExpression(aExpr)
+		if fn != nil {
+			column := Column{
+				Function: fn,
+				Alias:    resTarget.Name,
+			}
+			if column.Alias == "" {
+				column.Name = "expr" // Default name for expressions
+			} else {
+				column.Name = column.Alias
+			}
+			query.Columns = append(query.Columns, column)
+			return
 		}
 	}
 
@@ -1876,6 +1895,70 @@ func (p *SQLParser) parseExpressionAsCondition(expr *pg_query.Node) *WhereCondit
 	}
 
 	return condition
+}
+
+// parseArithmeticExpression converts an A_Expr to a FunctionCall representation
+func (p *SQLParser) parseArithmeticExpression(aExpr *pg_query.A_Expr) *FunctionCall {
+	if len(aExpr.Name) == 0 {
+		return nil
+	}
+	
+	// Get the operator
+	var op string
+	if str := aExpr.Name[0].GetString_(); str != nil {
+		op = str.Sval
+	}
+	
+	// Map operators to function names
+	var funcName string
+	switch op {
+	case "+":
+		funcName = "ADD"
+	case "-":
+		funcName = "SUBTRACT"
+	case "*":
+		funcName = "MULTIPLY"
+	case "/":
+		funcName = "DIVIDE"
+	case "%":
+		funcName = "MODULO"
+	default:
+		// For other operators, we might not support them yet
+		return nil
+	}
+	
+	fn := &FunctionCall{
+		Name: funcName,
+		Args: []interface{}{},
+	}
+	
+	// Parse left operand
+	if aExpr.Lexpr != nil {
+		if columnRef := aExpr.Lexpr.GetColumnRef(); columnRef != nil && len(columnRef.Fields) > 0 {
+			if str := columnRef.Fields[0].GetString_(); str != nil {
+				// Create a Column struct for column references
+				col := Column{Name: str.Sval}
+				fn.Args = append(fn.Args, col)
+			}
+		} else if constVal := aExpr.Lexpr.GetAConst(); constVal != nil {
+			fn.Args = append(fn.Args, p.parseConstantNode(constVal))
+		}
+	}
+	
+	// Parse right operand
+	if aExpr.Rexpr != nil {
+		if columnRef := aExpr.Rexpr.GetColumnRef(); columnRef != nil && len(columnRef.Fields) > 0 {
+			if str := columnRef.Fields[0].GetString_(); str != nil {
+				// Create a Column struct for column references
+				col := Column{Name: str.Sval}
+				fn.Args = append(fn.Args, col)
+			}
+		} else if constVal := aExpr.Rexpr.GetAConst(); constVal != nil {
+			fn.Args = append(fn.Args, p.parseConstantNode(constVal))
+		}
+	}
+	
+	return fn
 }
 
 // parseExpressionValue converts an expression node to an ExpressionValue

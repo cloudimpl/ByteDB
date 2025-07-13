@@ -2,7 +2,31 @@
 
 All notable changes to ByteDB will be documented in this file.
 
-## [Unreleased] - 2024-01-12
+## [Unreleased] - 2025-07-13
+
+### Added
+- **Catalog System** (Major Feature)
+  - Three-level hierarchy: catalog → schema → table
+  - Pluggable metadata stores (memory and file-based implementations)
+  - SQL standard compliance with catalog.schema.table notation
+  - Automatic migration from existing table registry
+  - New CLI commands: `\dc`, `\dn`, `\dt`, `\catalog`
+  - Comprehensive documentation in CATALOG_SYSTEM.md
+  - Backward compatibility with table registry maintained
+
+- **Arithmetic Expression Support**
+  - Support for arithmetic operators (+, -, *, /, %) in SELECT clause
+  - New arithmetic functions: ADD, SUBTRACT, MULTIPLY, DIVIDE, MODULO
+  - Expressions like `SELECT salary * 1.1 as new_salary` now work correctly
+
+### Fixed
+- **SELECT * Queries**
+  - Fixed SELECT * returning no data (columns were returned as ["*"] instead of actual column names)
+  - Fixed SELECT * with additional columns (e.g., `SELECT *, expression`)
+  - Fixed column expansion in JOIN queries with table.* notation
+  - Improved getResultColumns to properly handle wildcard expansion
+
+## [Previous] - 2024-01-12
 
 ### Fixed
 - **WHERE Clause Operators**

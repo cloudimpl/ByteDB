@@ -1010,7 +1010,7 @@ func (qe *QueryEngine) selectJoinColumns(rows []Row, columns []Column) []Row {
 	// Check if we need to select all columns
 	hasWildcard := false
 	for _, col := range columns {
-		if col.Name == "*" {
+		if col.Name == "*" && col.TableName == "" {
 			hasWildcard = true
 			break
 		}
@@ -1026,6 +1026,21 @@ func (qe *QueryEngine) selectJoinColumns(rows []Row, columns []Column) []Row {
 		newRow := make(Row)
 
 		for _, col := range columns {
+			// Handle table-qualified wildcards (e.g., e.*)
+			if col.Name == "*" && col.TableName != "" {
+				// Add all columns from the specified table
+				prefix := col.TableName + "."
+				for rowCol, value := range row {
+					if strings.HasPrefix(rowCol, prefix) {
+						// Use the column name without the table prefix
+						colName := strings.TrimPrefix(rowCol, prefix)
+						newRow[colName] = value
+					}
+				}
+				continue
+			}
+			
+			// Handle regular columns
 			var sourceColumnName string
 			if col.TableName != "" {
 				sourceColumnName = col.TableName + "." + col.Name
@@ -1068,6 +1083,67 @@ func (qe *QueryEngine) getJoinResultColumns(rows []Row, queryColumns []Column) [
 		return []string{}
 	}
 
+	// If query columns are specified, use them to determine order
+	if len(queryColumns) > 0 {
+		var columns []string
+		
+		// Check for unqualified wildcard first
+		hasUnqualifiedWildcard := false
+		for _, col := range queryColumns {
+			if col.Name == "*" && col.TableName == "" {
+				hasUnqualifiedWildcard = true
+				break
+			}
+		}
+		
+		if hasUnqualifiedWildcard {
+			// Return all columns from the first row
+			for key := range rows[0] {
+				columns = append(columns, key)
+			}
+			sort.Strings(columns)
+			return columns
+		}
+		
+		// Process each query column
+		for _, col := range queryColumns {
+			if col.Name == "*" && col.TableName != "" {
+				// Table-qualified wildcard - we need to determine what columns exist
+				// Since the rows have already been processed by selectJoinColumns,
+				// we can't rely on prefixes. Instead, we'll collect all columns
+				// that were selected from that table.
+				// For now, we'll add all non-explicit columns from the row
+				addedCols := make(map[string]bool)
+				for _, c := range queryColumns {
+					if c.Name != "*" {
+						if c.Alias != "" {
+							addedCols[c.Alias] = true
+						} else {
+							addedCols[c.Name] = true
+						}
+					}
+				}
+				
+				// Add all columns from the row that aren't already explicitly added
+				for key := range rows[0] {
+					if !addedCols[key] {
+						columns = append(columns, key)
+					}
+				}
+			} else if col.Name != "*" {
+				// Regular column (not a wildcard)
+				if col.Alias != "" {
+					columns = append(columns, col.Alias)
+				} else {
+					columns = append(columns, col.Name)
+				}
+			}
+		}
+		
+		return columns
+	}
+
+	// No query columns specified - return all
 	var columns []string
 	for key := range rows[0] {
 		columns = append(columns, key)
@@ -1505,14 +1581,70 @@ func (qe *QueryEngine) evaluateQueryColumns(rows []Row, queryColumns []Column) [
 func (qe *QueryEngine) getResultColumns(rows []Row, queryColumns []Column) []string {
 	// If there are query columns specified, use those to maintain order
 	if len(queryColumns) > 0 {
+		// Check if this is a SELECT * query
+		if len(queryColumns) == 1 && queryColumns[0].Name == "*" {
+			// For SELECT *, return actual column names from the first row
+			if len(rows) == 0 {
+				return []string{}
+			}
+			
+			// Extract all column names from first row and sort them
+			columnSet := make(map[string]bool)
+			var columns []string
+			for key := range rows[0] {
+				if !columnSet[key] {
+					columns = append(columns, key)
+					columnSet[key] = true
+				}
+			}
+			sort.Strings(columns)
+			return columns
+		}
+		
+		// For queries that may contain *, we need to expand it
 		var columns []string
+		hasWildcard := false
+		
 		for _, col := range queryColumns {
-			if col.Alias != "" {
+			if col.Name == "*" {
+				hasWildcard = true
+				// Mark that we need to add wildcard columns later
+			} else if col.Alias != "" {
 				columns = append(columns, col.Alias)
+			} else if col.Function != nil {
+				// For functions without alias, use a descriptive name
+				if col.Alias != "" {
+					columns = append(columns, col.Alias)
+				} else {
+					columns = append(columns, col.Function.Name)
+				}
 			} else {
 				columns = append(columns, col.Name)
 			}
 		}
+		
+		// If we had a wildcard, add all columns from the first row that aren't already included
+		if hasWildcard && len(rows) > 0 {
+			// First, collect existing column names to avoid duplicates
+			existingCols := make(map[string]bool)
+			for _, col := range columns {
+				existingCols[col] = true
+			}
+			
+			// Get all columns from first row and sort them
+			var wildcardColumns []string
+			for key := range rows[0] {
+				if !existingCols[key] {
+					wildcardColumns = append(wildcardColumns, key)
+				}
+			}
+			sort.Strings(wildcardColumns)
+			
+			// Insert wildcard columns at the position where * was
+			// For simplicity, we'll add them at the beginning
+			columns = append(wildcardColumns, columns...)
+		}
+		
 		return columns
 	}
 

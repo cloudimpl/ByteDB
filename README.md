@@ -16,7 +16,12 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 
 ## 🎉 Recent Updates
 
-### Bug Fixes (Latest)
+### New Features (Latest - 2025-07-13)
+- ✅ **Catalog System** - Three-level hierarchy (catalog.schema.table) with pluggable metadata stores
+- ✅ **Arithmetic Expressions** - Support for +, -, *, /, % operators in SELECT clause
+- ✅ **Fixed SELECT *** - Now properly returns all columns with data
+
+### Bug Fixes (Previous)
 - ✅ Fixed WHERE clause operators (AND, OR, BETWEEN, NOT BETWEEN)
 - ✅ Fixed SQL string functions (CONCAT, UPPER, LOWER, LENGTH) 
 - ✅ Fixed GROUP BY with aggregate functions
@@ -28,7 +33,7 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 ### Known Issues
 - Multiple subqueries in SELECT may intermittently fail
 - Some complex JOIN queries may return unexpected results
-- SELECT * may not return all columns in optimized execution path
+- SQL reserved keywords (like "default") must be quoted in catalog names
 
 ## 🌐 NEW: Distributed Query Execution
 
@@ -218,7 +223,46 @@ SELECT COUNT(*) as total_employees FROM employees;
 -- Each worker counts locally, coordinator sums counts
 ```
 
-## 💡 Working Examples (Recently Fixed)
+## 💡 Working Examples
+
+### Catalog System Usage
+```sql
+-- Enable catalog system
+\catalog enable file
+
+-- Register tables with schema organization
+\catalog register hr.employees employees.parquet
+\catalog register sales.orders orders_2024.parquet
+\catalog register sales.products products.parquet
+
+-- Query with fully qualified names
+SELECT * FROM hr.employees WHERE salary > 100000;
+SELECT COUNT(*) FROM sales.orders WHERE total > 1000;
+
+-- Query with quoted reserved keywords
+SELECT * FROM "default"."default".employees;
+
+-- Browse catalog structure
+\dc                    -- List all catalogs
+\dn sales             -- List schemas in sales catalog
+\dt sales.*           -- List all tables in sales schema
+```
+
+### Arithmetic Expressions
+```sql
+-- Basic arithmetic in SELECT
+SELECT name, salary, salary * 1.1 as new_salary FROM employees;
+SELECT id, price, quantity, price * quantity as total FROM orders;
+SELECT age, 2024 - age as birth_year FROM employees;
+
+-- Combined with SELECT *
+SELECT *, salary * 0.15 as tax, salary * 0.85 as net_salary FROM employees;
+
+-- Arithmetic with GROUP BY
+SELECT department, AVG(salary), AVG(salary) * 1.1 as projected_avg
+FROM employees 
+GROUP BY department;
+```
 
 ### Complex WHERE Clauses
 ```sql
