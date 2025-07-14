@@ -98,6 +98,7 @@ ByteDB Columnar File:
 - **String/Binary Segments**: New section for compact storage of unique variable-length values
 - **Offset-Based Trees**: B+ trees for variable-length columns store offsets instead of full values
 - **Eliminated Redundancy**: No duplicate strings/binary data stored anywhere in the file
+- **Unified Bitmap API**: All B+ tree operations internally return RoaringBitmaps for consistency and efficiency
 
 ### File Header Structure (4KB)
 ```c

@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sort"
+	
+	roaring "github.com/RoaringBitmap/roaring/v2"
 )
 
 // KeyComparator defines the interface for key comparison
@@ -742,4 +744,351 @@ func (bt *BPlusTree) GetRootPageID() uint64 {
 // SetRootPageID sets the root page ID (used when loading existing tree)
 func (bt *BPlusTree) SetRootPageID(pageID uint64) {
 	bt.rootPageID = pageID
+}
+
+// FindBitmap searches for a key and returns a bitmap of row numbers
+func (bt *BPlusTree) FindBitmap(key uint64) (*roaring.Bitmap, error) {
+	result := roaring.New()
+	
+	if bt.rootPageID == 0 {
+		return result, nil // Empty tree
+	}
+	
+	// Navigate to leaf
+	leafPage, err := bt.navigateToLeaf(key)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Search within leaf
+	entries, err := bt.readLeafEntries(leafPage)
+	if err != nil {
+		return nil, err
+	}
+	
+	for _, entry := range entries {
+		cmp, err := bt.comparator.Compare(entry.Key, key)
+		if err != nil {
+			return nil, err
+		}
+		
+		if cmp == 0 {
+			// Found the key
+			if entry.Value.IsRowNumber() {
+				result.Add(uint32(entry.Value.GetRowNumber()))
+			} else {
+				// Load bitmap
+				bitmap, err := bt.bitmapManager.LoadBitmap(entry.Value.GetBitmapOffset())
+				if err != nil {
+					return nil, err
+				}
+				result.Or(bitmap)
+			}
+			return result, nil
+		} else if cmp > 0 {
+			// Keys are sorted, so we've passed the target
+			break
+		}
+	}
+	
+	return result, nil // Not found, return empty bitmap
+}
+
+// RangeSearchBitmap finds all entries with keys in [minKey, maxKey] and returns a bitmap
+func (bt *BPlusTree) RangeSearchBitmap(minKey, maxKey uint64) (*roaring.Bitmap, error) {
+	result := roaring.New()
+	
+	if bt.rootPageID == 0 {
+		return result, nil // Empty tree
+	}
+	
+	// Find starting leaf
+	startLeaf, err := bt.navigateToLeaf(minKey)
+	if err != nil {
+		return nil, err
+	}
+	
+	currentPage := startLeaf
+	
+	for currentPage != nil {
+		entries, err := bt.readLeafEntries(currentPage)
+		if err != nil {
+			return nil, err
+		}
+		
+		for _, entry := range entries {
+			minCmp, err := bt.comparator.Compare(entry.Key, minKey)
+			if err != nil {
+				return nil, err
+			}
+			
+			maxCmp, err := bt.comparator.Compare(entry.Key, maxKey)
+			if err != nil {
+				return nil, err
+			}
+			
+			if minCmp >= 0 && maxCmp <= 0 {
+				// Key is in range
+				if entry.Value.IsRowNumber() {
+					result.Add(uint32(entry.Value.GetRowNumber()))
+				} else {
+					// Load bitmap
+					bitmap, err := bt.bitmapManager.LoadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						return nil, err
+					}
+					result.Or(bitmap)
+				}
+			} else if maxCmp > 0 {
+				// We've passed the range
+				return result, nil
+			}
+		}
+		
+		// Move to next leaf
+		if currentPage.Header.NextPageID != 0 {
+			currentPage, err = bt.pageManager.ReadPage(currentPage.Header.NextPageID)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			break
+		}
+	}
+	
+	return result, nil
+}
+
+// RangeSearchGreaterThanBitmap finds all entries with key > value and returns a bitmap
+func (bt *BPlusTree) RangeSearchGreaterThanBitmap(key uint64) (*roaring.Bitmap, error) {
+	result := roaring.New()
+	
+	// Find the leaf that would contain this key
+	leaf, err := bt.navigateToLeaf(key)
+	if err != nil {
+		return nil, err
+	}
+	
+	currentPage := leaf
+	
+	for currentPage != nil {
+		entries, err := bt.readLeafEntries(currentPage)
+		if err != nil {
+			return nil, err
+		}
+		
+		for _, entry := range entries {
+			cmp, err := bt.comparator.Compare(entry.Key, key)
+			if err != nil {
+				return nil, err
+			}
+			
+			if cmp > 0 {
+				// Key is greater than value
+				if entry.Value.IsRowNumber() {
+					result.Add(uint32(entry.Value.GetRowNumber()))
+				} else {
+					// Load bitmap
+					bitmap, err := bt.bitmapManager.LoadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						return nil, err
+					}
+					result.Or(bitmap)
+				}
+			}
+		}
+		
+		// Move to next leaf
+		if currentPage.Header.NextPageID != 0 {
+			currentPage, err = bt.pageManager.ReadPage(currentPage.Header.NextPageID)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			break
+		}
+	}
+	
+	return result, nil
+}
+
+// RangeSearchGreaterThanOrEqualBitmap finds all entries with key >= value and returns a bitmap
+func (bt *BPlusTree) RangeSearchGreaterThanOrEqualBitmap(key uint64) (*roaring.Bitmap, error) {
+	result := roaring.New()
+	
+	// Find the leaf that would contain this key
+	leaf, err := bt.navigateToLeaf(key)
+	if err != nil {
+		return nil, err
+	}
+	
+	currentPage := leaf
+	
+	for currentPage != nil {
+		entries, err := bt.readLeafEntries(currentPage)
+		if err != nil {
+			return nil, err
+		}
+		
+		for _, entry := range entries {
+			cmp, err := bt.comparator.Compare(entry.Key, key)
+			if err != nil {
+				return nil, err
+			}
+			
+			if cmp >= 0 {
+				// Key is greater than or equal to value
+				if entry.Value.IsRowNumber() {
+					result.Add(uint32(entry.Value.GetRowNumber()))
+				} else {
+					// Load bitmap
+					bitmap, err := bt.bitmapManager.LoadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						return nil, err
+					}
+					result.Or(bitmap)
+				}
+			}
+		}
+		
+		// Move to next leaf
+		if currentPage.Header.NextPageID != 0 {
+			currentPage, err = bt.pageManager.ReadPage(currentPage.Header.NextPageID)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			break
+		}
+	}
+	
+	return result, nil
+}
+
+// RangeSearchLessThanBitmap finds all entries with key < value and returns a bitmap
+func (bt *BPlusTree) RangeSearchLessThanBitmap(key uint64) (*roaring.Bitmap, error) {
+	result := roaring.New()
+	
+	// Start from the leftmost leaf
+	currentPageID := bt.rootPageID
+	
+	// Navigate to leftmost leaf
+	for {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return nil, err
+		}
+		
+		if page.Header.PageType == PageTypeBTreeLeaf {
+			break
+		}
+		
+		// For internal nodes, always go to first child
+		currentPageID = ByteOrder.Uint64(page.Data[0:8])
+	}
+	
+	// Scan leaves until we reach or exceed the key
+	for currentPageID != 0 {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return nil, err
+		}
+		
+		entries, err := bt.readLeafEntries(page)
+		if err != nil {
+			return nil, err
+		}
+		
+		for _, entry := range entries {
+			cmp, err := bt.comparator.Compare(entry.Key, key)
+			if err != nil {
+				return nil, err
+			}
+			
+			if cmp < 0 {
+				// Key is less than value
+				if entry.Value.IsRowNumber() {
+					result.Add(uint32(entry.Value.GetRowNumber()))
+				} else {
+					// Load bitmap
+					bitmap, err := bt.bitmapManager.LoadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						return nil, err
+					}
+					result.Or(bitmap)
+				}
+			} else {
+				// We've reached or exceeded the key
+				return result, nil
+			}
+		}
+		
+		currentPageID = page.Header.NextPageID
+	}
+	
+	return result, nil
+}
+
+// RangeSearchLessThanOrEqualBitmap finds all entries with key <= value and returns a bitmap
+func (bt *BPlusTree) RangeSearchLessThanOrEqualBitmap(key uint64) (*roaring.Bitmap, error) {
+	result := roaring.New()
+	
+	// Start from the leftmost leaf
+	currentPageID := bt.rootPageID
+	
+	// Navigate to leftmost leaf
+	for {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return nil, err
+		}
+		
+		if page.Header.PageType == PageTypeBTreeLeaf {
+			break
+		}
+		
+		// For internal nodes, always go to first child
+		currentPageID = ByteOrder.Uint64(page.Data[0:8])
+	}
+	
+	// Scan leaves until we exceed the key
+	for currentPageID != 0 {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return nil, err
+		}
+		
+		entries, err := bt.readLeafEntries(page)
+		if err != nil {
+			return nil, err
+		}
+		
+		for _, entry := range entries {
+			cmp, err := bt.comparator.Compare(entry.Key, key)
+			if err != nil {
+				return nil, err
+			}
+			
+			if cmp <= 0 {
+				// Key is less than or equal to value
+				if entry.Value.IsRowNumber() {
+					result.Add(uint32(entry.Value.GetRowNumber()))
+				} else {
+					// Load bitmap
+					bitmap, err := bt.bitmapManager.LoadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						return nil, err
+					}
+					result.Or(bitmap)
+				}
+			} else {
+				// We've exceeded the key
+				return result, nil
+			}
+		}
+		
+		currentPageID = page.Header.NextPageID
+	}
+	
+	return result, nil
 }

@@ -212,6 +212,44 @@ Using appropriate data types provides significant space savings:
 
 This is achieved through variable-size key encoding in the B+ tree structure.
 
+## Bitmap API
+
+ByteDB Columnar Format provides a unified bitmap-based API for improved performance and memory efficiency. All B+ tree operations internally return bitmaps, which can be used directly or converted to slices for backward compatibility.
+
+### Bitmap Query Methods
+
+```go
+// Direct bitmap returns for all query types
+bitmap, err := cf.QueryIntBitmap("user_id", 1001)
+bitmap, err := cf.QueryStringBitmap("username", "alice")  
+bitmap, err := cf.RangeQueryIntBitmap("score", 100, 200)
+bitmap, err := cf.QueryGreaterThanBitmap("age", uint8(25))
+bitmap, err := cf.QueryGreaterThanOrEqualBitmap("score", int32(100))
+bitmap, err := cf.QueryLessThanBitmap("price", 50.0)
+bitmap, err := cf.QueryLessThanOrEqualBitmap("count", int64(1000))
+```
+
+### Working with Bitmaps
+
+```go
+// Logical operations on bitmaps
+result := cf.QueryAndBitmap(bitmap1, bitmap2, bitmap3)
+result := cf.QueryOrBitmap(bitmap1, bitmap2)
+
+// Convert bitmap to slice when needed
+rows := BitmapToSlice(bitmap)
+
+// Get cardinality without converting
+count := bitmap.GetCardinality()
+```
+
+### Performance Benefits
+
+- **Memory Efficiency**: Bitmaps use compressed storage for sparse data
+- **Fast Set Operations**: AND/OR operations are optimized at the bit level
+- **Reduced Allocations**: Reuse bitmap objects instead of creating new slices
+- **Cache Friendly**: Smaller memory footprint improves CPU cache utilization
+
 ## Running the Example
 
 ```bash

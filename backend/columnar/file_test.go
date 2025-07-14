@@ -95,10 +95,11 @@ func TestColumnarFile(t *testing.T) {
 		}
 		
 		// Query integer column
-		results, err := cf.QueryInt("id", 1)
+		bitmap, err := cf.QueryInt("id", 1)
 		if err != nil {
 			t.Errorf("QueryInt failed: %v", err)
 		}
+		results := BitmapToSlice(bitmap)
 		if len(results) != 2 {
 			t.Errorf("Expected 2 rows, got %d", len(results))
 		} else if results[0] != 0 || results[1] != 3 {
@@ -106,19 +107,21 @@ func TestColumnarFile(t *testing.T) {
 		}
 		
 		// Query string column
-		results, err = cf.QueryString("name", "Bob")
+		bitmap, err = cf.QueryString("name", "Bob")
 		if err != nil {
 			t.Errorf("QueryString failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		if len(results) != 2 || results[0] != 1 || results[1] != 5 {
 			t.Errorf("Expected rows [1, 5], got %v", results)
 		}
 		
 		// Query non-existent value
-		results, err = cf.QueryString("name", "Eve")
+		bitmap, err = cf.QueryString("name", "Eve")
 		if err != nil {
 			t.Errorf("QueryString failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		if len(results) != 0 {
 			t.Errorf("Expected empty results for non-existent value, got %v", results)
 		}
@@ -161,19 +164,21 @@ func TestColumnarFile(t *testing.T) {
 		cf.LoadStringColumn("category", stringData)
 		
 		// Integer range query
-		results, err := cf.RangeQueryInt("value", 20, 40)
+		bitmap, err := cf.RangeQueryInt("value", 20, 40)
 		if err != nil {
 			t.Errorf("RangeQueryInt failed: %v", err)
 		}
+		results := BitmapToSlice(bitmap)
 		if len(results) != 5 { // 20, 25, 30, 35, 40
 			t.Errorf("Expected 5 results, got %d", len(results))
 		}
 		
 		// String range query
-		results, err = cf.RangeQueryString("category", "banana", "cranberry")
+		bitmap, err = cf.RangeQueryString("category", "banana", "cranberry")
 		if err != nil {
 			t.Errorf("RangeQueryString failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		// Should return: banana, blueberry, cherry, cranberry
 		if len(results) != 4 {
 			t.Errorf("Expected 4 results, got %d", len(results))
@@ -245,28 +250,31 @@ func TestColumnarFilePersistence(t *testing.T) {
 		}
 		
 		// Query user_id = 5 (should have 5 rows)
-		results, err := cf.QueryInt("user_id", 5)
+		bitmap, err := cf.QueryInt("user_id", 5)
 		if err != nil {
 			t.Errorf("QueryInt failed: %v", err)
 		}
+		results := BitmapToSlice(bitmap)
 		if len(results) != 5 {
 			t.Errorf("Expected 5 results for user_id=5, got %d", len(results))
 		}
 		
 		// Query username
-		results, err = cf.QueryString("username", "user_10")
+		bitmap, err = cf.QueryString("username", "user_10")
 		if err != nil {
 			t.Errorf("QueryString failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		if len(results) != 5 {
 			t.Errorf("Expected 5 results for username=user_10, got %d", len(results))
 		}
 		
 		// Range query on scores
-		results, err = cf.RangeQueryInt("score", 200, 400)
+		bitmap, err = cf.RangeQueryInt("score", 200, 400)
 		if err != nil {
 			t.Errorf("RangeQueryInt failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		if len(results) != 21 { // 200, 210, ..., 400
 			t.Errorf("Expected 21 results for score range, got %d", len(results))
 		}
@@ -338,28 +346,31 @@ func TestColumnarFileLargeScale(t *testing.T) {
 	// Test queries
 	t.Run("LargeScaleQueries", func(t *testing.T) {
 		// Query specific category (should have 100 rows each)
-		results, err := cf.QueryString("category", "category_42")
+		bitmap, err := cf.QueryString("category", "category_42")
 		if err != nil {
 			t.Errorf("QueryString failed: %v", err)
 		}
+		results := BitmapToSlice(bitmap)
 		if len(results) != 100 {
 			t.Errorf("Expected 100 results, got %d", len(results))
 		}
 		
 		// Query value with many duplicates
-		results, err = cf.QueryInt("value", 42)
+		bitmap, err = cf.QueryInt("value", 42)
 		if err != nil {
 			t.Errorf("QueryInt failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		if len(results) != 10 { // 42, 10042, 20042, ..., 90042
 			t.Errorf("Expected 10 results for value=42, got %d", len(results))
 		}
 		
 		// Range query
-		results, err = cf.RangeQueryInt("id", 50000, 50100)
+		bitmap, err = cf.RangeQueryInt("id", 50000, 50100)
 		if err != nil {
 			t.Errorf("RangeQueryInt failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		if len(results) != 101 {
 			t.Errorf("Expected 101 results for range query, got %d", len(results))
 		}

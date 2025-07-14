@@ -6,6 +6,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+	
+	roaring "github.com/RoaringBitmap/roaring/v2"
 )
 
 func TestAllOperators(t *testing.T) {
@@ -82,28 +84,31 @@ func TestAllOperators(t *testing.T) {
 	// Test 1: Equality operators
 	t.Run("EqualityOperators", func(t *testing.T) {
 		// Test integer equality
-		results, err := cf.QueryInt("id", 5)
+		bitmap, err := cf.QueryInt("id", 5)
 		if err != nil {
 			t.Errorf("QueryInt failed: %v", err)
 		}
+		results := BitmapToSlice(bitmap)
 		if len(results) != 1 || results[0] != 4 {
 			t.Errorf("Expected row [4], got %v", results)
 		}
 		
 		// Test string equality
-		results, err = cf.QueryString("name", "Charlie")
+		bitmap, err = cf.QueryString("name", "Charlie")
 		if err != nil {
 			t.Errorf("QueryString failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		if len(results) != 1 || results[0] != 2 {
 			t.Errorf("Expected row [2], got %v", results)
 		}
 		
 		// Test boolean equality
-		results, err = cf.QueryGreaterThanOrEqual("active", true)
+		bitmap, err = cf.QueryGreaterThanOrEqual("active", true)
 		if err != nil {
 			t.Errorf("Query active=true failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		// Should return rows with active=true: 0,2,3,5,7,9
 		expectedActive := []uint64{0, 2, 3, 5, 7, 9}
 		sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
@@ -115,10 +120,11 @@ func TestAllOperators(t *testing.T) {
 	// Test 2: Greater than operators
 	t.Run("GreaterThanOperators", func(t *testing.T) {
 		// Test GT on integers
-		results, err := cf.QueryGreaterThan("score", int32(50))
+		bitmap, err := cf.QueryGreaterThan("score", int32(50))
 		if err != nil {
 			t.Errorf("QueryGreaterThan failed: %v", err)
 		}
+		results := BitmapToSlice(bitmap)
 		// Should return scores > 50: 60,70,80,90,100 (rows 5,6,7,8,9)
 		expected := []uint64{5, 6, 7, 8, 9}
 		sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
@@ -127,10 +133,11 @@ func TestAllOperators(t *testing.T) {
 		}
 		
 		// Test GTE on integers
-		results, err = cf.QueryGreaterThanOrEqual("score", int32(50))
+		bitmap, err = cf.QueryGreaterThanOrEqual("score", int32(50))
 		if err != nil {
 			t.Errorf("QueryGreaterThanOrEqual failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		// Should return scores >= 50: 50,60,70,80,90,100 (rows 4,5,6,7,8,9)
 		expected = []uint64{4, 5, 6, 7, 8, 9}
 		sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
@@ -139,10 +146,11 @@ func TestAllOperators(t *testing.T) {
 		}
 		
 		// Test GT on strings
-		results, err = cf.QueryGreaterThan("name", "Eve")
+		bitmap, err = cf.QueryGreaterThan("name", "Eve")
 		if err != nil {
 			t.Errorf("QueryGreaterThan string failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		// Should return names > "Eve": Frank,Grace,Henry,Iris,Jack (rows 5,6,7,8,9)
 		expected = []uint64{5, 6, 7, 8, 9}
 		sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
@@ -154,10 +162,11 @@ func TestAllOperators(t *testing.T) {
 	// Test 3: Less than operators
 	t.Run("LessThanOperators", func(t *testing.T) {
 		// Test LT on integers
-		results, err := cf.QueryLessThan("score", int32(50))
+		bitmap, err := cf.QueryLessThan("score", int32(50))
 		if err != nil {
 			t.Errorf("QueryLessThan failed: %v", err)
 		}
+		results := BitmapToSlice(bitmap)
 		// Should return scores < 50: 10,20,30,40 (rows 0,1,2,3)
 		expected := []uint64{0, 1, 2, 3}
 		sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
@@ -166,10 +175,11 @@ func TestAllOperators(t *testing.T) {
 		}
 		
 		// Test LTE on integers
-		results, err = cf.QueryLessThanOrEqual("score", int32(50))
+		bitmap, err = cf.QueryLessThanOrEqual("score", int32(50))
 		if err != nil {
 			t.Errorf("QueryLessThanOrEqual failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		// Should return scores <= 50: 10,20,30,40,50 (rows 0,1,2,3,4)
 		expected = []uint64{0, 1, 2, 3, 4}
 		sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
@@ -178,10 +188,11 @@ func TestAllOperators(t *testing.T) {
 		}
 		
 		// Test LT on strings
-		results, err = cf.QueryLessThan("name", "Eve")
+		bitmap, err = cf.QueryLessThan("name", "Eve")
 		if err != nil {
 			t.Errorf("QueryLessThan string failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		// Should return names < "Eve": Alice,Bob,Charlie,David (rows 0,1,2,3)
 		expected = []uint64{0, 1, 2, 3}
 		sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
@@ -193,10 +204,11 @@ func TestAllOperators(t *testing.T) {
 	// Test 4: Range queries (BETWEEN)
 	t.Run("RangeQueries", func(t *testing.T) {
 		// Test integer range
-		results, err := cf.RangeQueryInt("score", 30, 70)
+		bitmap, err := cf.RangeQueryInt("score", 30, 70)
 		if err != nil {
 			t.Errorf("RangeQueryInt failed: %v", err)
 		}
+		results := BitmapToSlice(bitmap)
 		// Should return scores 30-70: 30,40,50,60,70 (rows 2,3,4,5,6)
 		expected := []uint64{2, 3, 4, 5, 6}
 		sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
@@ -205,10 +217,11 @@ func TestAllOperators(t *testing.T) {
 		}
 		
 		// Test string range
-		results, err = cf.RangeQueryString("name", "Charlie", "Frank")
+		bitmap, err = cf.RangeQueryString("name", "Charlie", "Frank")
 		if err != nil {
 			t.Errorf("RangeQueryString failed: %v", err)
 		}
+		results = BitmapToSlice(bitmap)
 		// Should return names Charlie-Frank: Charlie,David,Eve,Frank (rows 2,3,4,5)
 		expected = []uint64{2, 3, 4, 5}
 		sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
@@ -220,10 +233,11 @@ func TestAllOperators(t *testing.T) {
 	// Test 5: AND operator
 	t.Run("ANDOperator", func(t *testing.T) {
 		// Find rows where score > 50 AND name < "Henry"
-		scoreResults, _ := cf.QueryGreaterThan("score", int32(50))
-		nameResults, _ := cf.QueryLessThan("name", "Henry")
+		scoreBitmap, _ := cf.QueryGreaterThan("score", int32(50))
+		nameBitmap, _ := cf.QueryLessThan("name", "Henry")
 		
-		results := cf.QueryAnd(scoreResults, nameResults)
+		resultBitmap := cf.QueryAnd(scoreBitmap, nameBitmap)
+		results := BitmapToSlice(resultBitmap)
 		// score > 50: rows 5,6,7,8,9
 		// name < "Henry": rows 0,1,2,3,4,5,6
 		// AND: rows 5,6
@@ -234,11 +248,12 @@ func TestAllOperators(t *testing.T) {
 		}
 		
 		// Three-way AND: active=true AND score > 30 AND name < "Grace"
-		activeResults, _ := cf.QueryGreaterThanOrEqual("active", true)
-		scoreResults2, _ := cf.QueryGreaterThan("score", int32(30))
-		nameResults2, _ := cf.QueryLessThan("name", "Grace")
+		activeBitmap, _ := cf.QueryGreaterThanOrEqual("active", true)
+		scoreBitmap2, _ := cf.QueryGreaterThan("score", int32(30))
+		nameBitmap2, _ := cf.QueryLessThan("name", "Grace")
 		
-		results = cf.QueryAnd(activeResults, scoreResults2, nameResults2)
+		resultBitmap = cf.QueryAnd(activeBitmap, scoreBitmap2, nameBitmap2)
+		results = BitmapToSlice(resultBitmap)
 		// active=true: rows 0,2,3,5,7,9
 		// score > 30: rows 3,4,5,6,7,8,9
 		// name < "Grace": rows 0,1,2,3,4,5
@@ -253,10 +268,11 @@ func TestAllOperators(t *testing.T) {
 	// Test 6: OR operator
 	t.Run("OROperator", func(t *testing.T) {
 		// Find rows where score < 30 OR score > 80
-		lowScores, _ := cf.QueryLessThan("score", int32(30))
-		highScores, _ := cf.QueryGreaterThan("score", int32(80))
+		lowScoresBitmap, _ := cf.QueryLessThan("score", int32(30))
+		highScoresBitmap, _ := cf.QueryGreaterThan("score", int32(80))
 		
-		results := cf.QueryOr(lowScores, highScores)
+		resultBitmap := cf.QueryOr(lowScoresBitmap, highScoresBitmap)
+		results := BitmapToSlice(resultBitmap)
 		// score < 30: rows 0,1
 		// score > 80: rows 8,9
 		// OR: rows 0,1,8,9
@@ -267,11 +283,12 @@ func TestAllOperators(t *testing.T) {
 		}
 		
 		// Three-way OR
-		results1, _ := cf.QueryString("name", "Alice")
-		results2, _ := cf.QueryString("name", "Eve")
-		results3, _ := cf.QueryString("name", "Jack")
+		bitmap1, _ := cf.QueryString("name", "Alice")
+		bitmap2, _ := cf.QueryString("name", "Eve")
+		bitmap3, _ := cf.QueryString("name", "Jack")
 		
-		results = cf.QueryOr(results1, results2, results3)
+		resultBitmap = cf.QueryOr(bitmap1, bitmap2, bitmap3)
+		results = BitmapToSlice(resultBitmap)
 		// Should return rows 0,4,9
 		expected = []uint64{0, 4, 9}
 		sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
@@ -283,12 +300,13 @@ func TestAllOperators(t *testing.T) {
 	// Test 7: NOT operator
 	t.Run("NOTOperator", func(t *testing.T) {
 		// Find all rows where active != true
-		activeTrue, _ := cf.QueryGreaterThanOrEqual("active", true)
+		activeTrueBitmap, _ := cf.QueryGreaterThanOrEqual("active", true)
 		
-		results, err := cf.QueryNot("active", activeTrue)
+		resultBitmap, err := cf.QueryNot("active", activeTrueBitmap)
 		if err != nil {
 			t.Errorf("QueryNot failed: %v", err)
 		}
+		results := BitmapToSlice(resultBitmap)
 		// active=true: rows 0,2,3,5,7,9
 		// NOT: rows 1,4,6,8
 		expected := []uint64{1, 4, 6, 8}
@@ -301,12 +319,13 @@ func TestAllOperators(t *testing.T) {
 	// Test 8: Complex combinations
 	t.Run("ComplexQueries", func(t *testing.T) {
 		// (score BETWEEN 30 AND 70) AND (active = true OR name > "Frank")
-		rangeResults, _ := cf.RangeQueryInt("score", 30, 70)
-		activeResults, _ := cf.QueryGreaterThanOrEqual("active", true)
-		nameResults, _ := cf.QueryGreaterThan("name", "Frank")
-		orResults := cf.QueryOr(activeResults, nameResults)
+		rangeBitmap, _ := cf.RangeQueryInt("score", 30, 70)
+		activeBitmap, _ := cf.QueryGreaterThanOrEqual("active", true)
+		nameBitmap, _ := cf.QueryGreaterThan("name", "Frank")
+		orBitmap := cf.QueryOr(activeBitmap, nameBitmap)
 		
-		results := cf.QueryAnd(rangeResults, orResults)
+		resultBitmap := cf.QueryAnd(rangeBitmap, orBitmap)
+		results := BitmapToSlice(resultBitmap)
 		// score 30-70: rows 2,3,4,5,6
 		// active=true: rows 0,2,3,5,7,9
 		// name > "Frank": rows 6,7,8,9
@@ -322,12 +341,13 @@ func TestAllOperators(t *testing.T) {
 	// Test 9: Queries on columns with duplicates
 	t.Run("DuplicateHandling", func(t *testing.T) {
 		// Query age = 25 (should have duplicates)
-		results, err := cf.QueryGreaterThanOrEqual("age", uint8(25))
+		gteBitmap, err := cf.QueryGreaterThanOrEqual("age", uint8(25))
 		if err != nil {
 			t.Errorf("Query age failed: %v", err)
 		}
-		ageEqual25, _ := cf.QueryLessThanOrEqual("age", uint8(25))
-		age25 := cf.QueryAnd(results, ageEqual25)
+		lteBitmap, _ := cf.QueryLessThanOrEqual("age", uint8(25))
+		age25Bitmap := cf.QueryAnd(gteBitmap, lteBitmap)
+		age25 := BitmapToSlice(age25Bitmap)
 		
 		// age = 25: rows 1,3,8
 		expected := []uint64{1, 3, 8}
@@ -379,25 +399,29 @@ func TestOperatorEdgeCases(t *testing.T) {
 	
 	t.Run("EdgeValues", func(t *testing.T) {
 		// Test with min value
-		results, _ := cf.QueryGreaterThanOrEqual("value", int32(0))
+		bitmap, _ := cf.QueryGreaterThanOrEqual("value", int32(0))
+		results := BitmapToSlice(bitmap)
 		if len(results) != 5 {
 			t.Errorf("Expected 5 results for >= 0, got %d", len(results))
 		}
 		
 		// Test with max value
-		results, _ = cf.QueryLessThanOrEqual("value", int32(2147483647))
+		bitmap, _ = cf.QueryLessThanOrEqual("value", int32(2147483647))
+		results = BitmapToSlice(bitmap)
 		if len(results) != 5 {
 			t.Errorf("Expected 5 results for <= MAX_INT32, got %d", len(results))
 		}
 		
 		// Test empty string
-		results, _ = cf.QueryString("name", "")
+		bitmap, _ = cf.QueryString("name", "")
+		results = BitmapToSlice(bitmap)
 		if len(results) != 1 || results[0] != 0 {
 			t.Errorf("Expected row [0] for empty string, got %v", results)
 		}
 		
 		// Test string greater than all values
-		results, _ = cf.QueryLessThan("name", "zzz")
+		bitmap, _ = cf.QueryLessThan("name", "zzz")
+		results = BitmapToSlice(bitmap)
 		if len(results) != 5 {
 			t.Errorf("Expected 5 results for < 'zzz', got %d", len(results))
 		}
@@ -405,21 +429,25 @@ func TestOperatorEdgeCases(t *testing.T) {
 	
 	t.Run("EmptyResults", func(t *testing.T) {
 		// Query that returns no results
-		results, _ := cf.QueryGreaterThan("value", int32(2147483647))
+		bitmap, _ := cf.QueryGreaterThan("value", int32(2147483647))
+		results := BitmapToSlice(bitmap)
 		if len(results) != 0 {
 			t.Errorf("Expected empty results, got %v", results)
 		}
 		
 		// AND with empty set
-		someResults, _ := cf.QueryLessThan("value", int32(1000))
-		emptyResults := []uint64{}
-		andResults := cf.QueryAnd(someResults, emptyResults)
+		someBitmap, _ := cf.QueryLessThan("value", int32(1000))
+		emptyBitmap := roaring.New()
+		andBitmap := cf.QueryAnd(someBitmap, emptyBitmap)
+		andResults := BitmapToSlice(andBitmap)
 		if len(andResults) != 0 {
 			t.Errorf("AND with empty set should be empty, got %v", andResults)
 		}
 		
 		// OR with empty set
-		orResults := cf.QueryOr(someResults, emptyResults)
+		orBitmap := cf.QueryOr(someBitmap, emptyBitmap)
+		orResults := BitmapToSlice(orBitmap)
+		someResults := BitmapToSlice(someBitmap)
 		if !equalSlices(orResults, someResults) {
 			t.Errorf("OR with empty set should return non-empty set")
 		}
@@ -470,30 +498,46 @@ func TestOperatorPerformance(t *testing.T) {
 	}{
 		{
 			"Equality",
-			func() ([]uint64, error) { return cf.QueryInt("id", 50000) },
+			func() ([]uint64, error) {
+				bitmap, err := cf.QueryInt("id", 50000)
+				return BitmapToSlice(bitmap), err
+			},
 		},
 		{
 			"GreaterThan",
-			func() ([]uint64, error) { return cf.QueryGreaterThan("id", int64(90000)) },
+			func() ([]uint64, error) {
+				bitmap, err := cf.QueryGreaterThan("id", int64(90000))
+				return BitmapToSlice(bitmap), err
+			},
 		},
 		{
 			"LessThan",
-			func() ([]uint64, error) { return cf.QueryLessThan("id", int64(10000)) },
+			func() ([]uint64, error) {
+				bitmap, err := cf.QueryLessThan("id", int64(10000))
+				return BitmapToSlice(bitmap), err
+			},
 		},
 		{
 			"Range",
-			func() ([]uint64, error) { return cf.RangeQueryInt("id", 40000, 60000) },
+			func() ([]uint64, error) {
+				bitmap, err := cf.RangeQueryInt("id", 40000, 60000)
+				return BitmapToSlice(bitmap), err
+			},
 		},
 		{
 			"StringEquality",
-			func() ([]uint64, error) { return cf.QueryString("category", "cat_500") },
+			func() ([]uint64, error) {
+				bitmap, err := cf.QueryString("category", "cat_500")
+				return BitmapToSlice(bitmap), err
+			},
 		},
 		{
 			"ComplexAND",
 			func() ([]uint64, error) {
 				r1, _ := cf.QueryGreaterThan("id", int64(50000))
 				r2, _ := cf.QueryLessThan("id", int64(60000))
-				return cf.QueryAnd(r1, r2), nil
+				result := cf.QueryAnd(r1, r2)
+				return BitmapToSlice(result), nil
 			},
 		},
 		{
@@ -501,7 +545,8 @@ func TestOperatorPerformance(t *testing.T) {
 			func() ([]uint64, error) {
 				r1, _ := cf.QueryLessThan("id", int64(1000))
 				r2, _ := cf.QueryGreaterThan("id", int64(99000))
-				return cf.QueryOr(r1, r2), nil
+				result := cf.QueryOr(r1, r2)
+				return BitmapToSlice(result), nil
 			},
 		},
 	}
