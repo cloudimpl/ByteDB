@@ -75,17 +75,17 @@ ByteDB Columnar File:
 │ └─ ...                              │
 ├─────────────────────────────────────┤
 │ B+ Tree Pages (4KB each)            │
-│ ├─ Column 1 tree pages              │
-│ ├─ Column 2 tree pages              │
+│ ├─ Column 1 tree (offsets for vars) │
+│ ├─ Column 2 tree (direct for fixed) │
+│ └─ ...                              │
+├─────────────────────────────────────┤
+│ String/Binary Segments (4KB each)   │
+│ ├─ Unique strings (sorted, compact) │
+│ ├─ Unique binary data               │
 │ └─ ...                              │
 ├─────────────────────────────────────┤
 │ RoaringBitmap Pages (4KB each)      │
 │ ├─ Bitmap for duplicate values      │
-│ └─ ...                              │
-├─────────────────────────────────────┤
-│ Variable-Length Value Storage       │
-│ ├─ String values                    │
-│ ├─ Binary data                      │
 │ └─ ...                              │
 ├─────────────────────────────────────┤
 │ Page Directory                      │
@@ -93,6 +93,11 @@ ByteDB Columnar File:
 │ └─ Page type information            │
 └─────────────────────────────────────┘
 ```
+
+**Key Layout Changes**:
+- **String/Binary Segments**: New section for compact storage of unique variable-length values
+- **Offset-Based Trees**: B+ trees for variable-length columns store offsets instead of full values
+- **Eliminated Redundancy**: No duplicate strings/binary data stored anywhere in the file
 
 ### File Header Structure (4KB)
 ```c
@@ -162,8 +167,9 @@ enum PageType {
     PAGE_TYPE_BTREE_INTERNAL = 0x02,
     PAGE_TYPE_BTREE_LEAF     = 0x03,
     PAGE_TYPE_ROARING_BITMAP = 0x04,
-    PAGE_TYPE_VALUE_STORAGE  = 0x05,
-    PAGE_TYPE_PAGE_DIRECTORY = 0x06
+    PAGE_TYPE_STRING_SEGMENT = 0x05,
+    PAGE_TYPE_BINARY_SEGMENT = 0x06,
+    PAGE_TYPE_PAGE_DIRECTORY = 0x07
 };
 ```
 
@@ -341,34 +347,263 @@ int compare_boolean_keys(bool a, bool b) {
 
 ### Variable-Length Data Types
 
-#### String Type
+#### String Type - Optimized Offset-Based Design
+
+**Key Innovation**: Instead of storing string content in B+ tree nodes, we store unique strings in a compact segment and use their offsets as B+ tree keys. This provides:
+- **Space Efficiency**: No duplicate strings stored
+- **Cache Efficiency**: Smaller B+ tree nodes
+- **Comparison Optimization**: Direct offset comparison with lazy string loading
+
 ```c
-struct StringEntry {
-    uint32_t hash_prefix;            // Fast comparison hint
-    uint32_t string_offset;          // Offset in value storage section
-    uint32_t string_length;          // Length of string
-    uint8_t  prefix[20];             // First 20 bytes for quick comparison
+// B+ tree stores only offsets for string columns
+struct StringBTreeEntry {
+    uint64_t string_offset;          // Offset into string segment (this is the key)
     uint64_t value_or_bitmap;        // Row number or bitmap offset
 };
 
-// Value storage format
-struct StringValue {
-    uint32_t length;                 // String length
-    uint8_t  data[length];           // UTF-8 string data
-    uint8_t  padding[];              // Align to 8-byte boundary
+// Compact string segment - no duplicates
+struct StringSegment {
+    PageHeader header;               // Standard page header (64 bytes)
+    
+    uint32_t string_count;           // Number of unique strings
+    uint32_t total_size;             // Total size of string data
+    uint64_t next_segment_page;      // For large string collections
+    
+    // String directory for fast access
+    struct StringEntry {
+        uint64_t offset;             // Offset within this segment
+        uint32_t length;             // String length
+        uint32_t hash;               // String hash for quick comparison
+    } directory[MAX_STRINGS_PER_PAGE];
+    
+    // Packed string data
+    uint8_t string_data[REMAINING_SPACE];
+};
+
+// Custom comparator for offset-based keys
+struct StringOffsetComparator {
+    StringSegment* segment;
+    
+    int compare(uint64_t offset_a, uint64_t offset_b) {
+        if (offset_a == offset_b) return 0;
+        
+        // Load strings only when needed
+        const char* str_a = load_string_at_offset(segment, offset_a);
+        const char* str_b = load_string_at_offset(segment, offset_b);
+        
+        return strcmp(str_a, str_b);
+    }
 };
 ```
 
-#### Binary Data Type
+#### String Segment Benefits
+
+**Storage Efficiency**:
+```
+Traditional Approach:
+- 1M rows with 100 unique strings
+- Each tree node stores full string data
+- Total storage: 1M × average_string_size
+
+Optimized Approach:
+- Same 1M rows, 100 unique strings
+- Tree nodes store only 8-byte offsets
+- String segment: 100 × average_string_size
+- Total storage: 1M × 8 bytes + 100 × average_string_size
+- Reduction: ~90%+ for high duplicate scenarios
+```
+
+**Query Performance**:
 ```c
-struct BinaryEntry {
-    uint32_t hash_prefix;            // Hash of binary data
-    uint32_t data_offset;            // Offset in value storage
-    uint32_t data_length;            // Length of binary data
-    uint8_t  prefix[20];             // First 20 bytes
+// Range query optimization
+std::vector<uint64_t> range_query_strings(const std::string& min_str, const std::string& max_str) {
+    // 1. Find offset range in string segment
+    uint64_t min_offset = find_string_offset(min_str);
+    uint64_t max_offset = find_string_offset(max_str);
+    
+    // 2. Use offset range for B+ tree scan
+    return btree.range_scan(min_offset, max_offset);
+    
+    // Benefits:
+    // - No string comparisons during tree traversal
+    // - Smaller tree nodes = better cache utilization
+    // - Fast integer comparisons until final result
+}
+```
+
+#### Binary Data Type - Similar Offset-Based Design
+
+```c
+// B+ tree stores only offsets for binary columns
+struct BinaryBTreeEntry {
+    uint64_t binary_offset;          // Offset into binary segment (this is the key)
     uint64_t value_or_bitmap;        // Row number or bitmap offset
 };
+
+// Compact binary segment
+struct BinarySegment {
+    PageHeader header;               // Standard page header (64 bytes)
+    
+    uint32_t binary_count;           // Number of unique binary values
+    uint32_t total_size;             // Total size of binary data
+    uint64_t next_segment_page;      // For large binary collections
+    
+    // Binary directory
+    struct BinaryEntry {
+        uint64_t offset;             // Offset within this segment
+        uint32_t length;             // Binary data length
+        uint32_t hash;               // Hash for quick comparison
+        uint8_t  prefix[8];          // First 8 bytes for comparison
+    } directory[MAX_BINARIES_PER_PAGE];
+    
+    // Packed binary data
+    uint8_t binary_data[REMAINING_SPACE];
+};
+
+// Custom comparator for binary offsets
+struct BinaryOffsetComparator {
+    BinarySegment* segment;
+    
+    int compare(uint64_t offset_a, uint64_t offset_b) {
+        if (offset_a == offset_b) return 0;
+        
+        // Use hash and prefix for quick comparison
+        BinaryEntry* entry_a = find_binary_entry(segment, offset_a);
+        BinaryEntry* entry_b = find_binary_entry(segment, offset_b);
+        
+        if (entry_a->hash != entry_b->hash) {
+            return (entry_a->hash < entry_b->hash) ? -1 : 1;
+        }
+        
+        // Compare prefixes first
+        int prefix_cmp = memcmp(entry_a->prefix, entry_b->prefix, 8);
+        if (prefix_cmp != 0) return prefix_cmp;
+        
+        // Full comparison only if needed
+        const uint8_t* data_a = load_binary_at_offset(segment, offset_a);
+        const uint8_t* data_b = load_binary_at_offset(segment, offset_b);
+        
+        size_t min_len = std::min(entry_a->length, entry_b->length);
+        int result = memcmp(data_a, data_b, min_len);
+        
+        if (result == 0) {
+            return (entry_a->length < entry_b->length) ? -1 : 
+                   (entry_a->length > entry_b->length) ? 1 : 0;
+        }
+        return result;
+    }
+};
 ```
+
+### String Segment Management
+
+#### Build Process for String Columns
+```c
+class StringSegmentBuilder {
+private:
+    std::unordered_map<std::string, uint64_t> string_to_offset;
+    std::vector<std::string> unique_strings;
+    uint64_t current_offset;
+    
+public:
+    // Phase 1: Collect unique strings during data scan
+    uint64_t add_string(const std::string& str) {
+        auto it = string_to_offset.find(str);
+        if (it != string_to_offset.end()) {
+            return it->second;  // Return existing offset
+        }
+        
+        // New unique string
+        uint64_t offset = current_offset;
+        string_to_offset[str] = offset;
+        unique_strings.push_back(str);
+        current_offset += str.length() + sizeof(uint32_t); // +4 for length prefix
+        
+        return offset;
+    }
+    
+    // Phase 2: Build sorted string segment
+    StringSegment* build_segment() {
+        // Sort strings for optimal B+ tree construction
+        std::sort(unique_strings.begin(), unique_strings.end());
+        
+        // Rebuild offsets after sorting
+        rebuild_sorted_offsets();
+        
+        // Create segment pages
+        return create_string_segment_pages();
+    }
+    
+    // Phase 3: Build B+ tree with sorted offsets
+    void build_btree(BPlusTree<uint64_t, uint64_t>* tree, 
+                     const std::vector<std::pair<std::string, std::vector<uint64_t>>>& string_to_rows) {
+        std::vector<std::pair<uint64_t, uint64_t>> sorted_entries;
+        
+        for (const auto& [str, row_numbers] : string_to_rows) {
+            uint64_t string_offset = string_to_offset[str];
+            
+            // Handle duplicates with bitmap storage
+            if (row_numbers.size() == 1) {
+                sorted_entries.emplace_back(string_offset, row_numbers[0]);
+            } else {
+                uint64_t bitmap_offset = create_bitmap(row_numbers);
+                sorted_entries.emplace_back(string_offset, bitmap_offset | BITMAP_FLAG);
+            }
+        }
+        
+        // Bulk load B+ tree
+        tree->bulk_load(sorted_entries);
+    }
+};
+```
+
+#### Query Processing with String Segments
+```c
+class StringColumnQuery {
+private:
+    StringSegment* segments;
+    BPlusTree<uint64_t, uint64_t>* btree;
+    StringOffsetComparator comparator;
+    
+public:
+    // Exact match query
+    std::vector<uint64_t> find_exact(const std::string& target) {
+        // 1. Find target string offset in segments
+        uint64_t target_offset = find_string_offset_in_segments(target);
+        if (target_offset == INVALID_OFFSET) {
+            return {}; // String doesn't exist
+        }
+        
+        // 2. Query B+ tree using offset
+        return btree->find(target_offset);
+    }
+    
+    // Range query optimization
+    std::vector<uint64_t> find_range(const std::string& min_str, const std::string& max_str) {
+        // 1. Find offset bounds in string segments
+        uint64_t min_offset = find_string_offset_in_segments(min_str);
+        uint64_t max_offset = find_string_offset_in_segments(max_str);
+        
+        if (min_offset == INVALID_OFFSET) {
+            min_offset = find_next_greater_offset(min_str);
+        }
+        if (max_offset == INVALID_OFFSET) {
+            max_offset = find_next_smaller_offset(max_str);
+        }
+        
+        // 2. Efficient range scan using integer offsets
+        return btree->range_search(min_offset, max_offset);
+    }
+    
+    // Prefix query (LIKE 'prefix%')
+    std::vector<uint64_t> find_prefix(const std::string& prefix) {
+        // Calculate prefix bounds
+        std::string max_prefix = prefix;
+        max_prefix.back()++; // Increment last character
+        
+        return find_range(prefix, max_prefix);
+    }
+};
 
 ### Null Value Handling
 ```c
@@ -552,6 +787,64 @@ double estimate_selectivity(ColumnStatistics* stats, Predicate predicate) {
             return 0.5; // Default estimate
     }
 }
+```
+
+### String Optimization Performance Analysis
+
+#### Storage Efficiency Comparison
+```
+Dataset: 10M rows, 1K unique strings, average string length 50 bytes
+
+Traditional Approach:
+- B+ tree nodes store full strings
+- Total B+ tree storage: 10M × 50 bytes = 500 MB
+- Tree height: log(10M) ≈ 24 levels
+- Page cache efficiency: Poor (large nodes)
+
+Optimized Offset Approach:
+- String segment: 1K × 50 bytes = 50 KB (99.99% reduction)
+- B+ tree storage: 10M × 8 bytes = 80 MB (84% reduction)
+- Tree height: log(10M) ≈ 24 levels (same)
+- Page cache efficiency: Excellent (small nodes)
+
+Total Reduction: ~500 MB → ~80 MB (84% overall reduction)
+```
+
+#### Query Performance Benefits
+```
+String Equality Query (WHERE name = 'John'):
+Traditional: O(log n) with string comparisons at each level
+Optimized:   O(log k + log n) where k = unique strings (k << n)
+            - First find string offset: O(log k)
+            - Then B+ tree lookup: O(log n) with integer comparisons
+            - Benefit: Integer comparisons ~10x faster than string comparisons
+
+String Range Query (WHERE name BETWEEN 'A' AND 'M'):
+Traditional: O(log n + result_size) with string comparisons
+Optimized:   O(log k + log n + result_size) with mostly integer comparisons
+            - Benefit: Range bounds calculated once in string segment
+            - Tree traversal uses fast integer offset comparisons
+
+String Prefix Query (WHERE name LIKE 'John%'):
+Traditional: Full tree scan with string prefix matching
+Optimized:   Range query using offset bounds
+            - Calculate offset range for prefix in string segment
+            - Use efficient B+ tree range scan
+            - Benefit: O(log n) vs O(n) complexity
+```
+
+#### Memory Access Patterns
+```
+Cache Locality Benefits:
+- B+ tree nodes: 8-byte offsets vs 50-byte strings
+- Nodes per page: ~500 offsets vs ~80 strings
+- Tree height: Same, but faster traversal
+- String segment: Sequential access, excellent cache locality
+
+Memory Usage:
+- Working set: Only active tree nodes + small string segment
+- String segment: Loaded once, stays in cache
+- Result: Better memory efficiency and lower latency
 ```
 
 ## 🛠️ Implementation Plan
