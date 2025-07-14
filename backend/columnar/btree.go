@@ -816,6 +816,16 @@ func (bt *BPlusTree) GetRootPageID() uint64 {
 	return bt.rootPageID
 }
 
+// GetHeight returns the height of the B+ tree
+func (bt *BPlusTree) GetHeight() uint32 {
+	return bt.height
+}
+
+// SetHeight sets the height of the B+ tree
+func (bt *BPlusTree) SetHeight(height uint32) {
+	bt.height = height
+}
+
 // SetRootPageID sets the root page ID (used when loading existing tree)
 func (bt *BPlusTree) SetRootPageID(pageID uint64) {
 	bt.rootPageID = pageID

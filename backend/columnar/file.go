@@ -161,6 +161,7 @@ func (cf *ColumnarFile) LoadIntColumn(columnName string, data []struct{ Key int6
 	
 	// Update metadata with calculated statistics
 	col.metadata.RootPageID = col.btree.GetRootPageID()
+	col.metadata.TreeHeight = col.btree.GetHeight()
 	col.metadata.TotalKeys = stats.TotalKeys
 	col.metadata.DistinctCount = stats.DistinctCount
 	col.metadata.NullCount = stats.NullCount
@@ -226,6 +227,7 @@ func (cf *ColumnarFile) LoadStringColumn(columnName string, data []struct{ Key s
 	
 	// Update metadata with calculated statistics
 	col.metadata.RootPageID = col.btree.GetRootPageID()
+	col.metadata.TreeHeight = col.btree.GetHeight()
 	col.metadata.TotalKeys = stats.TotalKeys
 	col.metadata.DistinctCount = uint64(len(stringRows)) // For strings, use original string count
 	col.metadata.NullCount = stats.NullCount
@@ -764,6 +766,7 @@ func (cf *ColumnarFile) readColumnMetadata() error {
 		}
 		
 		col.btree.SetRootPageID(metadata.RootPageID)
+		col.btree.SetHeight(metadata.TreeHeight)
 		
 		// Reconstruct child page mapping for optimized B+ tree navigation
 		if err := col.btree.ReconstructChildPageMapping(); err != nil {
