@@ -1,0 +1,11 @@
+[
+  {
+    "name": "default",
+    "catalog_name": "default",
+    "description": "Default schema",
+    "owner": "",
+    "properties": {},
+    "created_at": "2025-07-13T23:34:41.550355+05:30",
+    "updated_at": "2025-07-13T23:34:41.550355+05:30"
+  }
+]

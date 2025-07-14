@@ -1,0 +1,68 @@
+[
+  {
+    "name": "products",
+    "schema_name": "default",
+    "catalog_name": "default",
+    "description": "",
+    "owner": "",
+    "location": "test_catalog/data/products_f40fb45d-a234-4837-b45e-02685a4806a9.parquet",
+    "locations": [
+      "test_catalog/data/products_f40fb45d-a234-4837-b45e-02685a4806a9.parquet"
+    ],
+    "format": "parquet",
+    "columns": [
+      {
+        "name": "category",
+        "type": "[]uint8",
+        "comment": "",
+        "nullable": false,
+        "properties": null
+      },
+      {
+        "name": "description",
+        "type": "[]uint8",
+        "comment": "",
+        "nullable": false,
+        "properties": null
+      },
+      {
+        "name": "id",
+        "type": "int32",
+        "comment": "",
+        "nullable": false,
+        "properties": null
+      },
+      {
+        "name": "in_stock",
+        "type": "bool",
+        "comment": "",
+        "nullable": false,
+        "properties": null
+      },
+      {
+        "name": "name",
+        "type": "[]uint8",
+        "comment": "",
+        "nullable": false,
+        "properties": null
+      },
+      {
+        "name": "price",
+        "type": "float64",
+        "comment": "",
+        "nullable": false,
+        "properties": null
+      }
+    ],
+    "partition_keys": null,
+    "properties": {},
+    "statistics": {
+      "row_count": 0,
+      "size_bytes": 0,
+      "last_analyzed": "2025-07-13T23:34:41.555322+05:30",
+      "last_modified": "2025-07-13T23:34:41.555322+05:30"
+    },
+    "created_at": "2025-07-13T23:34:41.555323+05:30",
+    "updated_at": "2025-07-13T23:34:41.556391+05:30"
+  }
+]

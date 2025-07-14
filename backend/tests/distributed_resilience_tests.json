@@ -1,0 +1,193 @@
+{
+  "name": "distributed_resilience_tests",
+  "description": "Test distributed query execution resilience and fault tolerance",
+  "config": {
+    "verbose": true
+  },
+  "test_cases": [
+    {
+      "name": "distributed_with_worker_failure",
+      "description": "Test query execution when a worker fails during execution",
+      "sql": "SELECT department, COUNT(*) as count FROM employees GROUP BY department",
+      "expected": {
+        "row_count": 5,
+        "columns": ["department", "count"]
+      },
+      "distributed": {
+        "workers": 3,
+        "expected_workers": 2,
+        "network_optimization": true,
+        "worker_failures": [
+          {
+            "worker_id": "test-worker-2",
+            "failure_type": "crash",
+            "at_stage": "execution"
+          }
+        ]
+      },
+      "trace": {
+        "level": "DEBUG",
+        "components": ["DISTRIBUTED", "FAULT", "RECOVERY"]
+      },
+      "tags": ["distributed", "resilience", "failure"],
+      "timeout": "10s"
+    },
+    {
+      "name": "distributed_with_slow_worker",
+      "description": "Test query execution with a slow worker",
+      "sql": "SELECT AVG(salary) as avg_salary FROM employees WHERE department = 'Engineering'",
+      "expected": {
+        "row_count": 1,
+        "columns": ["avg_salary"]
+      },
+      "distributed": {
+        "workers": 3,
+        "expected_workers": 3,
+        "network_optimization": true,
+        "worker_failures": [
+          {
+            "worker_id": "test-worker-1",
+            "failure_type": "slow",
+            "at_stage": "execution",
+            "delay": "2s"
+          }
+        ]
+      },
+      "trace": {
+        "level": "INFO",
+        "components": ["DISTRIBUTED", "PERFORMANCE"]
+      },
+      "tags": ["distributed", "resilience", "slow"],
+      "timeout": "15s"
+    },
+    {
+      "name": "distributed_network_partition",
+      "description": "Test query execution with network partition",
+      "sql": "SELECT COUNT(DISTINCT department) as dept_count FROM employees",
+      "expected": {
+        "row_count": 1,
+        "columns": ["dept_count"]
+      },
+      "distributed": {
+        "workers": 3,
+        "expected_workers": 2,
+        "worker_failures": [
+          {
+            "worker_id": "test-worker-3",
+            "failure_type": "network",
+            "at_stage": "planning"
+          }
+        ]
+      },
+      "trace": {
+        "level": "DEBUG",
+        "components": ["DISTRIBUTED", "NETWORK", "RECOVERY"]
+      },
+      "tags": ["distributed", "resilience", "network"],
+      "timeout": "10s"
+    },
+    {
+      "name": "distributed_large_result_set",
+      "description": "Test handling of large result sets across workers",
+      "sql": "SELECT * FROM employees ORDER BY salary DESC",
+      "expected": {
+        "row_count": 10,
+        "performance": {
+          "max_duration": "2s"
+        }
+      },
+      "distributed": {
+        "workers": 3,
+        "expected_workers": 3,
+        "expected_fragments": 3
+      },
+      "trace": {
+        "level": "INFO",
+        "components": ["DISTRIBUTED", "MEMORY", "TRANSFER"]
+      },
+      "tags": ["distributed", "performance", "large"],
+      "timeout": "5s"
+    },
+    {
+      "name": "distributed_empty_worker",
+      "description": "Test query execution when one worker has no data",
+      "sql": "SELECT department, MAX(salary) as max_sal FROM employees GROUP BY department",
+      "expected": {
+        "row_count": 5
+      },
+      "distributed": {
+        "workers": 4,
+        "expected_workers": 3,
+        "network_optimization": true,
+        "verify_partial_aggs": true
+      },
+      "trace": {
+        "level": "DEBUG",
+        "components": ["DISTRIBUTED", "AGGREGATE", "EMPTY"]
+      },
+      "tags": ["distributed", "edge_case", "empty"],
+      "timeout": "5s"
+    },
+    {
+      "name": "distributed_skewed_data",
+      "description": "Test query execution with data skew across workers",
+      "sql": "SELECT department, COUNT(*) as count, AVG(salary) as avg_sal FROM employees WHERE department IN ('Engineering', 'Sales') GROUP BY department",
+      "expected": {
+        "row_count": 2
+      },
+      "distributed": {
+        "workers": 3,
+        "expected_workers": 3,
+        "data_distribution": "skewed",
+        "network_optimization": true,
+        "verify_partial_aggs": true
+      },
+      "trace": {
+        "level": "VERBOSE",
+        "components": ["DISTRIBUTED", "AGGREGATE", "SKEW"]
+      },
+      "tags": ["distributed", "performance", "skew"],
+      "timeout": "5s"
+    },
+    {
+      "name": "distributed_concurrent_queries",
+      "description": "Test concurrent distributed query execution",
+      "sql": "SELECT COUNT(*) as cnt FROM employees",
+      "expected": {
+        "row_count": 1,
+        "performance": {
+          "max_duration": "1s"
+        }
+      },
+      "distributed": {
+        "workers": 3,
+        "expected_workers": 3,
+        "network_optimization": true
+      },
+      "trace": {
+        "level": "INFO",
+        "components": ["DISTRIBUTED", "CONCURRENT"]
+      },
+      "tags": ["distributed", "concurrent", "performance"],
+      "timeout": "3s"
+    },
+    {
+      "name": "distributed_memory_pressure",
+      "description": "Test query execution under memory pressure",
+      "sql": "SELECT e1.name, e1.salary, (SELECT AVG(salary) FROM employees e2 WHERE e2.department = e1.department) as dept_avg FROM employees e1 ORDER BY e1.salary DESC",
+      "expected": {
+        "row_count": 10
+      },
+      "distributed": {
+        "workers": 3,
+        "expected_workers": 3
+      },
+      "trace": {
+        "level": "DEBUG",
+        "components": ["DISTRIBUTED", "MEMORY", "SUBQUERY"]
+      },
+      "tags": ["distributed", "memory", "complex"],
+      "timeout": "10s"
+    }
+  ]
+}
