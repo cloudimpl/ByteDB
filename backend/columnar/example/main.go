@@ -1,0 +1,114 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	
+	"bytedb/columnar"
+)
+
+func main() {
+	// Create a new columnar file
+	cf, err := columnar.CreateFile("example.bytedb")
+	if err != nil {
+		log.Fatal("Failed to create file:", err)
+	}
+	defer cf.Close()
+	
+	// Add columns
+	if err := cf.AddColumn("id", columnar.DataTypeInt64, false); err != nil {
+		log.Fatal("Failed to add id column:", err)
+	}
+	
+	if err := cf.AddColumn("name", columnar.DataTypeString, false); err != nil {
+		log.Fatal("Failed to add name column:", err)
+	}
+	
+	if err := cf.AddColumn("age", columnar.DataTypeInt64, false); err != nil {
+		log.Fatal("Failed to add age column:", err)
+	}
+	
+	// Load some sample data
+	fmt.Println("Loading data...")
+	
+	// ID data
+	idData := []struct{ Key int64; RowNum uint64 }{
+		{1, 0}, {2, 1}, {3, 2}, {4, 3}, {5, 4},
+		{1, 5}, // Duplicate ID
+		{6, 6}, {7, 7}, {8, 8}, {9, 9},
+	}
+	if err := cf.LoadIntColumn("id", idData); err != nil {
+		log.Fatal("Failed to load id data:", err)
+	}
+	
+	// Name data
+	nameData := []struct{ Key string; RowNum uint64 }{
+		{"Alice", 0}, {"Bob", 1}, {"Charlie", 2}, {"David", 3}, {"Eve", 4},
+		{"Alice", 5}, // Duplicate name
+		{"Frank", 6}, {"Grace", 7}, {"Henry", 8}, {"Iris", 9},
+	}
+	if err := cf.LoadStringColumn("name", nameData); err != nil {
+		log.Fatal("Failed to load name data:", err)
+	}
+	
+	// Age data
+	ageData := []struct{ Key int64; RowNum uint64 }{
+		{25, 0}, {30, 1}, {35, 2}, {28, 3}, {32, 4},
+		{25, 5}, {40, 6}, {45, 7}, {38, 8}, {29, 9},
+	}
+	if err := cf.LoadIntColumn("age", ageData); err != nil {
+		log.Fatal("Failed to load age data:", err)
+	}
+	
+	fmt.Println("Data loaded successfully!")
+	
+	// Query examples
+	fmt.Println("\n=== Query Examples ===")
+	
+	// 1. Find all rows with id = 1
+	fmt.Println("\n1. Find rows with id = 1:")
+	rows, err := cf.QueryInt("id", 1)
+	if err != nil {
+		log.Fatal("Query failed:", err)
+	}
+	fmt.Printf("   Found %d rows: %v\n", len(rows), rows)
+	
+	// 2. Find all rows with name = "Alice"
+	fmt.Println("\n2. Find rows with name = 'Alice':")
+	rows, err = cf.QueryString("name", "Alice")
+	if err != nil {
+		log.Fatal("Query failed:", err)
+	}
+	fmt.Printf("   Found %d rows: %v\n", len(rows), rows)
+	
+	// 3. Range query on age (25-35)
+	fmt.Println("\n3. Find rows with age between 25 and 35:")
+	rows, err = cf.RangeQueryInt("age", 25, 35)
+	if err != nil {
+		log.Fatal("Query failed:", err)
+	}
+	fmt.Printf("   Found %d rows: %v\n", len(rows), rows)
+	
+	// 4. String range query
+	fmt.Println("\n4. Find names between 'Bob' and 'Frank':")
+	rows, err = cf.RangeQueryString("name", "Bob", "Frank")
+	if err != nil {
+		log.Fatal("Query failed:", err)
+	}
+	fmt.Printf("   Found %d rows: %v\n", len(rows), rows)
+	
+	// Display statistics
+	fmt.Println("\n=== Column Statistics ===")
+	for _, colName := range cf.GetColumns() {
+		stats, err := cf.GetStats(colName)
+		if err != nil {
+			continue
+		}
+		fmt.Printf("\nColumn '%s':\n", colName)
+		for k, v := range stats {
+			fmt.Printf("  %s: %v\n", k, v)
+		}
+	}
+	
+	fmt.Println("\nFile created successfully: example.bytedb")
+}
