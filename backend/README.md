@@ -16,6 +16,7 @@ Built using [pg_query_go](https://github.com/pganalyze/pg_query_go) for SQL pars
 - 📑 [Table Registry Guide](USING_TABLE_REGISTRY.md) - Legacy table name mapping system
 - 🔍 [Tracing System Guide](docs/TRACING.md) - Comprehensive debugging and performance analysis
 - 🧪 [SQL Testing Framework](tests/README.md) - Comprehensive SQL query testing with traceability
+- 🗄️ [**Columnar Storage Format**](columnar/README.md) - High-performance columnar file format with space-optimized B+ trees
 
 ## 🎉 Recent Updates
 
@@ -139,6 +140,7 @@ GROUP BY department
 
 ### Data Operations
 - **Parquet File Reading**: Efficient reading and querying of Parquet files
+- **Advanced Columnar Storage**: Space-optimized columnar format with bitmap API (50-89% space savings)
 - **Schema Inspection**: View table schemas and column information
 - **Query Caching**: Intelligent caching system for improved performance
 - **Data Type Support**: Comprehensive handling of strings, numbers, dates, and NULL values
@@ -959,6 +961,14 @@ bytedb/
 │   ├── planner.go              # Query planning and optimization
 │   ├── executor.go             # Query execution engine
 │   └── cache.go                # Query result caching system
+├── columnar/                    # 🗄️ High-performance columnar storage format
+│   ├── README.md               # Comprehensive columnar format documentation
+│   ├── file.go                 # Columnar file operations with bitmap API
+│   ├── btree.go                # Space-optimized B+ tree (50-89% space savings)
+│   ├── bitmap_manager.go       # RoaringBitmap integration
+│   ├── string_segment.go       # String deduplication and compression
+│   ├── example/                # Working examples and demonstrations
+│   └── *_test.go               # 16 test suites with comprehensive validation
 ├── distributed/                 # Distributed query execution
 │   ├── coordinator/            # Coordinator node implementation
 │   ├── worker/                 # Worker node implementation
