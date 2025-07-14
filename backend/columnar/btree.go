@@ -165,6 +165,238 @@ func (bt *BPlusTree) RangeSearch(minKey, maxKey uint64) ([]uint64, error) {
 	return results, nil
 }
 
+// RangeSearchGreaterThan finds all entries with key > value
+func (bt *BPlusTree) RangeSearchGreaterThan(key uint64) ([]uint64, error) {
+	// Find the leaf that would contain this key
+	leaf, err := bt.navigateToLeaf(key)
+	if err != nil {
+		return nil, err
+	}
+	
+	results := make([]uint64, 0)
+	currentPage := leaf
+	
+	for currentPage != nil {
+		entries, err := bt.readLeafEntries(currentPage)
+		if err != nil {
+			return nil, err
+		}
+		
+		for _, entry := range entries {
+			cmp, err := bt.comparator.Compare(entry.Key, key)
+			if err != nil {
+				return nil, err
+			}
+			
+			if cmp > 0 {
+				// Key is greater than value
+				if entry.Value.IsRowNumber() {
+					results = append(results, entry.Value.GetRowNumber())
+				} else {
+					// Load bitmap
+					rows, err := bt.loadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						return nil, err
+					}
+					results = append(results, rows...)
+				}
+			}
+		}
+		
+		// Move to next leaf
+		if currentPage.Header.NextPageID != 0 {
+			currentPage, err = bt.pageManager.ReadPage(currentPage.Header.NextPageID)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			break
+		}
+	}
+	
+	return results, nil
+}
+
+// RangeSearchGreaterThanOrEqual finds all entries with key >= value
+func (bt *BPlusTree) RangeSearchGreaterThanOrEqual(key uint64) ([]uint64, error) {
+	// Find the leaf that would contain this key
+	leaf, err := bt.navigateToLeaf(key)
+	if err != nil {
+		return nil, err
+	}
+	
+	results := make([]uint64, 0)
+	currentPage := leaf
+	
+	for currentPage != nil {
+		entries, err := bt.readLeafEntries(currentPage)
+		if err != nil {
+			return nil, err
+		}
+		
+		for _, entry := range entries {
+			cmp, err := bt.comparator.Compare(entry.Key, key)
+			if err != nil {
+				return nil, err
+			}
+			
+			if cmp >= 0 {
+				// Key is greater than or equal to value
+				if entry.Value.IsRowNumber() {
+					results = append(results, entry.Value.GetRowNumber())
+				} else {
+					// Load bitmap
+					rows, err := bt.loadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						return nil, err
+					}
+					results = append(results, rows...)
+				}
+			}
+		}
+		
+		// Move to next leaf
+		if currentPage.Header.NextPageID != 0 {
+			currentPage, err = bt.pageManager.ReadPage(currentPage.Header.NextPageID)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			break
+		}
+	}
+	
+	return results, nil
+}
+
+// RangeSearchLessThan finds all entries with key < value
+func (bt *BPlusTree) RangeSearchLessThan(key uint64) ([]uint64, error) {
+	// Start from the leftmost leaf
+	currentPageID := bt.rootPageID
+	
+	// Navigate to leftmost leaf
+	for {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return nil, err
+		}
+		
+		if page.Header.PageType == PageTypeBTreeLeaf {
+			break
+		}
+		
+		// For internal nodes, always go to first child
+		currentPageID = ByteOrder.Uint64(page.Data[0:8])
+	}
+	
+	results := make([]uint64, 0)
+	
+	// Scan leaves until we reach or exceed the key
+	for currentPageID != 0 {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return nil, err
+		}
+		
+		entries, err := bt.readLeafEntries(page)
+		if err != nil {
+			return nil, err
+		}
+		
+		for _, entry := range entries {
+			cmp, err := bt.comparator.Compare(entry.Key, key)
+			if err != nil {
+				return nil, err
+			}
+			
+			if cmp < 0 {
+				// Key is less than value
+				if entry.Value.IsRowNumber() {
+					results = append(results, entry.Value.GetRowNumber())
+				} else {
+					// Load bitmap
+					rows, err := bt.loadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						return nil, err
+					}
+					results = append(results, rows...)
+				}
+			} else {
+				// We've reached or exceeded the key
+				return results, nil
+			}
+		}
+		
+		currentPageID = page.Header.NextPageID
+	}
+	
+	return results, nil
+}
+
+// RangeSearchLessThanOrEqual finds all entries with key <= value
+func (bt *BPlusTree) RangeSearchLessThanOrEqual(key uint64) ([]uint64, error) {
+	// Start from the leftmost leaf
+	currentPageID := bt.rootPageID
+	
+	// Navigate to leftmost leaf
+	for {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return nil, err
+		}
+		
+		if page.Header.PageType == PageTypeBTreeLeaf {
+			break
+		}
+		
+		// For internal nodes, always go to first child
+		currentPageID = ByteOrder.Uint64(page.Data[0:8])
+	}
+	
+	results := make([]uint64, 0)
+	
+	// Scan leaves until we exceed the key
+	for currentPageID != 0 {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return nil, err
+		}
+		
+		entries, err := bt.readLeafEntries(page)
+		if err != nil {
+			return nil, err
+		}
+		
+		for _, entry := range entries {
+			cmp, err := bt.comparator.Compare(entry.Key, key)
+			if err != nil {
+				return nil, err
+			}
+			
+			if cmp <= 0 {
+				// Key is less than or equal to value
+				if entry.Value.IsRowNumber() {
+					results = append(results, entry.Value.GetRowNumber())
+				} else {
+					// Load bitmap
+					rows, err := bt.loadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						return nil, err
+					}
+					results = append(results, rows...)
+				}
+			} else {
+				// We've exceeded the key
+				return results, nil
+			}
+		}
+		
+		currentPageID = page.Header.NextPageID
+	}
+	
+	return results, nil
+}
+
 // BulkLoad creates a B+ tree from sorted key-value pairs
 func (bt *BPlusTree) BulkLoad(entries []BTreeLeafEntry) error {
 	if len(entries) == 0 {

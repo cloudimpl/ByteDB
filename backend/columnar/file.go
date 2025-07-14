@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"time"
+	
+	roaring "github.com/RoaringBitmap/roaring/v2"
 )
 
 // ColumnarFile represents a complete columnar file
@@ -252,11 +254,14 @@ func (cf *ColumnarFile) RangeQueryInt(columnName string, min, max int64) ([]uint
 		return nil, fmt.Errorf("column %s not found", columnName)
 	}
 	
-	if col.metadata.DataType != DataTypeInt64 {
-		return nil, fmt.Errorf("column %s is not int64 type", columnName)
+	// Allow all integer types
+	switch col.metadata.DataType {
+	case DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		return col.btree.RangeSearch(uint64(min), uint64(max))
+	default:
+		return nil, fmt.Errorf("column %s is not an integer type", columnName)
 	}
-	
-	return col.btree.RangeSearch(uint64(min), uint64(max))
 }
 
 // RangeQueryString performs a range query on a string column
@@ -287,6 +292,256 @@ func (cf *ColumnarFile) RangeQueryString(columnName string, min, max string) ([]
 	}
 	
 	return results, nil
+}
+
+// QueryGreaterThan performs a > query on a column
+func (cf *ColumnarFile) QueryGreaterThan(columnName string, value interface{}) ([]uint64, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	switch col.metadata.DataType {
+	case DataTypeBool, DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		// For numeric types, use range search from value+1 to max
+		intVal := toUint64(value)
+		return col.btree.RangeSearchGreaterThan(intVal)
+		
+	case DataTypeString:
+		// For strings, find all strings > value
+		strVal, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string value for string column")
+		}
+		return cf.queryStringGreaterThan(col, strVal)
+		
+	default:
+		return nil, fmt.Errorf("greater than not supported for data type %v", col.metadata.DataType)
+	}
+}
+
+// QueryGreaterThanOrEqual performs a >= query on a column
+func (cf *ColumnarFile) QueryGreaterThanOrEqual(columnName string, value interface{}) ([]uint64, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	switch col.metadata.DataType {
+	case DataTypeBool, DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		// For numeric types, use range search from value to max
+		intVal := toUint64(value)
+		return col.btree.RangeSearchGreaterThanOrEqual(intVal)
+		
+	case DataTypeString:
+		// For strings, find all strings >= value
+		strVal, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string value for string column")
+		}
+		return cf.queryStringGreaterThanOrEqual(col, strVal)
+		
+	default:
+		return nil, fmt.Errorf("greater than or equal not supported for data type %v", col.metadata.DataType)
+	}
+}
+
+// QueryLessThan performs a < query on a column
+func (cf *ColumnarFile) QueryLessThan(columnName string, value interface{}) ([]uint64, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	switch col.metadata.DataType {
+	case DataTypeBool, DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		// For numeric types, use range search from min to value-1
+		intVal := toUint64(value)
+		return col.btree.RangeSearchLessThan(intVal)
+		
+	case DataTypeString:
+		// For strings, find all strings < value
+		strVal, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string value for string column")
+		}
+		return cf.queryStringLessThan(col, strVal)
+		
+	default:
+		return nil, fmt.Errorf("less than not supported for data type %v", col.metadata.DataType)
+	}
+}
+
+// QueryLessThanOrEqual performs a <= query on a column
+func (cf *ColumnarFile) QueryLessThanOrEqual(columnName string, value interface{}) ([]uint64, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	switch col.metadata.DataType {
+	case DataTypeBool, DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		// For numeric types, use range search from min to value
+		intVal := toUint64(value)
+		return col.btree.RangeSearchLessThanOrEqual(intVal)
+		
+	case DataTypeString:
+		// For strings, find all strings <= value
+		strVal, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string value for string column")
+		}
+		return cf.queryStringLessThanOrEqual(col, strVal)
+		
+	default:
+		return nil, fmt.Errorf("less than or equal not supported for data type %v", col.metadata.DataType)
+	}
+}
+
+// QueryAnd performs an AND operation on multiple result sets
+func (cf *ColumnarFile) QueryAnd(resultSets ...[]uint64) []uint64 {
+	if len(resultSets) == 0 {
+		return []uint64{}
+	}
+	if len(resultSets) == 1 {
+		return resultSets[0]
+	}
+	
+	// Convert to bitmaps for efficient intersection
+	bitmaps := make([]*roaring.Bitmap, len(resultSets))
+	for i, results := range resultSets {
+		bitmaps[i] = roaring.New()
+		for _, row := range results {
+			bitmaps[i].Add(uint32(row))
+		}
+	}
+	
+	// Perform intersection
+	result := bitmaps[0].Clone()
+	for i := 1; i < len(bitmaps); i++ {
+		result.And(bitmaps[i])
+	}
+	
+	// Convert back to slice
+	rows := make([]uint64, 0, result.GetCardinality())
+	iter := result.Iterator()
+	for iter.HasNext() {
+		rows = append(rows, uint64(iter.Next()))
+	}
+	
+	return rows
+}
+
+// QueryOr performs an OR operation on multiple result sets
+func (cf *ColumnarFile) QueryOr(resultSets ...[]uint64) []uint64 {
+	if len(resultSets) == 0 {
+		return []uint64{}
+	}
+	if len(resultSets) == 1 {
+		return resultSets[0]
+	}
+	
+	// Convert to bitmaps for efficient union
+	result := roaring.New()
+	for _, results := range resultSets {
+		for _, row := range results {
+			result.Add(uint32(row))
+		}
+	}
+	
+	// Convert back to slice
+	rows := make([]uint64, 0, result.GetCardinality())
+	iter := result.Iterator()
+	for iter.HasNext() {
+		rows = append(rows, uint64(iter.Next()))
+	}
+	
+	return rows
+}
+
+// QueryNot performs a NOT operation (returns all rows except those in the result set)
+func (cf *ColumnarFile) QueryNot(columnName string, resultSet []uint64) ([]uint64, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	// For NOT operation, we need to know all possible row numbers
+	// Since we don't track max row number, we'll collect all rows from the column
+	allRowsBitmap := roaring.New()
+	
+	// Traverse the B+ tree to get all row numbers
+	if col.btree.rootPageID != 0 {
+		// Start from leftmost leaf
+		currentPageID := col.btree.rootPageID
+		
+		// Navigate to leftmost leaf
+		for {
+			page, err := cf.pageManager.ReadPage(currentPageID)
+			if err != nil {
+				return nil, err
+			}
+			
+			if page.Header.PageType == PageTypeBTreeLeaf {
+				break
+			}
+			
+			// For internal nodes, always go to first child
+			currentPageID = ByteOrder.Uint64(page.Data[0:8])
+		}
+		
+		// Scan all leaves
+		for currentPageID != 0 {
+			page, err := cf.pageManager.ReadPage(currentPageID)
+			if err != nil {
+				return nil, err
+			}
+			
+			entries, err := col.btree.readLeafEntries(page)
+			if err != nil {
+				return nil, err
+			}
+			
+			for _, entry := range entries {
+				if entry.Value.IsRowNumber() {
+					allRowsBitmap.Add(uint32(entry.Value.GetRowNumber()))
+				} else {
+					// Load bitmap
+					rows, err := col.btree.loadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						continue
+					}
+					for _, row := range rows {
+						allRowsBitmap.Add(uint32(row))
+					}
+				}
+			}
+			
+			currentPageID = page.Header.NextPageID
+		}
+	}
+	
+	// Create bitmap with result set
+	resultBitmap := roaring.New()
+	for _, row := range resultSet {
+		resultBitmap.Add(uint32(row))
+	}
+	
+	// Perform NOT operation (difference)
+	allRowsBitmap.AndNot(resultBitmap)
+	
+	// Convert back to slice
+	rows := make([]uint64, 0, allRowsBitmap.GetCardinality())
+	iter := allRowsBitmap.Iterator()
+	for iter.HasNext() {
+		rows = append(rows, uint64(iter.Next()))
+	}
+	
+	return rows, nil
 }
 
 // Close closes the columnar file
@@ -555,4 +810,162 @@ func (cf *ColumnarFile) GetStats(columnName string) (map[string]interface{}, err
 	stats["data_type"] = col.metadata.DataType
 	
 	return stats, nil
+}
+
+// Helper functions for type conversion
+func toUint64(value interface{}) uint64 {
+	switch v := value.(type) {
+	case int:
+		return uint64(v)
+	case int8:
+		return uint64(v)
+	case int16:
+		return uint64(v)
+	case int32:
+		return uint64(v)
+	case int64:
+		return uint64(v)
+	case uint:
+		return uint64(v)
+	case uint8:
+		return uint64(v)
+	case uint16:
+		return uint64(v)
+	case uint32:
+		return uint64(v)
+	case uint64:
+		return v
+	case bool:
+		if v {
+			return 1
+		}
+		return 0
+	default:
+		return 0
+	}
+}
+
+// String query helper functions
+func (cf *ColumnarFile) queryStringGreaterThan(col *Column, value string) ([]uint64, error) {
+	// Find the next greater string offset
+	offset, err := col.stringSegment.FindNextGreaterOffset(value)
+	if err != nil {
+		// No strings greater than value
+		return []uint64{}, nil
+	}
+	
+	// Get the string at this offset to use as minimum for range query
+	minStr, err := col.stringSegment.GetString(offset)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Find maximum string in the segment
+	maxStr := ""
+	for _, str := range col.stringSegment.offsetMap {
+		if str > maxStr {
+			maxStr = str
+		}
+	}
+	
+	// Get all offsets in range
+	offsets := col.stringSegment.GetOffsetsInRange(minStr, maxStr)
+	
+	// Query each offset
+	results := make([]uint64, 0)
+	for _, off := range offsets {
+		rows, err := col.btree.Find(off)
+		if err != nil {
+			continue
+		}
+		results = append(results, rows...)
+	}
+	
+	return results, nil
+}
+
+func (cf *ColumnarFile) queryStringGreaterThanOrEqual(col *Column, value string) ([]uint64, error) {
+	// Check if value exists
+	if offset, found := col.stringSegment.FindOffset(value); found {
+		// Include the value itself
+		rows, err := col.btree.Find(offset)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Also get all greater values
+		greaterRows, err := cf.queryStringGreaterThan(col, value)
+		if err != nil {
+			return rows, nil // Return at least the equal values
+		}
+		
+		// Combine results
+		return cf.QueryOr(rows, greaterRows), nil
+	}
+	
+	// Value doesn't exist, just return greater than
+	return cf.queryStringGreaterThan(col, value)
+}
+
+func (cf *ColumnarFile) queryStringLessThan(col *Column, value string) ([]uint64, error) {
+	// Find the next smaller string offset
+	offset, err := col.stringSegment.FindNextSmallerOffset(value)
+	if err != nil {
+		// No strings less than value
+		return []uint64{}, nil
+	}
+	
+	// Get the string at this offset to use as maximum for range query
+	maxStr, err := col.stringSegment.GetString(offset)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Find minimum string in the segment
+	minStr := ""
+	firstTime := true
+	for _, str := range col.stringSegment.offsetMap {
+		if firstTime || str < minStr {
+			minStr = str
+			firstTime = false
+		}
+	}
+	
+	// Get all offsets in range
+	offsets := col.stringSegment.GetOffsetsInRange(minStr, maxStr)
+	
+	// Query each offset
+	results := make([]uint64, 0)
+	for _, off := range offsets {
+		rows, err := col.btree.Find(off)
+		if err != nil {
+			continue
+		}
+		results = append(results, rows...)
+	}
+	
+	return results, nil
+}
+
+func (cf *ColumnarFile) queryStringLessThanOrEqual(col *Column, value string) ([]uint64, error) {
+	// Check if value exists
+	if offset, found := col.stringSegment.FindOffset(value); found {
+		// Include the value itself
+		rows, err := col.btree.Find(offset)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Also get all lesser values
+		lesserRows, err := cf.queryStringLessThan(col, value)
+		if err != nil {
+			return rows, nil // Return at least the equal values
+		}
+		
+		// Combine results
+		return cf.QueryOr(rows, lesserRows), nil
+	}
+	
+	// Value doesn't exist, just return less than
+	return cf.queryStringLessThan(col, value)
 }

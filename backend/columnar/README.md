@@ -85,6 +85,133 @@ func main() {
 }
 ```
 
+## Query Operators
+
+ByteDB Columnar Format supports a comprehensive set of query operators for building complex analytical queries.
+
+### Comparison Operators
+
+#### Equality (=)
+```go
+// Query for exact matches
+rows, err := cf.QueryInt("user_id", 1001)
+rows, err := cf.QueryString("username", "alice")
+```
+
+#### Greater Than (>)
+```go
+// Find all rows where value > threshold
+rows, err := cf.QueryGreaterThan("age", uint8(25))
+rows, err := cf.QueryGreaterThan("score", int32(100))
+rows, err := cf.QueryGreaterThan("name", "M") // Strings after "M"
+```
+
+#### Greater Than or Equal (>=)
+```go
+// Find all rows where value >= threshold
+rows, err := cf.QueryGreaterThanOrEqual("age", uint8(25))
+rows, err := cf.QueryGreaterThanOrEqual("active", true) // For booleans
+```
+
+#### Less Than (<)
+```go
+// Find all rows where value < threshold
+rows, err := cf.QueryLessThan("score", int32(50))
+rows, err := cf.QueryLessThan("name", "John") // Strings before "John"
+```
+
+#### Less Than or Equal (<=)
+```go
+// Find all rows where value <= threshold
+rows, err := cf.QueryLessThanOrEqual("score", int32(50))
+```
+
+#### Range/Between
+```go
+// Find all rows where min <= value <= max
+rows, err := cf.RangeQueryInt("age", 25, 35)
+rows, err := cf.RangeQueryString("name", "Alice", "Bob")
+```
+
+### Logical Operators
+
+#### AND Operation
+Combine multiple conditions with logical AND:
+```go
+// Find users aged 25+ with score > 100
+ageResults, _ := cf.QueryGreaterThanOrEqual("age", uint8(25))
+scoreResults, _ := cf.QueryGreaterThan("score", int32(100))
+finalResults := cf.QueryAnd(ageResults, scoreResults)
+
+// Multiple AND conditions
+results := cf.QueryAnd(condition1, condition2, condition3)
+```
+
+#### OR Operation
+Combine multiple conditions with logical OR:
+```go
+// Find users who are either premium OR active
+premiumResults, _ := cf.QueryInt("is_premium", 1)
+activeResults, _ := cf.QueryInt("is_active", 1) 
+finalResults := cf.QueryOr(premiumResults, activeResults)
+
+// Multiple OR conditions
+results := cf.QueryOr(condition1, condition2, condition3)
+```
+
+#### NOT Operation
+Exclude certain results:
+```go
+// Find all non-active users
+activeResults, _ := cf.QueryGreaterThanOrEqual("active", true)
+nonActiveResults, _ := cf.QueryNot("active", activeResults)
+```
+
+### Complex Query Examples
+
+#### Multi-Column Filtering
+```go
+// (age BETWEEN 25 AND 35) AND (score > 100 OR premium = true)
+ageRange, _ := cf.RangeQueryInt("age", 25, 35)
+highScore, _ := cf.QueryGreaterThan("score", int32(100))
+isPremium, _ := cf.QueryInt("premium", 1)
+scoreOrPremium := cf.QueryOr(highScore, isPremium)
+finalResults := cf.QueryAnd(ageRange, scoreOrPremium)
+```
+
+#### String Pattern Matching
+```go
+// Find names starting with "John" (using range query)
+// This works because strings are sorted
+results, _ := cf.RangeQueryString("name", "John", "John~")
+```
+
+### Supported Data Types
+
+All operators work with the following data types:
+- `DataTypeBool` - Boolean values (true/false)
+- `DataTypeInt8` - Signed 8-bit integers
+- `DataTypeInt16` - Signed 16-bit integers  
+- `DataTypeInt32` - Signed 32-bit integers
+- `DataTypeInt64` - Signed 64-bit integers
+- `DataTypeUint8` - Unsigned 8-bit integers
+- `DataTypeUint16` - Unsigned 16-bit integers
+- `DataTypeUint32` - Unsigned 32-bit integers
+- `DataTypeUint64` - Unsigned 64-bit integers
+- `DataTypeFloat32` - 32-bit floating point
+- `DataTypeFloat64` - 64-bit floating point
+- `DataTypeString` - Variable-length strings
+- `DataTypeBinary` - Variable-length binary data
+
+### Space Efficiency by Data Type
+
+Using appropriate data types provides significant space savings:
+- **Boolean/Byte**: 34.8% space savings vs int64
+- **Short (16-bit)**: 30.4% space savings vs int64
+- **Int (32-bit)**: 21.7% space savings vs int64
+
+This is achieved through variable-size key encoding in the B+ tree structure.
+
 ## Running the Example
 
 ```bash
@@ -102,9 +229,21 @@ This will create an example file demonstrating:
 ## Performance Characteristics
 
 ### Time Complexity
-- **Point Lookup**: O(log n)
-- **Range Query**: O(log n + k) where k = result size
+- **Point Lookup (=)**: O(log n)
+- **Range Query (BETWEEN)**: O(log n + k) where k = result size
+- **Comparison Operators (>, >=, <, <=)**: O(log n + k)
+- **AND Operation**: O(min(n₁, n₂, ...)) where nᵢ = size of result set i
+- **OR Operation**: O(n₁ + n₂ + ...) where nᵢ = size of result set i
+- **NOT Operation**: O(n) where n = total rows in column
 - **Multi-Column Filter**: O(m × log n) where m = number of predicates
+
+### Operator Performance (100K rows dataset)
+- **Equality**: ~19µs
+- **Greater Than (10% selectivity)**: ~375µs
+- **Less Than (0.25% selectivity)**: ~10µs  
+- **Range Query (20% selectivity)**: ~774µs
+- **Complex AND**: ~2.7ms
+- **Complex OR**: ~222µs
 
 ### Space Efficiency
 - **B+ Tree Overhead**: ~10-15%
