@@ -103,7 +103,7 @@ func (qe *QueryEngine) executeScanNode(node *PlanNode, query *ParsedQuery) ([]Ro
 	var rows []Row
 
 	// Apply column pruning if specified
-	if len(node.Columns) > 0 && !qe.hasWildcard(node.Columns) {
+	if len(node.Columns) > 0 && !qe.hasWildcardString(node.Columns) {
 		rows, err = reader.ReadAllWithColumns(node.Columns)
 	} else {
 		rows, err = reader.ReadAll()
@@ -303,8 +303,8 @@ func (qe *QueryEngine) performHashJoin(leftRows, rightRows []Row, joinCond JoinC
 	return result
 }
 
-// hasWildcard checks if the column list contains a wildcard
-func (qe *QueryEngine) hasWildcard(columns []string) bool {
+// hasWildcardString checks if the column list contains a wildcard (for string arrays)
+func (qe *QueryEngine) hasWildcardString(columns []string) bool {
 	for _, col := range columns {
 		if col == "*" {
 			return true

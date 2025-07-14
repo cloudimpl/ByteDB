@@ -605,6 +605,40 @@ func (qe *QueryEngine) executeSelectWithCTEs(query *ParsedQuery, parentCTEs map[
 		}
 	}
 
+	// Check if we can use Top-K optimization for ORDER BY + LIMIT
+	if qe.canUseTopKOptimization(query) {
+		qe.tracer.Info(TraceComponentOptimizer, "Using Top-K optimization for ORDER BY + LIMIT", 
+			TraceContext("limit", query.Limit, "order_by", query.OrderBy[0].Column))
+		
+		rows, err := reader.ReadTopK(query.Limit, query.OrderBy, query.Where, qe)
+		if err != nil {
+			return &QueryResult{
+				Query: query.RawSQL,
+				Error: err.Error(),
+			}, nil
+		}
+		
+		// Apply column selection/projection
+		if len(query.Columns) > 0 && !qe.hasWildcard(query.Columns) {
+			rows = reader.SelectColumnsWithEngine(rows, query.Columns, qe)
+		}
+		
+		// Get column names
+		var columns []string
+		if len(rows) > 0 {
+			for col := range rows[0] {
+				columns = append(columns, col)
+			}
+		}
+		
+		return &QueryResult{
+			Columns: columns,
+			Rows:    rows,
+			Count:   len(rows),
+			Query:   query.RawSQL,
+		}, nil
+	}
+
 	// Determine which columns are required for this query
 	requiredColumns := query.GetRequiredColumns()
 
@@ -3261,4 +3295,72 @@ func (qe *QueryEngine) sortUnionRows(rows []Row, orderBy []OrderByColumn, column
 	})
 
 	return rows
+}
+
+// canUseTopKOptimization checks if we can use Top-K optimization for ORDER BY + LIMIT
+func (qe *QueryEngine) canUseTopKOptimization(query *ParsedQuery) bool {
+	// Must have both ORDER BY and LIMIT
+	if len(query.OrderBy) == 0 || query.Limit <= 0 {
+		return false
+	}
+	
+	// Cannot use with aggregates or GROUP BY
+	if query.IsAggregate || len(query.GroupBy) > 0 {
+		return false
+	}
+	
+	// Cannot use with window functions
+	if query.HasWindowFuncs {
+		return false
+	}
+	
+	// Cannot use with subqueries in SELECT columns
+	for _, col := range query.Columns {
+		if col.Subquery != nil {
+			return false
+		}
+	}
+	
+	// Cannot use with CASE expressions in SELECT columns (they might be used in ORDER BY)
+	for _, col := range query.Columns {
+		if col.CaseExpr != nil {
+			return false
+		}
+	}
+	
+	// All checks passed
+	return true
+}
+
+// hasWildcard checks if the columns contain a wildcard
+func (qe *QueryEngine) hasWildcard(columns []Column) bool {
+	for _, col := range columns {
+		if col.Name == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// SortRowsWithOrderBy sorts rows based on ORDER BY columns (exported for multi-file reader)
+func SortRowsWithOrderBy(rows []Row, orderBy []OrderByColumn, reader *ParquetReader) {
+	sort.Slice(rows, func(i, j int) bool {
+		for _, ob := range orderBy {
+			colName := ob.Column
+			
+			// Get values from both rows
+			val1 := rows[i][colName]
+			val2 := rows[j][colName]
+			
+			cmp := reader.CompareValues(val1, val2)
+			
+			if cmp != 0 {
+				if ob.Direction == "DESC" {
+					return cmp > 0
+				}
+				return cmp < 0
+			}
+		}
+		return false
+	})
 }

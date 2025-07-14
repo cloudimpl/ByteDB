@@ -1,12 +1,14 @@
 package core
 
 import (
+	"container/heap"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -114,12 +116,20 @@ func newLocalParquetReader(filePath string) (*ParquetReader, error) {
 		return nil, fmt.Errorf("failed to open parquet file: %w", err)
 	}
 	
+	// Get row groups and total row count
+	rowGroupCount := len(reader.RowGroups())
+	totalRows := int64(0)
+	for _, rg := range reader.RowGroups() {
+		totalRows += rg.NumRows()
+	}
+	
 	tracer.Info(TraceComponentExecution, "Parquet reader initialized", TraceContext(
 		"file", filePath,
 		"parquet_open_ms", time.Since(parquetOpenStart).Milliseconds(),
 		"total_elapsed_ms", time.Since(startTime).Milliseconds(),
-		"num_row_groups", reader.NumRowGroups(),
-		"num_rows", reader.NumRows(),
+		"schema_fields", len(reader.Schema().Fields()),
+		"row_groups", rowGroupCount,
+		"total_rows", totalRows,
 	))
 
 	return &ParquetReader{
@@ -355,7 +365,16 @@ func (pr *ParquetReader) readAllColumns(limit int) ([]Row, error) {
 
 // Generic reading approach - parquet-go handles the conversion automatically
 
+// readSpecificColumns reads only the specified columns from the Parquet file
+// Current implementation: Reads all data and projects columns at Row level
+// TODO: Implement true column projection at Parquet level when parquet-go supports it better
 func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string) ([]Row, error) {
+	tracer := GetTracer()
+	tracer.Debug(TraceComponentOptimizer, "Reading specific columns", TraceContext(
+		"columns", requiredColumns,
+		"limit", limit,
+	))
+	
 	rows := make([]Row, 0)
 
 	// Get available columns from schema
@@ -376,10 +395,20 @@ func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string
 		return rows, nil // No valid columns to read
 	}
 
-	// For now, we implement column pruning at the Row level rather than Parquet level
-	// This still provides memory benefits by not storing unnecessary columns in Row objects
-	// A full optimization would read only specific columns from Parquet, but that requires
-	// more complex row group iteration with parquet-go
+	// IMPLEMENTATION NOTE: parquet-go library limitations
+	// The current parquet-go library doesn't provide an easy way to read only specific columns
+	// at the Parquet level. The library's API is designed to read entire rows.
+	// 
+	// Future optimization opportunities:
+	// 1. Use row groups to read data in chunks
+	// 2. Implement column chunk reading similar to knowledge_base/stats.go
+	// 3. Consider using Apache Arrow for better columnar access
+	//
+	// For now, we implement column pruning at the Row level which still provides:
+	// - Memory savings by not storing unnecessary columns in Row objects  
+	// - Reduced data transfer between functions
+	// - Preparation for future Parquet-level optimizations
+	
 	allRows, err := pr.readAllColumns(limit)
 	if err != nil {
 		return nil, err
@@ -396,7 +425,73 @@ func (pr *ParquetReader) readSpecificColumns(limit int, requiredColumns []string
 		rows = append(rows, projectedRow)
 	}
 
+	tracer.Debug(TraceComponentOptimizer, "Column projection complete", TraceContext(
+		"input_rows", len(allRows),
+		"output_columns", len(validColumns),
+	))
+
 	return rows, nil
+}
+
+// getRowGroupStatistics reads min/max statistics for a specific column across all row groups
+// This is used for optimizing ORDER BY queries by skipping row groups that can't contain top values
+func (pr *ParquetReader) getRowGroupStatistics(columnName string) ([]RowGroupStats, error) {
+	tracer := GetTracer()
+	tracer.Debug(TraceComponentOptimizer, "Reading row group statistics", TraceContext("column", columnName))
+	
+	var stats []RowGroupStats
+	
+	// Find column index
+	columnIndex := -1
+	for i, col := range pr.GetColumnNames() {
+		if col == columnName {
+			columnIndex = i
+			break
+		}
+	}
+	
+	if columnIndex == -1 {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	// Access row groups and extract statistics
+	for rgIndex, rowGroup := range pr.reader.RowGroups() {
+		if columnIndex >= len(rowGroup.ColumnChunks()) {
+			continue
+		}
+		
+		columnChunk := rowGroup.ColumnChunks()[columnIndex]
+		fileColumnChunk, ok := columnChunk.(*parquet.FileColumnChunk)
+		if !ok {
+			continue
+		}
+		
+		// Get min/max bounds from column chunk metadata
+		min, max, hasMinMax := fileColumnChunk.Bounds()
+		if hasMinMax {
+			stats = append(stats, RowGroupStats{
+				RowGroupIndex: rgIndex,
+				MinValue:      min,
+				MaxValue:      max,
+				NumRows:       rowGroup.NumRows(),
+			})
+		}
+	}
+	
+	tracer.Debug(TraceComponentOptimizer, "Row group statistics collected", TraceContext(
+		"column", columnName,
+		"row_groups_with_stats", len(stats),
+	))
+	
+	return stats, nil
+}
+
+// RowGroupStats holds statistics for a row group
+type RowGroupStats struct {
+	RowGroupIndex int
+	MinValue      parquet.Value
+	MaxValue      parquet.Value
+	NumRows       int64
 }
 
 // Schema detection methods removed - now supports any schema generically
@@ -1301,4 +1396,1622 @@ func (pr *ParquetReader) evaluateExpressionValue(expr ExpressionValue, row Row, 
 		return nil
 	}
 	return nil
+}
+
+// ReadTopK reads rows and maintains only the top K rows based on orderBy criteria
+func (pr *ParquetReader) ReadTopK(limit int, orderBy []OrderByColumn, whereConditions []WhereCondition, engine SubqueryExecutor) ([]Row, error) {
+	tracer := GetTracer()
+	startTime := time.Now()
+	
+	if pr.multiFileReader != nil {
+		// For multi-file reader, delegate to it
+		return pr.multiFileReader.ReadTopK(limit, orderBy, whereConditions, engine)
+	}
+	
+	// Try to use row group statistics optimization if possible
+	if len(orderBy) == 1 && len(whereConditions) == 0 && pr.canUseRowGroupStats(orderBy[0]) {
+		// Single ORDER BY column and no WHERE clause - can use row group stats
+		return pr.readTopKWithRowGroupFiltering(limit, orderBy[0], whereConditions, engine)
+	}
+	
+	// Fall back to full row reading
+	tracer.Info(TraceComponentExecution, "Starting Top-K optimized read (full rows)", TraceContext(
+		"file", pr.filePath,
+		"limit", limit,
+		"order_by", orderBy[0].Column,
+		"order_direction", orderBy[0].Direction,
+		"where_conditions", len(whereConditions),
+	))
+	
+	// Create a TopK heap
+	topK := &topKHeap{
+		rows:     make([]Row, 0, limit),
+		orderBy:  orderBy,
+		reader:   pr,
+		limit:    limit,
+	}
+	heap.Init(topK)
+	
+	// Use parquet reader to stream rows
+	reader := parquet.NewReader(pr.reader)
+	defer reader.Close()
+	
+	rowCount := 0
+	processedCount := 0
+	skippedByFilter := 0
+	
+	// Read rows one by one
+	for {
+		rowData := make(map[string]interface{})
+		err := reader.Read(&rowData)
+		if err != nil {
+			break // End of file
+		}
+		
+		rowCount++
+		row := Row(rowData)
+		
+		// Apply WHERE filters if any
+		if len(whereConditions) > 0 {
+			if !pr.matchesConditionsWithEngine(row, whereConditions, engine) {
+				skippedByFilter++
+				continue
+			}
+		}
+		
+		processedCount++
+		
+		// Maintain top K
+		if topK.Len() < limit {
+			// Heap not full yet, just add
+			heap.Push(topK, row)
+		} else {
+			// Compare with the worst row in heap (top of min-heap for DESC)
+			if topK.shouldReplace(row) {
+				heap.Pop(topK)
+				heap.Push(topK, row)
+			}
+		}
+		
+		// Log progress
+		if rowCount%100000 == 0 {
+			tracer.Debug(TraceComponentExecution, "Top-K read progress", TraceContext(
+				"rows_read", rowCount,
+				"rows_processed", processedCount,
+				"skipped_by_filter", skippedByFilter,
+				"heap_size", topK.Len(),
+				"elapsed_ms", time.Since(startTime).Milliseconds(),
+			))
+		}
+	}
+	
+	// Extract results in sorted order
+	result := make([]Row, topK.Len())
+	for i := len(result) - 1; i >= 0; i-- {
+		result[i] = heap.Pop(topK).(Row)
+	}
+	
+	elapsed := time.Since(startTime)
+	tracer.Info(TraceComponentExecution, "Completed Top-K optimized read", TraceContext(
+		"rows_read", rowCount,
+		"rows_processed", processedCount,
+		"skipped_by_filter", skippedByFilter,
+		"result_rows", len(result),
+		"elapsed_ms", elapsed.Milliseconds(),
+		"rows_per_second", float64(rowCount)/elapsed.Seconds(),
+		"optimization_ratio", float64(rowCount)/float64(limit),
+	))
+	
+	return result, nil
+}
+
+// readTopKWithStats uses row group statistics to optimize Top-K reading
+// by skipping row groups that can't contain top values
+func (pr *ParquetReader) readTopKWithStats(limit int, orderBy OrderByColumn) ([]Row, error) {
+	tracer := GetTracer()
+	startTime := time.Now()
+	
+	tracer.Info(TraceComponentOptimizer, "Starting Top-K read with row group statistics", TraceContext(
+		"file", pr.filePath,
+		"limit", limit,
+		"order_by", orderBy.Column,
+		"direction", orderBy.Direction,
+	))
+	
+	// Get row group statistics for the ORDER BY column
+	stats, err := pr.getRowGroupStatistics(orderBy.Column)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get row group statistics: %w", err)
+	}
+	
+	if len(stats) == 0 {
+		return nil, fmt.Errorf("no row group statistics available")
+	}
+	
+	// Create a heap for column-based Top-K
+	topKValues := &topKColumnHeap{
+		values:   make([]columnValue, 0, limit),
+		orderBy:  orderBy,
+		reader:   pr,
+		limit:    limit,
+	}
+	heap.Init(topKValues)
+	
+	// Keep track of the current worst value in the heap
+	var currentWorstValue interface{}
+	
+	// Process row groups in order of their potential to contain top values
+	sort.Slice(stats, func(i, j int) bool {
+		if orderBy.Direction == "DESC" {
+			// For DESC, compare max values
+			return pr.compareParquetValues(stats[i].MaxValue, stats[j].MaxValue) > 0
+		} else {
+			// For ASC, compare min values
+			return pr.compareParquetValues(stats[i].MinValue, stats[j].MinValue) < 0
+		}
+	})
+	
+	rowGroupsProcessed := 0
+	rowGroupsSkipped := 0
+	totalValuesRead := 0
+	
+	// Process row groups
+	for _, rgStats := range stats {
+		// Check if we can skip this row group
+		if topKValues.Len() >= limit && currentWorstValue != nil {
+			canSkip := false
+			if orderBy.Direction == "DESC" {
+				// For DESC, skip if max value is worse than current worst
+				maxVal := pr.parquetValueToInterface(rgStats.MaxValue)
+				if pr.CompareValues(maxVal, currentWorstValue) <= 0 {
+					canSkip = true
+				}
+			} else {
+				// For ASC, skip if min value is worse than current worst
+				minVal := pr.parquetValueToInterface(rgStats.MinValue)
+				if pr.CompareValues(minVal, currentWorstValue) >= 0 {
+					canSkip = true
+				}
+			}
+			
+			if canSkip {
+				rowGroupsSkipped++
+				tracer.Debug(TraceComponentOptimizer, "Skipping row group based on statistics", 
+					TraceContext(
+						"row_group", rgStats.RowGroupIndex,
+						"min", rgStats.MinValue.String(),
+						"max", rgStats.MaxValue.String(),
+						"rows", rgStats.NumRows,
+					))
+				continue
+			}
+		}
+		
+		// Read only the ORDER BY column from this row group
+		rowGroupsProcessed++
+		columnValues, err := pr.readColumnFromRowGroup(rgStats.RowGroupIndex, orderBy.Column)
+		if err != nil {
+			tracer.Warn(TraceComponentOptimizer, "Failed to read column from row group", 
+				TraceContext("row_group", rgStats.RowGroupIndex, "column", orderBy.Column, "error", err.Error()))
+			continue
+		}
+		
+		totalValuesRead += len(columnValues)
+		
+		// Calculate the starting row index for this row group
+		startRowIdx := int64(0)
+		rowGroups := pr.reader.RowGroups()
+		for i := 0; i < rgStats.RowGroupIndex; i++ {
+			startRowIdx += rowGroups[i].NumRows()
+		}
+		
+		tracer.Debug(TraceComponentOptimizer, "Processing row group column values", 
+			TraceContext(
+				"row_group", rgStats.RowGroupIndex,
+				"start_row_idx", startRowIdx,
+				"num_values", len(columnValues),
+				"row_group_num_rows", rgStats.NumRows,
+			))
+		
+		// Process column values
+		for i, val := range columnValues {
+			if val == nil {
+				continue // Skip null values
+			}
+			
+			cv := columnValue{
+				value:    val,
+				rowIndex: startRowIdx + int64(i),
+				rowGroup: rgStats.RowGroupIndex,
+			}
+			
+			// Maintain top K
+			if topKValues.Len() < limit {
+				// Heap not full yet, just add
+				heap.Push(topKValues, cv)
+			} else {
+				// Compare with the worst value in heap
+				if topKValues.shouldReplace(cv) {
+					heap.Pop(topKValues)
+					heap.Push(topKValues, cv)
+				}
+			}
+			
+			// Update current worst value
+			if topKValues.Len() >= limit {
+				currentWorstValue = topKValues.values[0].value
+			}
+		}
+	}
+	
+	// Now we have the top K row indices, read full rows
+	// Extract row indices in sorted order
+	topIndices := make([]columnValue, topKValues.Len())
+	for i := len(topIndices) - 1; i >= 0; i-- {
+		topIndices[i] = heap.Pop(topKValues).(columnValue)
+	}
+	
+	// Read the full rows for these indices
+	result, err := pr.readRowsByIndices(topIndices)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read full rows: %w", err)
+	}
+	
+	elapsed := time.Since(startTime)
+	tracer.Info(TraceComponentOptimizer, "Completed Top-K read with row group statistics", TraceContext(
+		"row_groups_total", len(stats),
+		"row_groups_processed", rowGroupsProcessed,
+		"row_groups_skipped", rowGroupsSkipped,
+		"skip_ratio", float64(rowGroupsSkipped)/float64(len(stats)),
+		"values_read", totalValuesRead,
+		"result_rows", len(result),
+		"elapsed_ms", elapsed.Milliseconds(),
+	))
+	
+	return result, nil
+}
+
+// columnValue represents a column value with its row index
+type columnValue struct {
+	value    interface{}
+	rowIndex int64
+	rowGroup int
+}
+
+// topKColumnHeap is a min-heap for maintaining top K column values
+type topKColumnHeap struct {
+	values  []columnValue
+	orderBy OrderByColumn
+	reader  *ParquetReader
+	limit   int
+}
+
+func (h topKColumnHeap) Len() int { return len(h.values) }
+
+func (h topKColumnHeap) Less(i, j int) bool {
+	// For DESC order, we want a min-heap (smallest at top)
+	// For ASC order, we want a max-heap (largest at top)
+	cmp := h.reader.CompareValues(h.values[i].value, h.values[j].value)
+	if h.orderBy.Direction == "DESC" {
+		return cmp < 0 // Min-heap for DESC
+	}
+	return cmp > 0 // Max-heap for ASC
+}
+
+func (h topKColumnHeap) Swap(i, j int) {
+	h.values[i], h.values[j] = h.values[j], h.values[i]
+}
+
+func (h *topKColumnHeap) Push(x interface{}) {
+	h.values = append(h.values, x.(columnValue))
+}
+
+func (h *topKColumnHeap) Pop() interface{} {
+	old := h.values
+	n := len(old)
+	x := old[n-1]
+	h.values = old[0 : n-1]
+	return x
+}
+
+func (h *topKColumnHeap) shouldReplace(cv columnValue) bool {
+	// Compare with the worst value (top of heap)
+	cmp := h.reader.CompareValues(cv.value, h.values[0].value)
+	if h.orderBy.Direction == "DESC" {
+		return cmp > 0 // New value is better (larger) for DESC
+	}
+	return cmp < 0 // New value is better (smaller) for ASC
+}
+
+// readRowsByIndices reads full rows for the given row indices
+func (pr *ParquetReader) readRowsByIndices(indices []columnValue) ([]Row, error) {
+	tracer := GetTracer()
+	
+	// Group indices by row group for more efficient reading
+	rowGroupMap := make(map[int][]columnValue)
+	for _, cv := range indices {
+		rowGroupMap[cv.rowGroup] = append(rowGroupMap[cv.rowGroup], cv)
+	}
+	
+	// Create a map to store results with their original order
+	resultMap := make(map[int64]Row)
+	
+	// Read rows from each row group
+	for rgIndex, cvs := range rowGroupMap {
+		// Create index map for this row group
+		localIndexMap := make(map[int64]bool)
+		for _, cv := range cvs {
+			localIndexMap[cv.rowIndex] = true
+		}
+		
+		// Read all rows from this row group
+		rows, err := pr.readRowGroup(rgIndex)
+		if err != nil {
+			tracer.Warn(TraceComponentOptimizer, "Failed to read row group for full rows", 
+				TraceContext("row_group", rgIndex, "error", err.Error()))
+			continue
+		}
+		
+		// Calculate starting row index for this row group
+		startIdx := int64(0)
+		rowGroups := pr.reader.RowGroups()
+		for i := 0; i < rgIndex; i++ {
+			startIdx += rowGroups[i].NumRows()
+		}
+		
+		// Match rows with their global indices
+		for localIdx, row := range rows {
+			globalIdx := startIdx + int64(localIdx)
+			if localIndexMap[globalIdx] {
+				resultMap[globalIdx] = row
+			}
+		}
+	}
+	
+	// Build result in the same order as indices
+	result := make([]Row, 0, len(indices))
+	for _, cv := range indices {
+		if row, exists := resultMap[cv.rowIndex]; exists {
+			result = append(result, row)
+		} else {
+			tracer.Warn(TraceComponentOptimizer, "Could not find row for index", 
+				TraceContext("row_index", cv.rowIndex, "row_group", cv.rowGroup))
+		}
+	}
+	
+	return result, nil
+}
+
+// readRowGroup reads all rows from a specific row group
+func (pr *ParquetReader) readRowGroup(rowGroupIndex int) ([]Row, error) {
+	rowGroups := pr.reader.RowGroups()
+	if rowGroupIndex >= len(rowGroups) {
+		return nil, fmt.Errorf("row group index %d out of bounds", rowGroupIndex)
+	}
+	
+	rowGroup := rowGroups[rowGroupIndex]
+	rows := make([]Row, 0, rowGroup.NumRows())
+	
+	// Read rows from this specific row group
+	// Note: parquet-go doesn't provide a direct API to read a specific row group,
+	// so we need to seek to the right position
+	// This is a simplified implementation - in production, we'd need more sophisticated handling
+	
+	// For now, we'll read all rows and filter by row group
+	// This is not optimal but works with current parquet-go limitations
+	reader := parquet.NewReader(pr.reader)
+	defer reader.Close()
+	
+	// Skip to the target row group
+	// Calculate starting row index for this row group
+	startRow := int64(0)
+	for i := 0; i < rowGroupIndex; i++ {
+		startRow += rowGroups[i].NumRows()
+	}
+	
+	// Skip rows from previous row groups
+	for i := int64(0); i < startRow; i++ {
+		dummy := make(map[string]interface{})
+		if err := reader.Read(&dummy); err != nil {
+			return nil, err
+		}
+	}
+	
+	// Read rows from target row group
+	for i := int64(0); i < rowGroup.NumRows(); i++ {
+		rowData := make(map[string]interface{})
+		if err := reader.Read(&rowData); err != nil {
+			break
+		}
+		rows = append(rows, Row(rowData))
+	}
+	
+	return rows, nil
+}
+
+// readColumnFromRowGroup reads specific column values from a row group
+func (pr *ParquetReader) readColumnFromRowGroup(rowGroupIndex int, columnName string) ([]interface{}, error) {
+	rowGroups := pr.reader.RowGroups()
+	if rowGroupIndex >= len(rowGroups) {
+		return nil, fmt.Errorf("row group index %d out of bounds", rowGroupIndex)
+	}
+	
+	// Find column index by name
+	columnIndex := -1
+	for i, col := range pr.GetColumnNames() {
+		if col == columnName {
+			columnIndex = i
+			break
+		}
+	}
+	
+	if columnIndex == -1 {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	rowGroup := rowGroups[rowGroupIndex]
+	columnChunk := rowGroup.ColumnChunks()[columnIndex]
+	
+	values := make([]interface{}, 0, rowGroup.NumRows())
+	
+	// Read pages from this column
+	pages := columnChunk.Pages()
+	defer pages.Close()
+	
+	for {
+		page, err := pages.ReadPage()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		
+		// Try to use typed readers for better performance
+		pageValues := page.Values()
+		n := page.NumValues()
+		
+		switch reader := pageValues.(type) {
+		case parquet.Int32Reader:
+			int32Values := make([]int32, n)
+			read, _ := reader.ReadInt32s(int32Values)
+			for i := 0; i < read; i++ {
+				values = append(values, int32Values[i])
+			}
+		case parquet.Int64Reader:
+			int64Values := make([]int64, n)
+			read, _ := reader.ReadInt64s(int64Values)
+			for i := 0; i < read; i++ {
+				values = append(values, int64Values[i])
+			}
+		case parquet.FloatReader:
+			floatValues := make([]float32, n)
+			read, _ := reader.ReadFloats(floatValues)
+			for i := 0; i < read; i++ {
+				values = append(values, float64(floatValues[i]))
+			}
+		case parquet.DoubleReader:
+			doubleValues := make([]float64, n)
+			read, _ := reader.ReadDoubles(doubleValues)
+			for i := 0; i < read; i++ {
+				values = append(values, doubleValues[i])
+			}
+		case parquet.ByteArrayReader:
+			// For strings, use generic value reader
+			genericValues := make([]parquet.Value, n)
+			read, _ := pageValues.ReadValues(genericValues)
+			for i := 0; i < read; i++ {
+				if !genericValues[i].IsNull() {
+					values = append(values, string(genericValues[i].ByteArray()))
+				} else {
+					values = append(values, nil)
+				}
+			}
+		default:
+			// Fallback to generic value reading
+			genericValues := make([]parquet.Value, n)
+			read, _ := pageValues.ReadValues(genericValues)
+			for i := 0; i < read; i++ {
+				values = append(values, pr.parquetValueToInterface(genericValues[i]))
+			}
+		}
+		
+		parquet.Release(page)
+	}
+	
+	return values, nil
+}
+
+// compareParquetValues compares two parquet.Value objects
+func (pr *ParquetReader) compareParquetValues(a, b parquet.Value) int {
+	// Convert to interface and use existing comparison
+	aVal := pr.parquetValueToInterface(a)
+	bVal := pr.parquetValueToInterface(b)
+	return pr.CompareValues(aVal, bVal)
+}
+
+// parquetValueToInterface converts a parquet.Value to an interface{}
+func (pr *ParquetReader) parquetValueToInterface(v parquet.Value) interface{} {
+	switch v.Kind() {
+	case parquet.Boolean:
+		return v.Boolean()
+	case parquet.Int32:
+		return v.Int32()
+	case parquet.Int64:
+		return v.Int64()
+	case parquet.Int96:
+		return v.Int96()
+	case parquet.Float:
+		return v.Float()
+	case parquet.Double:
+		return v.Double()
+	case parquet.ByteArray:
+		return string(v.ByteArray())
+	case parquet.FixedLenByteArray:
+		// For fixed-length byte arrays, return as byte slice
+		return v.ByteArray() // Use ByteArray() for fixed-length too
+	default:
+		return nil
+	}
+}
+
+// readTopKWithStatsV2 is a simpler implementation that reads full rows from each row group
+func (pr *ParquetReader) readTopKWithStatsV2(limit int, orderBy OrderByColumn) ([]Row, error) {
+	tracer := GetTracer()
+	startTime := time.Now()
+	
+	tracer.Info(TraceComponentOptimizer, "Starting Top-K read with row group statistics V2", TraceContext(
+		"file", pr.filePath,
+		"limit", limit,
+		"order_by", orderBy.Column,
+		"direction", orderBy.Direction,
+	))
+	
+	// Get row group statistics for the ORDER BY column
+	stats, err := pr.getRowGroupStatistics(orderBy.Column)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get row group statistics: %w", err)
+	}
+	
+	if len(stats) == 0 {
+		return nil, fmt.Errorf("no row group statistics available")
+	}
+	
+	// Create a TopK heap for rows
+	topK := &topKHeap{
+		rows:     make([]Row, 0, limit),
+		orderBy:  []OrderByColumn{orderBy},
+		reader:   pr,
+		limit:    limit,
+	}
+	heap.Init(topK)
+	
+	// Keep track of the current worst value in the heap
+	var currentWorstValue interface{}
+	
+	// Sort row groups by their potential to contain top values
+	sort.Slice(stats, func(i, j int) bool {
+		if orderBy.Direction == "DESC" {
+			// For DESC, compare max values
+			return pr.compareParquetValues(stats[i].MaxValue, stats[j].MaxValue) > 0
+		} else {
+			// For ASC, compare min values
+			return pr.compareParquetValues(stats[i].MinValue, stats[j].MinValue) < 0
+		}
+	})
+	
+	rowGroupsProcessed := 0
+	rowGroupsSkipped := 0
+	totalRowsRead := 0
+	
+	// Process row groups
+	for _, rgStats := range stats {
+		// Check if we can skip this row group
+		if topK.Len() >= limit && currentWorstValue != nil {
+			canSkip := false
+			if orderBy.Direction == "DESC" {
+				// For DESC, skip if max value is worse than current worst
+				maxVal := pr.parquetValueToInterface(rgStats.MaxValue)
+				if pr.CompareValues(maxVal, currentWorstValue) <= 0 {
+					canSkip = true
+				}
+			} else {
+				// For ASC, skip if min value is worse than current worst
+				minVal := pr.parquetValueToInterface(rgStats.MinValue)
+				if pr.CompareValues(minVal, currentWorstValue) >= 0 {
+					canSkip = true
+				}
+			}
+			
+			if canSkip {
+				rowGroupsSkipped++
+				tracer.Debug(TraceComponentOptimizer, "Skipping row group based on statistics", 
+					TraceContext(
+						"row_group", rgStats.RowGroupIndex,
+						"min", rgStats.MinValue.String(),
+						"max", rgStats.MaxValue.String(),
+						"rows", rgStats.NumRows,
+					))
+				continue
+			}
+		}
+		
+		// Read this row group directly  
+		rowGroupsProcessed++
+		rowGroup := pr.reader.RowGroups()[rgStats.RowGroupIndex]
+		
+		// Create a reader for this specific row group
+		// We'll read all rows from this row group and filter
+		reader := parquet.NewReader(pr.reader)
+		defer reader.Close()
+		
+		// Skip to this row group
+		startRow := int64(0)
+		for i := 0; i < rgStats.RowGroupIndex; i++ {
+			startRow += pr.reader.RowGroups()[i].NumRows()
+		}
+		
+		// Skip rows before this row group
+		for i := int64(0); i < startRow; i++ {
+			dummy := make(map[string]interface{})
+			if err := reader.Read(&dummy); err != nil {
+				break
+			}
+		}
+		
+		// Read rows from this row group
+		rowsInGroup := 0
+		for i := int64(0); i < rowGroup.NumRows(); i++ {
+			rowData := make(map[string]interface{})
+			if err := reader.Read(&rowData); err != nil {
+				break
+			}
+			
+			row := Row(rowData)
+			rowsInGroup++
+			totalRowsRead++
+			
+			// Check if this row has the ORDER BY column
+			if val, exists := row[orderBy.Column]; !exists || val == nil {
+				continue
+			}
+			
+			// Maintain top K
+			if topK.Len() < limit {
+				// Heap not full yet, just add
+				heap.Push(topK, row)
+			} else {
+				// Compare with the worst row in heap
+				if topK.shouldReplace(row) {
+					heap.Pop(topK)
+					heap.Push(topK, row)
+				}
+			}
+			
+			// Update current worst value
+			if topK.Len() >= limit {
+				// Peek at the worst value (top of min-heap for DESC)
+				worstRow := topK.rows[0]
+				if val, exists := worstRow[orderBy.Column]; exists {
+					currentWorstValue = val
+				}
+			}
+		}
+		
+		tracer.Debug(TraceComponentOptimizer, "Processed row group", TraceContext(
+			"row_group", rgStats.RowGroupIndex,
+			"rows_read", rowsInGroup,
+			"heap_size", topK.Len(),
+		))
+	}
+	
+	// Extract results in sorted order
+	result := make([]Row, topK.Len())
+	for i := len(result) - 1; i >= 0; i-- {
+		result[i] = heap.Pop(topK).(Row)
+	}
+	
+	elapsed := time.Since(startTime)
+	tracer.Info(TraceComponentOptimizer, "Completed Top-K read with row group statistics V2", TraceContext(
+		"row_groups_total", len(stats),
+		"row_groups_processed", rowGroupsProcessed,
+		"row_groups_skipped", rowGroupsSkipped,
+		"skip_ratio", float64(rowGroupsSkipped)/float64(len(stats)),
+		"rows_read", totalRowsRead,
+		"result_rows", len(result),
+		"elapsed_ms", elapsed.Milliseconds(),
+	))
+	
+	return result, nil
+}
+
+// readTopKColumnOptimized uses column-specific reading to find Top-K without scanning full table
+func (pr *ParquetReader) readTopKColumnOptimized(limit int, orderBy OrderByColumn) ([]Row, error) {
+	tracer := GetTracer()
+	startTime := time.Now()
+	
+	tracer.Info(TraceComponentOptimizer, "Starting column-optimized Top-K read", TraceContext(
+		"file", pr.filePath,
+		"limit", limit,
+		"order_by", orderBy.Column,
+		"direction", orderBy.Direction,
+	))
+	
+	// Get row group statistics
+	stats, err := pr.getRowGroupStatistics(orderBy.Column)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get row group statistics: %w", err)
+	}
+	
+	// Find column index
+	columnIndex := -1
+	columnNames := pr.GetColumnNames()
+	for i, col := range columnNames {
+		if col == orderBy.Column {
+			columnIndex = i
+			break
+		}
+	}
+	
+	if columnIndex == -1 {
+		return nil, fmt.Errorf("column %s not found", orderBy.Column)
+	}
+	
+	// Create a heap for tracking top K values with their full row data
+	topKHeap := &genericTopKHeap{
+		items:    make([]valueWithRow, 0, limit),
+		orderBy:  orderBy,
+		reader:   pr,
+		limit:    limit,
+	}
+	heap.Init(topKHeap)
+	
+	// Keep track of current worst value
+	var currentWorstValue interface{}
+	
+	// Sort row groups by potential to contain top values
+	sort.Slice(stats, func(i, j int) bool {
+		if orderBy.Direction == "DESC" {
+			return pr.compareParquetValues(stats[i].MaxValue, stats[j].MaxValue) > 0
+		} else {
+			return pr.compareParquetValues(stats[i].MinValue, stats[j].MinValue) < 0
+		}
+	})
+	
+	rowGroupsProcessed := 0
+	rowGroupsSkipped := 0
+	totalRowsRead := 0
+	
+	// Process each row group
+	for _, rgStats := range stats {
+		// Check if we can skip this row group
+		if topKHeap.Len() >= limit && currentWorstValue != nil {
+			canSkip := false
+			if orderBy.Direction == "DESC" {
+				maxVal := pr.parquetValueToInterface(rgStats.MaxValue)
+				if pr.CompareValues(maxVal, currentWorstValue) <= 0 {
+					canSkip = true
+				}
+			} else {
+				minVal := pr.parquetValueToInterface(rgStats.MinValue)
+				if pr.CompareValues(minVal, currentWorstValue) >= 0 {
+					canSkip = true
+				}
+			}
+			
+			if canSkip {
+				rowGroupsSkipped++
+				continue
+			}
+		}
+		
+		rowGroupsProcessed++
+		
+		// Read this row group efficiently
+		rows, err := pr.readRowGroupEfficient(rgStats.RowGroupIndex, columnIndex, orderBy, topKHeap, &currentWorstValue, limit)
+		if err != nil {
+			tracer.Warn(TraceComponentOptimizer, "Failed to read row group", 
+				TraceContext("row_group", rgStats.RowGroupIndex, "error", err.Error()))
+			continue
+		}
+		
+		totalRowsRead += len(rows)
+	}
+	
+	// Extract final results
+	result := make([]Row, topKHeap.Len())
+	for i := len(result) - 1; i >= 0; i-- {
+		item := heap.Pop(topKHeap).(valueWithRow)
+		result[i] = item.row
+	}
+	
+	elapsed := time.Since(startTime)
+	tracer.Info(TraceComponentOptimizer, "Completed column-optimized Top-K read", TraceContext(
+		"row_groups_total", len(stats),
+		"row_groups_processed", rowGroupsProcessed,
+		"row_groups_skipped", rowGroupsSkipped,
+		"skip_ratio", float64(rowGroupsSkipped)/float64(len(stats)),
+		"rows_read", totalRowsRead,
+		"result_rows", len(result),
+		"elapsed_ms", elapsed.Milliseconds(),
+	))
+	
+	return result, nil
+}
+
+// readRowGroupEfficient reads a row group and maintains only top K rows
+func (pr *ParquetReader) readRowGroupEfficient(rowGroupIndex int, columnIndex int, orderBy OrderByColumn, 
+	topKHeap *genericTopKHeap, currentWorstValue *interface{}, limit int) ([]Row, error) {
+	
+	rowGroups := pr.reader.RowGroups()
+	if rowGroupIndex >= len(rowGroups) {
+		return nil, fmt.Errorf("row group index %d out of bounds", rowGroupIndex)
+	}
+	
+	rowGroup := rowGroups[rowGroupIndex]
+	
+	// First, read the ORDER BY column values
+	columnChunk := rowGroup.ColumnChunks()[columnIndex]
+	pages := columnChunk.Pages()
+	defer pages.Close()
+	
+	// Collect all values from this column
+	columnValues := make([]interface{}, 0, rowGroup.NumRows())
+	
+	for {
+		page, err := pages.ReadPage()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		
+		// Read values using typed readers for efficiency
+		pageValues := page.Values()
+		n := page.NumValues()
+		
+		switch reader := pageValues.(type) {
+		case parquet.Int32Reader:
+			values := make([]int32, n)
+			read, _ := reader.ReadInt32s(values)
+			for i := 0; i < read; i++ {
+				columnValues = append(columnValues, values[i])
+			}
+		case parquet.Int64Reader:
+			values := make([]int64, n)
+			read, _ := reader.ReadInt64s(values)
+			for i := 0; i < read; i++ {
+				columnValues = append(columnValues, values[i])
+			}
+		case parquet.FloatReader:
+			values := make([]float32, n)
+			read, _ := reader.ReadFloats(values)
+			for i := 0; i < read; i++ {
+				columnValues = append(columnValues, float64(values[i]))
+			}
+		case parquet.DoubleReader:
+			values := make([]float64, n)
+			read, _ := reader.ReadDoubles(values)
+			for i := 0; i < read; i++ {
+				columnValues = append(columnValues, values[i])
+			}
+		default:
+			// Fallback to generic reading
+			genericValues := make([]parquet.Value, n)
+			read, _ := pageValues.ReadValues(genericValues)
+			for i := 0; i < read; i++ {
+				columnValues = append(columnValues, pr.parquetValueToInterface(genericValues[i]))
+			}
+		}
+		
+		parquet.Release(page)
+	}
+	
+	// Find indices of potential top K values
+	topIndices := make([]int, 0)
+	for i, val := range columnValues {
+		if val == nil {
+			continue
+		}
+		
+		// Check if this value could be in top K
+		if topKHeap.Len() < limit {
+			topIndices = append(topIndices, i)
+		} else if *currentWorstValue != nil {
+			cmp := pr.CompareValues(val, *currentWorstValue)
+			if (orderBy.Direction == "DESC" && cmp > 0) || (orderBy.Direction == "ASC" && cmp < 0) {
+				topIndices = append(topIndices, i)
+			}
+		}
+	}
+	
+	// Now read only the rows at these indices
+	if len(topIndices) == 0 {
+		return []Row{}, nil
+	}
+	
+	// Read full rows for the selected indices
+	rows := make([]Row, 0, len(topIndices))
+	
+	// Create a reader positioned at this row group
+	reader := parquet.NewReader(pr.reader)
+	defer reader.Close()
+	
+	// Skip to this row group
+	skipCount := int64(0)
+	for i := 0; i < rowGroupIndex; i++ {
+		skipCount += rowGroups[i].NumRows()
+	}
+	
+	// Skip previous row groups
+	for i := int64(0); i < skipCount; i++ {
+		dummy := make(map[string]interface{})
+		reader.Read(&dummy)
+	}
+	
+	// Read rows from this row group
+	currentIndex := 0
+	nextTargetIndex := 0
+	
+	for i := int64(0); i < rowGroup.NumRows() && nextTargetIndex < len(topIndices); i++ {
+		if currentIndex == topIndices[nextTargetIndex] {
+			// This is a row we want
+			rowData := make(map[string]interface{})
+			if err := reader.Read(&rowData); err != nil {
+				break
+			}
+			
+			row := Row(rowData)
+			val := columnValues[currentIndex]
+			
+			// Add to heap
+			vwr := valueWithRow{value: val, row: row}
+			if topKHeap.Len() < limit {
+				heap.Push(topKHeap, vwr)
+			} else if topKHeap.shouldReplace(vwr) {
+				heap.Pop(topKHeap)
+				heap.Push(topKHeap, vwr)
+			}
+			
+			// Update worst value
+			if topKHeap.Len() >= limit {
+				*currentWorstValue = topKHeap.items[0].value
+			}
+			
+			rows = append(rows, row)
+			nextTargetIndex++
+		} else {
+			// Skip this row
+			dummy := make(map[string]interface{})
+			reader.Read(&dummy)
+		}
+		currentIndex++
+	}
+	
+	return rows, nil
+}
+
+// genericTopKHeap for maintaining top K values with their rows
+type genericTopKHeap struct {
+	items   []valueWithRow
+	orderBy OrderByColumn
+	reader  *ParquetReader
+	limit   int
+}
+
+type valueWithRow struct {
+	value interface{}
+	row   Row
+}
+
+func (h genericTopKHeap) Len() int { return len(h.items) }
+
+func (h genericTopKHeap) Less(i, j int) bool {
+	cmp := h.reader.CompareValues(h.items[i].value, h.items[j].value)
+	if h.orderBy.Direction == "DESC" {
+		return cmp < 0 // Min-heap for DESC
+	}
+	return cmp > 0 // Max-heap for ASC
+}
+
+func (h genericTopKHeap) Swap(i, j int) {
+	h.items[i], h.items[j] = h.items[j], h.items[i]
+}
+
+func (h *genericTopKHeap) Push(x interface{}) {
+	h.items = append(h.items, x.(valueWithRow))
+}
+
+func (h *genericTopKHeap) Pop() interface{} {
+	old := h.items
+	n := len(old)
+	x := old[n-1]
+	h.items = old[0 : n-1]
+	return x
+}
+
+func (h *genericTopKHeap) shouldReplace(vwr valueWithRow) bool {
+	cmp := h.reader.CompareValues(vwr.value, h.items[0].value)
+	if h.orderBy.Direction == "DESC" {
+		return cmp > 0 // New value is better (larger) for DESC
+	}
+	return cmp < 0 // New value is better (smaller) for ASC
+}
+
+// canUseRowGroupStats checks if we can use row group statistics optimization
+func (pr *ParquetReader) canUseRowGroupStats(orderBy OrderByColumn) bool {
+	// Check if column exists and has statistics
+	stats, err := pr.getRowGroupStatistics(orderBy.Column)
+	return err == nil && len(stats) > 0
+}
+
+// readTopKWithRowGroupFiltering reads top K using row group filtering to avoid full table scan
+func (pr *ParquetReader) readTopKWithRowGroupFiltering(limit int, orderBy OrderByColumn, whereConditions []WhereCondition, engine SubqueryExecutor) ([]Row, error) {
+	tracer := GetTracer()
+	startTime := time.Now()
+	
+	tracer.Info(TraceComponentOptimizer, "Starting Top-K with row group filtering", TraceContext(
+		"file", pr.filePath,
+		"limit", limit,
+		"order_by", orderBy.Column,
+		"direction", orderBy.Direction,
+	))
+	
+	// Get row group statistics
+	stats, err := pr.getRowGroupStatistics(orderBy.Column)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Create a TopK heap
+	topK := &topKHeap{
+		rows:     make([]Row, 0, limit),
+		orderBy:  []OrderByColumn{orderBy},
+		reader:   pr,
+		limit:    limit,
+	}
+	heap.Init(topK)
+	
+	// Keep track of the current worst value
+	var currentWorstValue interface{}
+	
+	// Instead of sorting, we'll process in natural order but use stats to skip
+	// Create a map for quick lookup of stats by row group index
+	statsMap := make(map[int]RowGroupStats)
+	for _, stat := range stats {
+		statsMap[stat.RowGroupIndex] = stat
+	}
+	
+	rowGroupsProcessed := 0
+	rowGroupsSkipped := 0
+	totalRowsRead := 0
+	
+	// Create a single reader that we'll use throughout
+	reader := parquet.NewReader(pr.reader)
+	defer reader.Close()
+	
+	// Process row groups in their natural order
+	rowGroups := pr.reader.RowGroups()
+	for rgIndex := 0; rgIndex < len(rowGroups); rgIndex++ {
+		rgStats, hasStats := statsMap[rgIndex]
+		if !hasStats {
+			continue
+		}
+		// Check if we can skip this row group
+		if topK.Len() >= limit && currentWorstValue != nil {
+			canSkip := false
+			if orderBy.Direction == "DESC" {
+				maxVal := pr.parquetValueToInterface(rgStats.MaxValue)
+				if pr.CompareValues(maxVal, currentWorstValue) <= 0 {
+					canSkip = true
+				}
+			} else {
+				minVal := pr.parquetValueToInterface(rgStats.MinValue)
+				if pr.CompareValues(minVal, currentWorstValue) >= 0 {
+					canSkip = true
+				}
+			}
+			
+			if canSkip {
+				rowGroupsSkipped++
+				tracer.Debug(TraceComponentOptimizer, "Skipping row group based on statistics", 
+					TraceContext(
+						"row_group", rgIndex,
+						"min", rgStats.MinValue.String(),
+						"max", rgStats.MaxValue.String(),
+						"num_rows", rgStats.NumRows,
+					))
+				// Skip all rows in this row group
+				for i := int64(0); i < rgStats.NumRows; i++ {
+					dummy := make(map[string]interface{})
+					if err := reader.Read(&dummy); err != nil {
+						break
+					}
+				}
+				continue
+			}
+		}
+		
+		// Process this row group with column-based filtering
+		rowGroupsProcessed++
+		
+		tracer.Debug(TraceComponentOptimizer, "Processing row group", TraceContext(
+			"row_group", rgIndex,
+			"min", rgStats.MinValue.String(),
+			"max", rgStats.MaxValue.String(),
+			"num_rows", rgStats.NumRows,
+		))
+		
+		// First, read only the ORDER BY column to find candidate rows
+		columnValues, err := pr.readColumnFromRowGroup(rgIndex, orderBy.Column)
+		if err != nil {
+			tracer.Warn(TraceComponentOptimizer, "Failed to read column from row group", 
+				TraceContext("row_group", rgIndex, "error", err.Error()))
+			// Fall back to reading all rows
+			for i := int64(0); i < rgStats.NumRows; i++ {
+				dummy := make(map[string]interface{})
+				reader.Read(&dummy)
+			}
+			continue
+		}
+		
+		// Find indices of rows that could be in top K
+		candidateIndices := make([]int, 0)
+		for i, val := range columnValues {
+			if val == nil {
+				continue
+			}
+			
+			// Check if this value could be in top K
+			if topK.Len() < limit {
+				candidateIndices = append(candidateIndices, i)
+			} else if currentWorstValue != nil {
+				cmp := pr.CompareValues(val, currentWorstValue)
+				if (orderBy.Direction == "DESC" && cmp > 0) || (orderBy.Direction == "ASC" && cmp < 0) {
+					candidateIndices = append(candidateIndices, i)
+				}
+			}
+		}
+		
+		tracer.Debug(TraceComponentOptimizer, "Found candidate rows in row group", TraceContext(
+			"row_group", rgIndex,
+			"total_rows", len(columnValues),
+			"candidate_rows", len(candidateIndices),
+		))
+		
+		// Read only the candidate rows
+		rowsInGroup := 0
+		currentIdx := 0
+		nextCandidateIdx := 0
+		
+		for i := int64(0); i < rgStats.NumRows && nextCandidateIdx < len(candidateIndices); i++ {
+			if currentIdx == candidateIndices[nextCandidateIdx] {
+				// This is a candidate row - read it
+				rowData := make(map[string]interface{})
+				err := reader.Read(&rowData)
+				if err != nil {
+					break
+				}
+				
+				row := Row(rowData)
+				rowsInGroup++
+				totalRowsRead++
+				
+				// Apply WHERE filters if any
+				if len(whereConditions) > 0 {
+					if !pr.matchesConditionsWithEngine(row, whereConditions, engine) {
+						nextCandidateIdx++
+						currentIdx++
+						continue
+					}
+				}
+				
+				// Maintain top K
+				if topK.Len() < limit {
+					heap.Push(topK, row)
+					// Update current worst value when heap becomes full
+					if topK.Len() == limit {
+						worstRow := topK.rows[0]
+						if val, exists := worstRow[orderBy.Column]; exists {
+							currentWorstValue = val
+						}
+					}
+				} else {
+					if topK.shouldReplace(row) {
+						heap.Pop(topK)
+						heap.Push(topK, row)
+						// Update current worst value after replacement
+						worstRow := topK.rows[0]
+						if val, exists := worstRow[orderBy.Column]; exists {
+							currentWorstValue = val
+						}
+					}
+				}
+				
+				nextCandidateIdx++
+			} else {
+				// Skip this row
+				dummy := make(map[string]interface{})
+				reader.Read(&dummy)
+			}
+			currentIdx++
+		}
+		
+		// Skip any remaining rows in this row group
+		for i := int64(currentIdx); i < rgStats.NumRows; i++ {
+			dummy := make(map[string]interface{})
+			reader.Read(&dummy)
+		}
+		
+		tracer.Debug(TraceComponentOptimizer, "Processed row group", TraceContext(
+			"row_group", rgIndex,
+			"rows_read", rowsInGroup,
+			"heap_size", topK.Len(),
+			"current_worst", currentWorstValue,
+		))
+		
+		// Check if we can skip all remaining row groups
+		if topK.Len() >= limit && currentWorstValue != nil {
+			canSkipRemaining := true
+			for nextRG := rgIndex + 1; nextRG < len(rowGroups); nextRG++ {
+				if nextStats, hasStats := statsMap[nextRG]; hasStats {
+					if orderBy.Direction == "DESC" {
+						maxVal := pr.parquetValueToInterface(nextStats.MaxValue)
+						if pr.CompareValues(maxVal, currentWorstValue) > 0 {
+							canSkipRemaining = false
+							break
+						}
+					} else {
+						minVal := pr.parquetValueToInterface(nextStats.MinValue)
+						if pr.CompareValues(minVal, currentWorstValue) < 0 {
+							canSkipRemaining = false
+							break
+						}
+					}
+				}
+			}
+			
+			if canSkipRemaining {
+				tracer.Info(TraceComponentOptimizer, "Early termination - all remaining row groups can be skipped", 
+					TraceContext("remaining_row_groups", len(rowGroups) - rgIndex - 1))
+				rowGroupsSkipped += len(rowGroups) - rgIndex - 1
+				break
+			}
+		}
+	}
+	
+	// Extract results in sorted order
+	result := make([]Row, topK.Len())
+	for i := len(result) - 1; i >= 0; i-- {
+		result[i] = heap.Pop(topK).(Row)
+	}
+	
+	elapsed := time.Since(startTime)
+	tracer.Info(TraceComponentOptimizer, "Completed Top-K with row group filtering", TraceContext(
+		"row_groups_total", len(stats),
+		"row_groups_processed", rowGroupsProcessed,
+		"row_groups_skipped", rowGroupsSkipped,
+		"skip_ratio", float64(rowGroupsSkipped)/float64(len(stats)),
+		"rows_read", totalRowsRead,
+		"result_rows", len(result),
+		"elapsed_ms", elapsed.Milliseconds(),
+	))
+	
+	return result, nil
+}
+
+// indexedRow represents a row with its index for column-pruned Top-K
+type indexedRow struct {
+	index int64
+	data  Row
+}
+
+// readTopKPruned reads only the ORDER BY columns first, then fetches full rows
+func (pr *ParquetReader) readTopKPruned(limit int, orderBy []OrderByColumn) ([]Row, error) {
+	tracer := GetTracer()
+	startTime := time.Now()
+	
+	// Extract ORDER BY column names
+	orderByColumns := make([]string, len(orderBy))
+	for i, ob := range orderBy {
+		orderByColumns[i] = ob.Column
+	}
+	
+	tracer.Info(TraceComponentExecution, "Starting column-pruned Top-K read", TraceContext(
+		"file", pr.filePath,
+		"limit", limit,
+		"order_by_columns", orderByColumns,
+	))
+	
+	// Create a heap for indexed rows
+	topKIndexed := &topKIndexedHeap{
+		rows:     make([]indexedRow, 0, limit),
+		orderBy:  orderBy,
+		reader:   pr,
+		limit:    limit,
+	}
+	heap.Init(topKIndexed)
+	
+	// Create a new reader for column-specific reading
+	reader := parquet.NewReader(pr.reader)
+	defer reader.Close()
+	
+	// Configure reader to read only specific columns
+	// Note: parquet-go doesn't support column pruning in the reader directly,
+	// so we'll read all columns but only process the ones we need
+	
+	rowIndex := int64(0)
+	
+	// First pass: Read and process only ORDER BY columns
+	for {
+		rowData := make(map[string]interface{})
+		err := reader.Read(&rowData)
+		if err != nil {
+			break // End of file
+		}
+		
+		// Extract only ORDER BY columns
+		prunedRow := make(Row)
+		for _, col := range orderByColumns {
+			if val, exists := rowData[col]; exists {
+				prunedRow[col] = val
+			}
+		}
+		
+		idxRow := indexedRow{
+			index: rowIndex,
+			data:  prunedRow,
+		}
+		
+		// Maintain top K
+		if topKIndexed.Len() < limit {
+			heap.Push(topKIndexed, idxRow)
+		} else {
+			if topKIndexed.shouldReplace(idxRow) {
+				heap.Pop(topKIndexed)
+				heap.Push(topKIndexed, idxRow)
+			}
+		}
+		
+		rowIndex++
+		
+		// Log progress
+		if rowIndex%100000 == 0 {
+			tracer.Debug(TraceComponentExecution, "Column-pruned scan progress", TraceContext(
+				"rows_scanned", rowIndex,
+				"heap_size", topKIndexed.Len(),
+				"elapsed_ms", time.Since(startTime).Milliseconds(),
+			))
+		}
+	}
+	
+	// Extract the top K row indices
+	topIndices := make([]int64, topKIndexed.Len())
+	for i := len(topIndices) - 1; i >= 0; i-- {
+		idxRow := heap.Pop(topKIndexed).(indexedRow)
+		topIndices[i] = idxRow.index
+	}
+	
+	firstPassElapsed := time.Since(startTime)
+	tracer.Info(TraceComponentExecution, "Completed first pass (column pruning)", TraceContext(
+		"rows_scanned", rowIndex,
+		"top_k_found", len(topIndices),
+		"elapsed_ms", firstPassElapsed.Milliseconds(),
+		"rows_per_second", float64(rowIndex)/firstPassElapsed.Seconds(),
+	))
+	
+	// Second pass: Fetch full rows for the top K indices
+	secondPassStart := time.Now()
+	
+	// Sort indices for sequential reading
+	sort.Slice(topIndices, func(i, j int) bool {
+		return topIndices[i] < topIndices[j]
+	})
+	
+	// Read full rows for selected indices
+	result := make([]Row, 0, len(topIndices))
+	reader2 := parquet.NewReader(pr.reader)
+	defer reader2.Close()
+	
+	currentIndex := int64(0)
+	topIdxPos := 0
+	
+	for topIdxPos < len(topIndices) {
+		targetIndex := topIndices[topIdxPos]
+		
+		// Skip to target row
+		for currentIndex < targetIndex {
+			var dummy interface{}
+			err := reader2.Read(&dummy)
+			if err != nil {
+				break
+			}
+			currentIndex++
+		}
+		
+		// Read the target row
+		if currentIndex == targetIndex {
+			rowData := make(map[string]interface{})
+			err := reader2.Read(&rowData)
+			if err == nil {
+				result = append(result, Row(rowData))
+			}
+			currentIndex++
+			topIdxPos++
+		}
+	}
+	
+	// Sort the final results according to ORDER BY
+	SortRowsWithOrderBy(result, orderBy, pr)
+	
+	totalElapsed := time.Since(startTime)
+	secondPassElapsed := time.Since(secondPassStart)
+	
+	tracer.Info(TraceComponentExecution, "Completed column-pruned Top-K read", TraceContext(
+		"total_rows_scanned", rowIndex,
+		"result_rows", len(result),
+		"first_pass_ms", firstPassElapsed.Milliseconds(),
+		"second_pass_ms", secondPassElapsed.Milliseconds(),
+		"total_elapsed_ms", totalElapsed.Milliseconds(),
+		"optimization_ratio", float64(rowIndex)/float64(limit),
+	))
+	
+	return result, nil
+}
+
+// topKHeap implements heap.Interface for maintaining top K rows
+type topKHeap struct {
+	rows    []Row
+	orderBy []OrderByColumn
+	reader  *ParquetReader
+	limit   int
+}
+
+func (h topKHeap) Len() int { return len(h.rows) }
+
+func (h topKHeap) Less(i, j int) bool {
+	// For a min-heap with DESC order, we want the smallest values at the top
+	// so we can easily remove them when we find larger values
+	cmp := h.compareRows(h.rows[i], h.rows[j])
+	if h.orderBy[0].Direction == "DESC" {
+		return cmp < 0 // Smallest at top for DESC
+	}
+	return cmp > 0 // Largest at top for ASC
+}
+
+func (h topKHeap) Swap(i, j int) {
+	h.rows[i], h.rows[j] = h.rows[j], h.rows[i]
+}
+
+func (h *topKHeap) Push(x interface{}) {
+	h.rows = append(h.rows, x.(Row))
+}
+
+func (h *topKHeap) Pop() interface{} {
+	old := h.rows
+	n := len(old)
+	x := old[n-1]
+	h.rows = old[0 : n-1]
+	return x
+}
+
+// shouldReplace determines if a new row should replace the worst row in heap
+func (h *topKHeap) shouldReplace(newRow Row) bool {
+	if h.Len() == 0 {
+		return true
+	}
+	
+	// Compare with the top element (worst in our heap)
+	cmp := h.compareRows(newRow, h.rows[0])
+	
+	if h.orderBy[0].Direction == "DESC" {
+		// For DESC, we want larger values, so replace if new > top
+		return cmp > 0
+	} else {
+		// For ASC, we want smaller values, so replace if new < top
+		return cmp < 0
+	}
+}
+
+// compareRows compares two rows based on all orderBy columns
+func (h *topKHeap) compareRows(a, b Row) int {
+	for _, orderCol := range h.orderBy {
+		col := orderCol.Column
+		aVal, aExists := a[col]
+		bVal, bExists := b[col]
+		
+		// Handle NULL values
+		if !aExists && !bExists {
+			continue // Both NULL, check next column
+		}
+		if !aExists {
+			return -1 // NULL is less than any value
+		}
+		if !bExists {
+			return 1 // Any value is greater than NULL
+		}
+		
+		// Compare non-NULL values
+		cmp := h.reader.CompareValues(aVal, bVal)
+		if cmp != 0 {
+			return cmp
+		}
+		// If equal, continue to next order by column
+	}
+	
+	return 0 // All columns are equal
+}
+
+// topKIndexedHeap is a heap for indexed rows (row index + partial data)
+type topKIndexedHeap struct {
+	rows    []indexedRow
+	orderBy []OrderByColumn
+	reader  *ParquetReader
+	limit   int
+}
+
+func (h topKIndexedHeap) Len() int { return len(h.rows) }
+
+func (h topKIndexedHeap) Less(i, j int) bool {
+	cmp := h.compareIndexedRows(h.rows[i], h.rows[j])
+	if h.orderBy[0].Direction == "DESC" {
+		return cmp < 0 // Smallest at top for DESC
+	}
+	return cmp > 0 // Largest at top for ASC
+}
+
+func (h topKIndexedHeap) Swap(i, j int) {
+	h.rows[i], h.rows[j] = h.rows[j], h.rows[i]
+}
+
+func (h *topKIndexedHeap) Push(x interface{}) {
+	h.rows = append(h.rows, x.(indexedRow))
+}
+
+func (h *topKIndexedHeap) Pop() interface{} {
+	old := h.rows
+	n := len(old)
+	x := old[n-1]
+	h.rows = old[0 : n-1]
+	return x
+}
+
+func (h *topKIndexedHeap) shouldReplace(newRow indexedRow) bool {
+	if h.Len() == 0 {
+		return true
+	}
+	
+	cmp := h.compareIndexedRows(newRow, h.rows[0])
+	
+	if h.orderBy[0].Direction == "DESC" {
+		return cmp > 0 // Replace if new > top
+	} else {
+		return cmp < 0 // Replace if new < top
+	}
+}
+
+func (h *topKIndexedHeap) compareIndexedRows(a, b indexedRow) int {
+	for _, orderCol := range h.orderBy {
+		col := orderCol.Column
+		aVal, aExists := a.data[col]
+		bVal, bExists := b.data[col]
+		
+		if !aExists && !bExists {
+			continue
+		}
+		if !aExists {
+			return -1
+		}
+		if !bExists {
+			return 1
+		}
+		
+		cmp := h.reader.CompareValues(aVal, bVal)
+		if cmp != 0 {
+			return cmp
+		}
+	}
+	
+	return 0
 }

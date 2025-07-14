@@ -1,6 +1,7 @@
 package core
 
 import (
+	"container/heap"
 	"fmt"
 	"strings"
 	
@@ -139,4 +140,58 @@ func (mfr *MultiFileParquetReader) GetColumnNames() []string {
 		names[i] = field.Name
 	}
 	return names
+}
+
+// ReadTopK reads top K rows from multiple files using a heap-based approach
+func (mfr *MultiFileParquetReader) ReadTopK(limit int, orderBy []OrderByColumn, whereConditions []WhereCondition, engine SubqueryExecutor) ([]Row, error) {
+	// For multi-file reader, we need to merge results from all files
+	// We'll use a simple approach: get top K from each file, then merge
+	
+	allTopRows := make([]Row, 0, limit*len(mfr.readers))
+	
+	// Get top K from each file
+	for _, reader := range mfr.readers {
+		topRows, err := reader.ReadTopK(limit, orderBy, whereConditions, engine)
+		if err != nil {
+			return nil, err
+		}
+		allTopRows = append(allTopRows, topRows...)
+	}
+	
+	// If we have fewer rows than limit, just sort and return
+	if len(allTopRows) <= limit {
+		// Sort based on orderBy
+		if len(mfr.readers) > 0 {
+			SortRowsWithOrderBy(allTopRows, orderBy, mfr.readers[0])
+		}
+		return allTopRows, nil
+	}
+	
+	// Otherwise, we need to find the top K from the merged results
+	// Create a new heap for final top K
+	topK := &topKHeap{
+		rows:     make([]Row, 0, limit),
+		orderBy:  orderBy,
+		reader:   mfr.readers[0], // Use first reader for comparison
+		limit:    limit,
+	}
+	heap.Init(topK)
+	
+	// Add all rows to heap
+	for _, row := range allTopRows {
+		if topK.Len() < limit {
+			heap.Push(topK, row)
+		} else if topK.shouldReplace(row) {
+			heap.Pop(topK)
+			heap.Push(topK, row)
+		}
+	}
+	
+	// Extract final results
+	result := make([]Row, topK.Len())
+	for i := len(result) - 1; i >= 0; i-- {
+		result[i] = heap.Pop(topK).(Row)
+	}
+	
+	return result, nil
 }
