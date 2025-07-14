@@ -42,18 +42,12 @@ func TestComprehensivePersistence(t *testing.T) {
 		const rowCount = 1000
 
 		// Integer columns with different patterns
-		int64Data := make([]struct{ Key int64; RowNum uint64 }, rowCount)
-		stringData := make([]struct{ Key string; RowNum uint64 }, rowCount)
+		int64Data := make([]IntData, rowCount)
+		stringData := make([]StringData, rowCount)
 		
 		for i := 0; i < rowCount; i++ {
-			int64Data[i] = struct{ Key int64; RowNum uint64 }{
-				Key:    int64(i % 100), // 100 distinct values, 10 duplicates each
-				RowNum: uint64(i),
-			}
-			stringData[i] = struct{ Key string; RowNum uint64 }{
-				Key:    fmt.Sprintf("value_%d", i%50), // 50 distinct strings, 20 duplicates each
-				RowNum: uint64(i),
-			}
+			int64Data[i] = NewIntData(int64(i % 100), uint64(i)) // 100 distinct values, 10 duplicates each
+			stringData[i] = NewStringData(fmt.Sprintf("value_%d", i%50), uint64(i)) // 50 distinct strings, 20 duplicates each
 		}
 
 		err = cf.LoadIntColumn("int64_col", int64Data)
@@ -270,8 +264,8 @@ func TestCorruptionDetection(t *testing.T) {
 	}
 
 	cf.AddColumn("test_col", DataTypeInt64, false)
-	testData := []struct{ Key int64; RowNum uint64 }{
-		{100, 0}, {200, 1}, {300, 2},
+	testData := []IntData{
+		NewIntData(100, 0), NewIntData(200, 1), NewIntData(300, 2),
 	}
 	cf.LoadIntColumn("test_col", testData)
 	cf.Close()

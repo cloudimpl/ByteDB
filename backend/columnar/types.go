@@ -50,6 +50,14 @@ const (
 	PageTypePageDirectory PageType = 0x07
 )
 
+// NullSortOrder defines how NULL values are sorted in queries
+type NullSortOrder int
+
+const (
+	NullsFirst NullSortOrder = iota // NULL values come before non-NULL values
+	NullsLast                        // NULL values come after non-NULL values
+)
+
 // DataType represents the data type of a column
 type DataType uint8
 
@@ -176,6 +184,7 @@ type ColumnMetadata struct {
 	BitmapPagesCount   uint64
 	AverageKeySize     uint8
 	StringSegmentStart uint64 // For string/binary columns
+	NullBitmapPageID   uint64 // Page ID for null bitmap (0 if no nulls)
 	MetadataPageID     uint64 // Page ID where this metadata is stored
 }
 

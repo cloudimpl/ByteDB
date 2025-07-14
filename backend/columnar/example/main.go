@@ -32,29 +32,36 @@ func main() {
 	fmt.Println("Loading data...")
 	
 	// ID data
-	idData := []struct{ Key int64; RowNum uint64 }{
-		{1, 0}, {2, 1}, {3, 2}, {4, 3}, {5, 4},
-		{1, 5}, // Duplicate ID
-		{6, 6}, {7, 7}, {8, 8}, {9, 9},
+	idData := []columnar.IntData{
+		columnar.NewIntData(1, 0), columnar.NewIntData(2, 1), columnar.NewIntData(3, 2), 
+		columnar.NewIntData(4, 3), columnar.NewIntData(5, 4),
+		columnar.NewIntData(1, 5), // Duplicate ID
+		columnar.NewIntData(6, 6), columnar.NewIntData(7, 7), columnar.NewIntData(8, 8), 
+		columnar.NewIntData(9, 9),
 	}
 	if err := cf.LoadIntColumn("id", idData); err != nil {
 		log.Fatal("Failed to load id data:", err)
 	}
 	
 	// Name data
-	nameData := []struct{ Key string; RowNum uint64 }{
-		{"Alice", 0}, {"Bob", 1}, {"Charlie", 2}, {"David", 3}, {"Eve", 4},
-		{"Alice", 5}, // Duplicate name
-		{"Frank", 6}, {"Grace", 7}, {"Henry", 8}, {"Iris", 9},
+	nameData := []columnar.StringData{
+		columnar.NewStringData("Alice", 0), columnar.NewStringData("Bob", 1), 
+		columnar.NewStringData("Charlie", 2), columnar.NewStringData("David", 3), 
+		columnar.NewStringData("Eve", 4),
+		columnar.NewStringData("Alice", 5), // Duplicate name
+		columnar.NewStringData("Frank", 6), columnar.NewStringData("Grace", 7), 
+		columnar.NewStringData("Henry", 8), columnar.NewStringData("Iris", 9),
 	}
 	if err := cf.LoadStringColumn("name", nameData); err != nil {
 		log.Fatal("Failed to load name data:", err)
 	}
 	
 	// Age data
-	ageData := []struct{ Key int64; RowNum uint64 }{
-		{25, 0}, {30, 1}, {35, 2}, {28, 3}, {32, 4},
-		{25, 5}, {40, 6}, {45, 7}, {38, 8}, {29, 9},
+	ageData := []columnar.IntData{
+		columnar.NewIntData(25, 0), columnar.NewIntData(30, 1), columnar.NewIntData(35, 2), 
+		columnar.NewIntData(28, 3), columnar.NewIntData(32, 4),
+		columnar.NewIntData(25, 5), columnar.NewIntData(40, 6), columnar.NewIntData(45, 7), 
+		columnar.NewIntData(38, 8), columnar.NewIntData(29, 9),
 	}
 	if err := cf.LoadIntColumn("age", ageData); err != nil {
 		log.Fatal("Failed to load age data:", err)

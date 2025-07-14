@@ -23,20 +23,14 @@ func TestBitmapAPI(t *testing.T) {
 	cf.AddColumn("value", DataTypeInt32, false)
 	
 	// Load test data
-	idData := make([]struct{ Key int64; RowNum uint64 }, 1000)
-	categoryData := make([]struct{ Key string; RowNum uint64 }, 1000)
+	idData := make([]IntData, 1000)
+	categoryData := make([]StringData, 1000)
 	valueData := make([]struct{ Key uint64; RowNum uint64 }, 1000)
 	
 	for i := 0; i < 1000; i++ {
-		idData[i] = struct{ Key int64; RowNum uint64 }{
-			Key:    int64(i),
-			RowNum: uint64(i),
-		}
+		idData[i] = NewIntData(int64(i), uint64(i))
 		// 10 categories with many duplicates
-		categoryData[i] = struct{ Key string; RowNum uint64 }{
-			Key:    categoryNames[i%10],
-			RowNum: uint64(i),
-		}
+		categoryData[i] = NewStringData(categoryNames[i%10], uint64(i))
 		// Values 0-99 repeating
 		valueData[i] = struct{ Key uint64; RowNum uint64 }{
 			Key:    uint64(i % 100),
@@ -293,19 +287,13 @@ func TestBitmapAPIPerformance(t *testing.T) {
 	
 	// Load 100k rows
 	numRows := 100000
-	idData := make([]struct{ Key int64; RowNum uint64 }, numRows)
-	categoryData := make([]struct{ Key string; RowNum uint64 }, numRows)
+	idData := make([]IntData, numRows)
+	categoryData := make([]StringData, numRows)
 	statusData := make([]struct{ Key uint64; RowNum uint64 }, numRows)
 	
 	for i := 0; i < numRows; i++ {
-		idData[i] = struct{ Key int64; RowNum uint64 }{
-			Key:    int64(i),
-			RowNum: uint64(i),
-		}
-		categoryData[i] = struct{ Key string; RowNum uint64 }{
-			Key:    categoryNames[i%10],
-			RowNum: uint64(i),
-		}
+		idData[i] = NewIntData(int64(i), uint64(i))
+		categoryData[i] = NewStringData(categoryNames[i%10], uint64(i))
 		statusData[i] = struct{ Key uint64; RowNum uint64 }{
 			Key:    uint64(i % 5), // 5 different statuses
 			RowNum: uint64(i),

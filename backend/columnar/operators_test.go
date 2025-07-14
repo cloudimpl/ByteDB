@@ -29,9 +29,9 @@ func TestAllOperators(t *testing.T) {
 	
 	// Load test data
 	// IDs: 1-10
-	idData := []struct{ Key int64; RowNum uint64 }{
-		{1, 0}, {2, 1}, {3, 2}, {4, 3}, {5, 4},
-		{6, 5}, {7, 6}, {8, 7}, {9, 8}, {10, 9},
+	idData := []IntData{
+		NewIntData(1, 0), NewIntData(2, 1), NewIntData(3, 2), NewIntData(4, 3), NewIntData(5, 4),
+		NewIntData(6, 5), NewIntData(7, 6), NewIntData(8, 7), NewIntData(9, 8), NewIntData(10, 9),
 	}
 	cf.LoadIntColumn("id", idData)
 	
@@ -56,9 +56,9 @@ func TestAllOperators(t *testing.T) {
 	col.metadata.TotalKeys = uint64(len(scoreData))
 	
 	// Names
-	nameData := []struct{ Key string; RowNum uint64 }{
-		{"Alice", 0}, {"Bob", 1}, {"Charlie", 2}, {"David", 3}, {"Eve", 4},
-		{"Frank", 5}, {"Grace", 6}, {"Henry", 7}, {"Iris", 8}, {"Jack", 9},
+	nameData := []StringData{
+		NewStringData("Alice", 0), NewStringData("Bob", 1), NewStringData("Charlie", 2), NewStringData("David", 3), NewStringData("Eve", 4),
+		NewStringData("Frank", 5), NewStringData("Grace", 6), NewStringData("Henry", 7), NewStringData("Iris", 8), NewStringData("Jack", 9),
 	}
 	cf.LoadStringColumn("name", nameData)
 	
@@ -382,12 +382,12 @@ func TestOperatorEdgeCases(t *testing.T) {
 	col.metadata.RootPageID = col.btree.GetRootPageID()
 	col.metadata.TotalKeys = uint64(len(valueData))
 	
-	nameData := []struct{ Key string; RowNum uint64 }{
-		{"", 0},          // Empty string
-		{"A", 1},
-		{"Z", 2},
-		{"test", 3},
-		{"test", 4},      // Duplicate
+	nameData := []StringData{
+		NewStringData("", 0),          // Empty string
+		NewStringData("A", 1),
+		NewStringData("Z", 2),
+		NewStringData("test", 3),
+		NewStringData("test", 4),      // Duplicate
 	}
 	cf.LoadStringColumn("name", nameData)
 	
@@ -469,18 +469,12 @@ func TestOperatorPerformance(t *testing.T) {
 	
 	// Load 100k rows
 	numRows := 100000
-	idData := make([]struct{ Key int64; RowNum uint64 }, numRows)
-	categoryData := make([]struct{ Key string; RowNum uint64 }, numRows)
+	idData := make([]IntData, numRows)
+	categoryData := make([]StringData, numRows)
 	
 	for i := 0; i < numRows; i++ {
-		idData[i] = struct{ Key int64; RowNum uint64 }{
-			Key:    int64(i),
-			RowNum: uint64(i),
-		}
-		categoryData[i] = struct{ Key string; RowNum uint64 }{
-			Key:    fmt.Sprintf("cat_%d", i%1000), // 1000 categories
-			RowNum: uint64(i),
-		}
+		idData[i] = NewIntData(int64(i), uint64(i))
+		categoryData[i] = NewStringData(fmt.Sprintf("cat_%d", i%1000), uint64(i)) // 1000 categories
 	}
 	
 	cf.LoadIntColumn("id", idData)

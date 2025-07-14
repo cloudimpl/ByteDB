@@ -25,6 +25,7 @@ type Column struct {
 	btree         *BPlusTree
 	stringSegment *StringSegment // For string columns
 	bitmapManager *BitmapManager
+	nullBitmap    *roaring.Bitmap // Bitmap tracking NULL rows (nil if no nulls)
 }
 
 // CreateFile creates a new columnar file with .bytedb extension
@@ -133,8 +134,8 @@ func (cf *ColumnarFile) AddColumn(name string, dataType DataType, nullable bool)
 	return nil
 }
 
-// LoadIntColumn loads data into an integer column
-func (cf *ColumnarFile) LoadIntColumn(columnName string, data []struct{ Key int64; RowNum uint64 }) error {
+// LoadIntColumn loads data into an integer column (automatically handles nulls)
+func (cf *ColumnarFile) LoadIntColumn(columnName string, data []IntData) error {
 	col, exists := cf.columns[columnName]
 	if !exists {
 		return fmt.Errorf("column %s not found", columnName)
@@ -144,37 +145,75 @@ func (cf *ColumnarFile) LoadIntColumn(columnName string, data []struct{ Key int6
 		return fmt.Errorf("column %s is not int64 type", columnName)
 	}
 	
-	// Convert to uint64 keys for B+ tree
-	keyRows := make([]struct{ Key uint64; RowNum uint64 }, len(data))
-	for i, d := range data {
-		keyRows[i] = struct{ Key uint64; RowNum uint64 }{
-			Key:    uint64(d.Key),
-			RowNum: d.RowNum,
+	// Separate null and non-null data
+	var keyRows []struct{ Key uint64; RowNum uint64 }
+	var nullRows *roaring.Bitmap
+	hasNulls := false
+	
+	// First pass: detect nulls and separate data
+	for _, d := range data {
+		if d.IsNull {
+			// Found a null value
+			if !hasNulls {
+				hasNulls = true
+				nullRows = roaring.New()
+			}
+			nullRows.Add(uint32(d.RowNum))
+		} else {
+			// Non-null value - convert to uint64 for B+ tree
+			keyRows = append(keyRows, struct{ Key uint64; RowNum uint64 }{
+				Key:    uint64(d.Value),
+				RowNum: d.RowNum,
+			})
 		}
 	}
 	
-	// Bulk load with duplicates and get statistics in single pass
-	stats, err := col.btree.BulkLoadWithDuplicates(keyRows)
-	if err != nil {
-		return err
+	// Handle null bitmap if nulls were found
+	if hasNulls {
+		col.nullBitmap = nullRows
+		col.metadata.NullCount = uint64(nullRows.GetCardinality())
+		
+		// Store null bitmap to pages
+		nullBitmapPageID, err := col.bitmapManager.StoreBitmap(nullRows)
+		if err != nil {
+			return fmt.Errorf("failed to store null bitmap: %w", err)
+		}
+		col.metadata.NullBitmapPageID = nullBitmapPageID
+	} else {
+		col.metadata.NullCount = 0
+		col.metadata.NullBitmapPageID = 0
 	}
 	
-	// Update metadata with calculated statistics
-	col.metadata.RootPageID = col.btree.GetRootPageID()
-	col.metadata.TreeHeight = col.btree.GetHeight()
-	col.metadata.TotalKeys = stats.TotalKeys
-	col.metadata.DistinctCount = stats.DistinctCount
-	col.metadata.NullCount = stats.NullCount
-	col.metadata.MinValueOffset = stats.MinValue
-	col.metadata.MaxValueOffset = stats.MaxValue
-	col.metadata.AverageKeySize = stats.AverageKeySize
-	col.metadata.BitmapPagesCount = 0 // Will be calculated when closing file
+	// Load non-null values into B+ tree (if any)
+	if len(keyRows) > 0 {
+		// Bulk load with duplicates and get statistics in single pass
+		stats, err := col.btree.BulkLoadWithDuplicates(keyRows)
+		if err != nil {
+			return err
+		}
+		
+		// Update metadata with calculated statistics
+		col.metadata.RootPageID = col.btree.GetRootPageID()
+		col.metadata.TreeHeight = col.btree.GetHeight()
+		col.metadata.TotalKeys = stats.TotalKeys
+		col.metadata.DistinctCount = stats.DistinctCount
+		col.metadata.MinValueOffset = stats.MinValue
+		col.metadata.MaxValueOffset = stats.MaxValue
+		col.metadata.AverageKeySize = stats.AverageKeySize
+		col.metadata.BitmapPagesCount = 0 // Will be calculated when closing file
+	} else {
+		// All values are NULL
+		col.metadata.RootPageID = 0
+		col.metadata.TreeHeight = 0
+		col.metadata.TotalKeys = 0
+		col.metadata.DistinctCount = 0
+	}
 	
 	return nil
 }
 
-// LoadStringColumn loads data into a string column
-func (cf *ColumnarFile) LoadStringColumn(columnName string, data []struct{ Key string; RowNum uint64 }) error {
+// LoadStringColumn loads data into a string column (automatically handles nulls)
+func (cf *ColumnarFile) LoadStringColumn(columnName string, data []StringData) error {
 	col, exists := cf.columns[columnName]
 	if !exists {
 		return fmt.Errorf("column %s not found", columnName)
@@ -184,58 +223,95 @@ func (cf *ColumnarFile) LoadStringColumn(columnName string, data []struct{ Key s
 		return fmt.Errorf("column %s is not string type", columnName)
 	}
 	
-	// Build string to rows mapping
+	// Separate null and non-null data
 	stringRows := make(map[string][]uint64)
+	var nullRows *roaring.Bitmap
+	hasNulls := false
+	
+	// First pass: detect nulls and separate data
 	for _, d := range data {
-		stringRows[d.Key] = append(stringRows[d.Key], d.RowNum)
-	}
-	
-	// Add strings to segment first
-	for str := range stringRows {
-		col.stringSegment.AddString(str)
-	}
-	
-	// Build string segment (this will sort and rebuild offsets)
-	if err := col.stringSegment.Build(); err != nil {
-		return err
-	}
-	
-	// NOW collect the correct offsets after building
-	keyRows := make([]struct{ Key uint64; RowNum uint64 }, 0)
-	for str, rows := range stringRows {
-		offset, found := col.stringSegment.FindOffset(str)
-		if !found {
-			return fmt.Errorf("string %s not found after build", str)
-		}
-		for _, row := range rows {
-			keyRows = append(keyRows, struct{ Key uint64; RowNum uint64 }{
-				Key:    offset,
-				RowNum: row,
-			})
+		if d.IsNull {
+			// Found a null value
+			if !hasNulls {
+				hasNulls = true
+				nullRows = roaring.New()
+			}
+			nullRows.Add(uint32(d.RowNum))
+		} else {
+			// Non-null value
+			stringRows[d.Value] = append(stringRows[d.Value], d.RowNum)
 		}
 	}
 	
-	// Create comparator for string offsets
-	col.btree = NewBPlusTree(cf.pageManager, DataTypeString, NewStringComparator(col.stringSegment))
-	
-	// Bulk load B+ tree
-	// Bulk load with duplicates and get statistics in single pass
-	stats, err := col.btree.BulkLoadWithDuplicates(keyRows)
-	if err != nil {
-		return err
+	// Handle null bitmap if nulls were found
+	if hasNulls {
+		col.nullBitmap = nullRows
+		col.metadata.NullCount = uint64(nullRows.GetCardinality())
+		
+		// Store null bitmap to pages
+		nullBitmapPageID, err := col.bitmapManager.StoreBitmap(nullRows)
+		if err != nil {
+			return fmt.Errorf("failed to store null bitmap: %w", err)
+		}
+		col.metadata.NullBitmapPageID = nullBitmapPageID
+	} else {
+		col.metadata.NullCount = 0
+		col.metadata.NullBitmapPageID = 0
 	}
 	
-	// Update metadata with calculated statistics
-	col.metadata.RootPageID = col.btree.GetRootPageID()
-	col.metadata.TreeHeight = col.btree.GetHeight()
-	col.metadata.TotalKeys = stats.TotalKeys
-	col.metadata.DistinctCount = uint64(len(stringRows)) // For strings, use original string count
-	col.metadata.NullCount = stats.NullCount
-	col.metadata.StringSegmentStart = col.stringSegment.rootPageID
-	col.metadata.MinValueOffset = stats.MinValue // Min string offset
-	col.metadata.MaxValueOffset = stats.MaxValue // Max string offset  
-	col.metadata.AverageKeySize = stats.AverageKeySize
-	col.metadata.BitmapPagesCount = 0 // Will be calculated when closing file
+	// Process non-null values (if any)
+	if len(stringRows) > 0 {
+		// Add strings to segment first
+		for str := range stringRows {
+			col.stringSegment.AddString(str)
+		}
+		
+		// Build string segment (this will sort and rebuild offsets)
+		if err := col.stringSegment.Build(); err != nil {
+			return err
+		}
+		
+		// NOW collect the correct offsets after building
+		keyRows := make([]struct{ Key uint64; RowNum uint64 }, 0)
+		for str, rows := range stringRows {
+			offset, found := col.stringSegment.FindOffset(str)
+			if !found {
+				return fmt.Errorf("string %s not found after build", str)
+			}
+			for _, row := range rows {
+				keyRows = append(keyRows, struct{ Key uint64; RowNum uint64 }{
+					Key:    offset,
+					RowNum: row,
+				})
+			}
+		}
+		
+		// Create comparator for string offsets
+		col.btree = NewBPlusTree(cf.pageManager, DataTypeString, NewStringComparator(col.stringSegment))
+		
+		// Bulk load with duplicates and get statistics
+		stats, err := col.btree.BulkLoadWithDuplicates(keyRows)
+		if err != nil {
+			return err
+		}
+		
+		// Update metadata
+		col.metadata.RootPageID = col.btree.GetRootPageID()
+		col.metadata.TreeHeight = col.btree.GetHeight()
+		col.metadata.TotalKeys = stats.TotalKeys
+		col.metadata.DistinctCount = uint64(len(stringRows))
+		col.metadata.StringSegmentStart = col.stringSegment.rootPageID
+		col.metadata.MinValueOffset = stats.MinValue
+		col.metadata.MaxValueOffset = stats.MaxValue
+		col.metadata.AverageKeySize = stats.AverageKeySize
+		col.metadata.BitmapPagesCount = 0
+	} else {
+		// All values are NULL
+		col.metadata.RootPageID = 0
+		col.metadata.TreeHeight = 0
+		col.metadata.TotalKeys = 0
+		col.metadata.DistinctCount = 0
+	}
 	
 	return nil
 }
@@ -554,6 +630,300 @@ func (cf *ColumnarFile) QueryNot(columnName string, bitmap *roaring.Bitmap) (*ro
 	return allRowsBitmap, nil
 }
 
+// QueryNull returns rows where the specified column is NULL
+func (cf *ColumnarFile) QueryNull(columnName string) (*roaring.Bitmap, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	if !col.metadata.IsNullable {
+		// Non-nullable column can't have nulls
+		return roaring.New(), nil
+	}
+	
+	// Return a copy of the null bitmap
+	if col.nullBitmap != nil {
+		return col.nullBitmap.Clone(), nil
+	}
+	
+	return roaring.New(), nil
+}
+
+// QueryNotNull returns rows where the specified column is NOT NULL
+func (cf *ColumnarFile) QueryNotNull(columnName string) (*roaring.Bitmap, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	if !col.metadata.IsNullable {
+		// Non-nullable column - all rows are not null
+		// Return all rows in the column
+		return cf.getAllRowsForColumn(col)
+	}
+	
+	// Get all rows and exclude nulls
+	allRows, err := cf.getAllRowsForColumn(col)
+	if err != nil {
+		return nil, err
+	}
+	
+	if col.nullBitmap != nil {
+		allRows.AndNot(col.nullBitmap)
+	}
+	
+	return allRows, nil
+}
+
+// getAllRowsForColumn returns all row numbers stored in a column
+func (cf *ColumnarFile) getAllRowsForColumn(col *Column) (*roaring.Bitmap, error) {
+	allRows := roaring.New()
+	
+	// Add null rows first if they exist
+	if col.nullBitmap != nil {
+		allRows.Or(col.nullBitmap)
+	}
+	
+	// Traverse the B+ tree to get all non-null row numbers
+	if col.btree.rootPageID != 0 {
+		// Start from leftmost leaf
+		currentPageID := col.btree.rootPageID
+		
+		// Navigate to leftmost leaf
+		for {
+			page, err := col.btree.pageManager.ReadPage(currentPageID)
+			if err != nil {
+				return nil, err
+			}
+			
+			if page.Header.PageType == PageTypeBTreeLeaf {
+				break
+			}
+			
+			// For internal nodes, get first child from childPageMap
+			children, exists := col.btree.childPageMap[currentPageID]
+			if !exists || len(children) == 0 {
+				return nil, fmt.Errorf("no children found for internal page %d", currentPageID)
+			}
+			currentPageID = children[0]
+		}
+		
+		// Scan all leaf pages
+		for currentPageID != 0 {
+			page, err := col.btree.pageManager.ReadPage(currentPageID)
+			if err != nil {
+				return nil, err
+			}
+			
+			entries, err := col.btree.readLeafEntries(page)
+			if err != nil {
+				return nil, err
+			}
+			
+			for _, entry := range entries {
+				if entry.Value.IsRowNumber() {
+					allRows.Add(uint32(entry.Value.GetRowNumber()))
+				} else {
+					// Load bitmap
+					bitmap, err := col.btree.bitmapManager.LoadBitmap(entry.Value.GetBitmapOffset())
+					if err != nil {
+						continue
+					}
+					// Extract row numbers and add to result
+					rows := col.btree.bitmapManager.ExtractRowNumbers(bitmap)
+					for _, row := range rows {
+						allRows.Add(uint32(row))
+					}
+				}
+			}
+			
+			currentPageID = page.Header.NextPageID
+		}
+	}
+	
+	return allRows, nil
+}
+
+// RangeQueryIntWithNulls performs a range query on an integer column with null handling
+func (cf *ColumnarFile) RangeQueryIntWithNulls(columnName string, min, max int64, nullOrder NullSortOrder, includeNulls bool) (*roaring.Bitmap, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	// Allow all integer types
+	switch col.metadata.DataType {
+	case DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		
+		// Get non-null results from range query
+		result, err := col.btree.RangeSearchBitmap(uint64(min), uint64(max))
+		if err != nil {
+			return nil, err
+		}
+		
+		// Handle nulls based on sort order and includeNulls flag
+		if includeNulls && col.metadata.IsNullable && col.nullBitmap != nil {
+			// Add nulls based on sort order
+			switch nullOrder {
+			case NullsFirst:
+				// Nulls come first - add them to the result
+				result.Or(col.nullBitmap)
+			case NullsLast:
+				// Nulls come last - add them to the result  
+				result.Or(col.nullBitmap)
+			}
+		}
+		
+		return result, nil
+		
+	default:
+		return nil, fmt.Errorf("column %s is not an integer type", columnName)
+	}
+}
+
+// RangeQueryStringWithNulls performs a range query on a string column with null handling
+func (cf *ColumnarFile) RangeQueryStringWithNulls(columnName string, min, max string, nullOrder NullSortOrder, includeNulls bool) (*roaring.Bitmap, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	if col.metadata.DataType != DataTypeString {
+		return nil, fmt.Errorf("column %s is not string type", columnName)
+	}
+	
+	// Get all offsets for strings in range
+	offsets := col.stringSegment.GetOffsetsInRange(min, max)
+	if len(offsets) == 0 {
+		result := roaring.New()
+		
+		// Handle nulls if requested
+		if includeNulls && col.metadata.IsNullable && col.nullBitmap != nil {
+			result.Or(col.nullBitmap)
+		}
+		
+		return result, nil
+	}
+	
+	// Query each offset and collect results
+	result := roaring.New()
+	for _, offset := range offsets {
+		bitmap, err := col.btree.FindBitmap(offset)
+		if err != nil {
+			continue
+		}
+		result.Or(bitmap)
+	}
+	
+	// Handle nulls based on sort order and includeNulls flag
+	if includeNulls && col.metadata.IsNullable && col.nullBitmap != nil {
+		switch nullOrder {
+		case NullsFirst:
+			// Nulls come first - add them to the result
+			result.Or(col.nullBitmap)
+		case NullsLast:
+			// Nulls come last - add them to the result
+			result.Or(col.nullBitmap)
+		}
+	}
+	
+	return result, nil
+}
+
+// QueryLessThanWithNulls performs a < query with null handling
+func (cf *ColumnarFile) QueryLessThanWithNulls(columnName string, value interface{}, nullOrder NullSortOrder) (*roaring.Bitmap, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	var result *roaring.Bitmap
+	var err error
+	
+	switch col.metadata.DataType {
+	case DataTypeBool, DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		intVal := toUint64(value)
+		result, err = col.btree.RangeSearchLessThanBitmap(intVal)
+		
+	case DataTypeString:
+		strVal, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string value for string column")
+		}
+		result, err = cf.queryStringLessThan(col, strVal)
+		
+	default:
+		return nil, fmt.Errorf("less than not supported for data type %v", col.metadata.DataType)
+	}
+	
+	if err != nil {
+		return nil, err
+	}
+	
+	// Handle nulls based on sort order
+	if col.metadata.IsNullable && col.nullBitmap != nil {
+		switch nullOrder {
+		case NullsFirst:
+			// Nulls come first, so they're included in "less than" result
+			result.Or(col.nullBitmap)
+		case NullsLast:
+			// Nulls come last, so they're excluded from "less than" result
+			// (already excluded since they're not in the B+ tree)
+		}
+	}
+	
+	return result, nil
+}
+
+// QueryGreaterThanWithNulls performs a > query with null handling  
+func (cf *ColumnarFile) QueryGreaterThanWithNulls(columnName string, value interface{}, nullOrder NullSortOrder) (*roaring.Bitmap, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	var result *roaring.Bitmap
+	var err error
+	
+	switch col.metadata.DataType {
+	case DataTypeBool, DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		intVal := toUint64(value)
+		result, err = col.btree.RangeSearchGreaterThanBitmap(intVal)
+		
+	case DataTypeString:
+		strVal, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("expected string value for string column")
+		}
+		result, err = cf.queryStringGreaterThan(col, strVal)
+		
+	default:
+		return nil, fmt.Errorf("greater than not supported for data type %v", col.metadata.DataType)
+	}
+	
+	if err != nil {
+		return nil, err
+	}
+	
+	// Handle nulls based on sort order
+	if col.metadata.IsNullable && col.nullBitmap != nil {
+		switch nullOrder {
+		case NullsFirst:
+			// Nulls come first, so they're excluded from "greater than" result
+			// (already excluded since they're not in the B+ tree)
+		case NullsLast:
+			// Nulls come last, so they're included in "greater than" result
+			result.Or(col.nullBitmap)
+		}
+	}
+	
+	return result, nil
+}
+
 // Close closes the columnar file
 func (cf *ColumnarFile) Close() error {
 	// Update file size in header
@@ -682,6 +1052,7 @@ func (cf *ColumnarFile) writeColumnMetadata() error {
 		binary.Write(buf, ByteOrder, col.metadata.BitmapPagesCount)
 		binary.Write(buf, ByteOrder, col.metadata.AverageKeySize)
 		binary.Write(buf, ByteOrder, col.metadata.StringSegmentStart)
+		binary.Write(buf, ByteOrder, col.metadata.NullBitmapPageID)
 		
 		page.Header.DataSize = uint32(buf.Len())
 		if err := cf.pageManager.WritePage(page); err != nil {
@@ -739,6 +1110,7 @@ func (cf *ColumnarFile) readColumnMetadata() error {
 		binary.Read(buf, ByteOrder, &metadata.BitmapPagesCount)
 		binary.Read(buf, ByteOrder, &metadata.AverageKeySize)
 		binary.Read(buf, ByteOrder, &metadata.StringSegmentStart)
+		binary.Read(buf, ByteOrder, &metadata.NullBitmapPageID)
 		
 		// Extract column name
 		colName := string(bytes.TrimRight(metadata.ColumnName[:], "\x00"))
@@ -771,6 +1143,15 @@ func (cf *ColumnarFile) readColumnMetadata() error {
 		// Reconstruct child page mapping for optimized B+ tree navigation
 		if err := col.btree.ReconstructChildPageMapping(); err != nil {
 			return fmt.Errorf("failed to reconstruct child page mapping for column %s: %w", colName, err)
+		}
+		
+		// Load null bitmap if it exists
+		if metadata.NullBitmapPageID != 0 {
+			nullBitmap, err := col.bitmapManager.LoadBitmap(metadata.NullBitmapPageID)
+			if err != nil {
+				return fmt.Errorf("failed to load null bitmap for column %s: %w", colName, err)
+			}
+			col.nullBitmap = nullBitmap
 		}
 		
 		cf.columns[colName] = col

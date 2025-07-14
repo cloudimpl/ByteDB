@@ -56,8 +56,8 @@ func testLargeDataset(t *testing.T, rowCount int) {
 	t.Logf("Generating %d rows of test data...", rowCount)
 	
 	// Generate large dataset with patterns for validation
-	idData := make([]struct{ Key int64; RowNum uint64 }, rowCount)
-	categoryData := make([]struct{ Key string; RowNum uint64 }, rowCount)
+	idData := make([]IntData, rowCount)
+	categoryData := make([]StringData, rowCount)
 	valueData := make([]struct{ Key uint64; RowNum uint64 }, rowCount)
 	scoreData := make([]struct{ Key uint64; RowNum uint64 }, rowCount)
 	activeData := make([]struct{ Key uint64; RowNum uint64 }, rowCount)
@@ -67,15 +67,8 @@ func testLargeDataset(t *testing.T, rowCount int) {
 	rand.Seed(12345) // Fixed seed for reproducible tests
 
 	for i := 0; i < rowCount; i++ {
-		idData[i] = struct{ Key int64; RowNum uint64 }{
-			Key:    int64(i),
-			RowNum: uint64(i),
-		}
-		
-		categoryData[i] = struct{ Key string; RowNum uint64 }{
-			Key:    categories[i%len(categories)],
-			RowNum: uint64(i),
-		}
+		idData[i] = NewIntData(int64(i), uint64(i))
+		categoryData[i] = NewStringData(categories[i%len(categories)], uint64(i))
 		
 		valueData[i] = struct{ Key uint64; RowNum uint64 }{
 			Key:    uint64(i % 1000), // Values 0-999 repeating
@@ -356,22 +349,15 @@ func TestLargeDatasetEdgeCases(t *testing.T) {
 	t.Logf("Testing edge cases with %d rows", rowCount)
 
 	// Test with different data patterns
-	sortedData := make([]struct{ Key int64; RowNum uint64 }, rowCount)
-	reverseData := make([]struct{ Key int64; RowNum uint64 }, rowCount)
+	sortedData := make([]IntData, rowCount)
+	reverseData := make([]IntData, rowCount)
 	randomData := make([]struct{ Key uint64; RowNum uint64 }, rowCount)
 
 	rand.Seed(54321)
 	
 	for i := 0; i < rowCount; i++ {
-		sortedData[i] = struct{ Key int64; RowNum uint64 }{
-			Key:    int64(i),           // Already sorted
-			RowNum: uint64(i),
-		}
-		
-		reverseData[i] = struct{ Key int64; RowNum uint64 }{
-			Key:    int64(rowCount - 1 - i), // Reverse sorted
-			RowNum: uint64(i),
-		}
+		sortedData[i] = NewIntData(int64(i), uint64(i))           // Already sorted
+		reverseData[i] = NewIntData(int64(rowCount - 1 - i), uint64(i)) // Reverse sorted
 		
 		randomData[i] = struct{ Key uint64; RowNum uint64 }{
 			Key:    uint64(rand.Intn(rowCount)), // Random

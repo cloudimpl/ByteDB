@@ -67,13 +67,13 @@ func TestColumnarFile(t *testing.T) {
 		cf.AddColumn("name", DataTypeString, false)
 		
 		// Load integer data
-		intData := []struct{ Key int64; RowNum uint64 }{
-			{1, 0},
-			{2, 1},
-			{3, 2},
-			{1, 3}, // Duplicate
-			{4, 4},
-			{2, 5}, // Duplicate
+		intData := []IntData{
+			NewIntData(1, 0),
+			NewIntData(2, 1),
+			NewIntData(3, 2),
+			NewIntData(1, 3), // Duplicate
+			NewIntData(4, 4),
+			NewIntData(2, 5), // Duplicate
 		}
 		
 		if err := cf.LoadIntColumn("id", intData); err != nil {
@@ -81,13 +81,13 @@ func TestColumnarFile(t *testing.T) {
 		}
 		
 		// Load string data
-		stringData := []struct{ Key string; RowNum uint64 }{
-			{"Alice", 0},
-			{"Bob", 1},
-			{"Charlie", 2},
-			{"Alice", 3}, // Duplicate
-			{"David", 4},
-			{"Bob", 5}, // Duplicate
+		stringData := []StringData{
+			NewStringData("Alice", 0),
+			NewStringData("Bob", 1),
+			NewStringData("Charlie", 2),
+			NewStringData("Alice", 3), // Duplicate
+			NewStringData("David", 4),
+			NewStringData("Bob", 5), // Duplicate
 		}
 		
 		if err := cf.LoadStringColumn("name", stringData); err != nil {
@@ -141,25 +141,25 @@ func TestColumnarFile(t *testing.T) {
 		cf.AddColumn("category", DataTypeString, false)
 		
 		// Load data
-		intData := []struct{ Key int64; RowNum uint64 }{
-			{10, 0},
-			{20, 1},
-			{30, 2},
-			{40, 3},
-			{50, 4},
-			{25, 5},
-			{35, 6},
+		intData := []IntData{
+			NewIntData(10, 0),
+			NewIntData(20, 1),
+			NewIntData(30, 2),
+			NewIntData(40, 3),
+			NewIntData(50, 4),
+			NewIntData(25, 5),
+			NewIntData(35, 6),
 		}
 		cf.LoadIntColumn("value", intData)
 		
-		stringData := []struct{ Key string; RowNum uint64 }{
-			{"apple", 0},
-			{"banana", 1},
-			{"cherry", 2},
-			{"date", 3},
-			{"elderberry", 4},
-			{"blueberry", 5},
-			{"cranberry", 6},
+		stringData := []StringData{
+			NewStringData("apple", 0),
+			NewStringData("banana", 1),
+			NewStringData("cherry", 2),
+			NewStringData("date", 3),
+			NewStringData("elderberry", 4),
+			NewStringData("blueberry", 5),
+			NewStringData("cranberry", 6),
 		}
 		cf.LoadStringColumn("category", stringData)
 		
@@ -205,23 +205,14 @@ func TestColumnarFilePersistence(t *testing.T) {
 		cf.AddColumn("score", DataTypeInt64, false)
 		
 		// Load data
-		userIDs := make([]struct{ Key int64; RowNum uint64 }, 100)
-		usernames := make([]struct{ Key string; RowNum uint64 }, 100)
-		scores := make([]struct{ Key int64; RowNum uint64 }, 100)
+		userIDs := make([]IntData, 100)
+		usernames := make([]StringData, 100)
+		scores := make([]IntData, 100)
 		
 		for i := 0; i < 100; i++ {
-			userIDs[i] = struct{ Key int64; RowNum uint64 }{
-				Key:    int64(i % 20), // Create duplicates
-				RowNum: uint64(i),
-			}
-			usernames[i] = struct{ Key string; RowNum uint64 }{
-				Key:    fmt.Sprintf("user_%d", i%20),
-				RowNum: uint64(i),
-			}
-			scores[i] = struct{ Key int64; RowNum uint64 }{
-				Key:    int64(i * 10),
-				RowNum: uint64(i),
-			}
+			userIDs[i] = NewIntData(int64(i % 20), uint64(i)) // Create duplicates
+			usernames[i] = NewStringData(fmt.Sprintf("user_%d", i%20), uint64(i))
+			scores[i] = NewIntData(int64(i * 10), uint64(i))
 		}
 		
 		cf.LoadIntColumn("user_id", userIDs)
@@ -312,23 +303,14 @@ func TestColumnarFileLargeScale(t *testing.T) {
 	numCategories := 1000
 	
 	// Prepare data
-	ids := make([]struct{ Key int64; RowNum uint64 }, numRows)
-	categories := make([]struct{ Key string; RowNum uint64 }, numRows)
-	values := make([]struct{ Key int64; RowNum uint64 }, numRows)
+	ids := make([]IntData, numRows)
+	categories := make([]StringData, numRows)
+	values := make([]IntData, numRows)
 	
 	for i := 0; i < numRows; i++ {
-		ids[i] = struct{ Key int64; RowNum uint64 }{
-			Key:    int64(i),
-			RowNum: uint64(i),
-		}
-		categories[i] = struct{ Key string; RowNum uint64 }{
-			Key:    fmt.Sprintf("category_%d", i%numCategories),
-			RowNum: uint64(i),
-		}
-		values[i] = struct{ Key int64; RowNum uint64 }{
-			Key:    int64(i % 10000), // Create duplicates
-			RowNum: uint64(i),
-		}
+		ids[i] = NewIntData(int64(i), uint64(i))
+		categories[i] = NewStringData(fmt.Sprintf("category_%d", i%numCategories), uint64(i))
+		values[i] = NewIntData(int64(i % 10000), uint64(i)) // Create duplicates
 	}
 	
 	// Load data
@@ -395,18 +377,12 @@ func BenchmarkColumnarFileQueries(b *testing.B) {
 	
 	// Load data
 	numRows := 10000
-	ids := make([]struct{ Key int64; RowNum uint64 }, numRows)
-	names := make([]struct{ Key string; RowNum uint64 }, numRows)
+	ids := make([]IntData, numRows)
+	names := make([]StringData, numRows)
 	
 	for i := 0; i < numRows; i++ {
-		ids[i] = struct{ Key int64; RowNum uint64 }{
-			Key:    int64(i % 1000),
-			RowNum: uint64(i),
-		}
-		names[i] = struct{ Key string; RowNum uint64 }{
-			Key:    fmt.Sprintf("name_%d", i%1000),
-			RowNum: uint64(i),
-		}
+		ids[i] = NewIntData(int64(i % 1000), uint64(i))
+		names[i] = NewStringData(fmt.Sprintf("name_%d", i%1000), uint64(i))
 	}
 	
 	cf.LoadIntColumn("id", ids)

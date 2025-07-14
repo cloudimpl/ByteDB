@@ -22,9 +22,9 @@ func TestColumnStatisticsValidation(t *testing.T) {
 
 	t.Run("IntegerColumnStats", func(t *testing.T) {
 		// Create data with known patterns for validation
-		intData := []struct{ Key int64; RowNum uint64 }{
-			{10, 0}, {20, 1}, {30, 2}, {10, 3}, {40, 4}, // 4 distinct values: 10, 20, 30, 40
-			{20, 5}, {50, 6}, {10, 7}, {60, 8}, {30, 9}, // Total: 10 entries
+		intData := []IntData{
+			NewIntData(10, 0), NewIntData(20, 1), NewIntData(30, 2), NewIntData(10, 3), NewIntData(40, 4), // 4 distinct values: 10, 20, 30, 40
+			NewIntData(20, 5), NewIntData(50, 6), NewIntData(10, 7), NewIntData(60, 8), NewIntData(30, 9), // Total: 10 entries
 		}
 		expectedDistinctCount := 6 // 10, 20, 30, 40, 50, 60
 		expectedTotalKeys := len(intData)
@@ -70,9 +70,9 @@ func TestColumnStatisticsValidation(t *testing.T) {
 
 	t.Run("StringColumnStats", func(t *testing.T) {
 		// Create string data with known duplicates
-		stringData := []struct{ Key string; RowNum uint64 }{
-			{"apple", 0}, {"banana", 1}, {"cherry", 2}, {"apple", 3}, {"date", 4},
-			{"banana", 5}, {"elderberry", 6}, {"apple", 7}, {"fig", 8}, {"grape", 9},
+		stringData := []StringData{
+			NewStringData("apple", 0), NewStringData("banana", 1), NewStringData("cherry", 2), NewStringData("apple", 3), NewStringData("date", 4),
+			NewStringData("banana", 5), NewStringData("elderberry", 6), NewStringData("apple", 7), NewStringData("fig", 8), NewStringData("grape", 9),
 		}
 		expectedDistinctCount := 7 // apple, banana, cherry, date, elderberry, fig, grape
 		expectedTotalKeys := len(stringData)
