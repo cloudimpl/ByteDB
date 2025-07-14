@@ -145,6 +145,13 @@ func (cf *ColumnarFile) LoadIntColumn(columnName string, data []IntData) error {
 		return fmt.Errorf("column %s is not int64 type", columnName)
 	}
 	
+	// Validate nullable constraint before processing data
+	for _, d := range data {
+		if d.IsNull && !col.metadata.IsNullable {
+			return fmt.Errorf("column %s is declared as non-nullable but received NULL value at row %d", columnName, d.RowNum)
+		}
+	}
+	
 	// Separate null and non-null data
 	var keyRows []struct{ Key uint64; RowNum uint64 }
 	var nullRows *roaring.Bitmap
@@ -221,6 +228,13 @@ func (cf *ColumnarFile) LoadStringColumn(columnName string, data []StringData) e
 	
 	if col.metadata.DataType != DataTypeString {
 		return fmt.Errorf("column %s is not string type", columnName)
+	}
+	
+	// Validate nullable constraint before processing data
+	for _, d := range data {
+		if d.IsNull && !col.metadata.IsNullable {
+			return fmt.Errorf("column %s is declared as non-nullable but received NULL value at row %d", columnName, d.RowNum)
+		}
 	}
 	
 	// Separate null and non-null data

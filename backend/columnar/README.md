@@ -21,6 +21,8 @@ cf, err := columnar.CreateFile("data.txt")     // Error: must have .bytedb exten
 - **Space-Optimized B+ Trees**: 50-89% space savings through optimized internal node structure
 - **O(log n) Point Lookups**: Fast exact match queries using B+ tree structure
 - **Efficient Range Queries**: Optimized range scans with sorted data
+- **Comprehensive NULL Support**: First-class null handling with nullable columns and null-aware queries
+- **Clean Type-Safe API**: `IntData` and `StringData` structures with `IsNull` boolean field
 - **String Deduplication**: Unique strings stored once with offset-based indexing
 - **Bitmap Compression**: RoaringBitmap for efficient storage of duplicate values
 - **Unified Bitmap API**: All query operations return bitmaps for optimal performance
@@ -77,24 +79,36 @@ func main() {
     }
     defer cf.Close()
     
-    // Add columns
-    cf.AddColumn("user_id", columnar.DataTypeInt64, false)
-    cf.AddColumn("username", columnar.DataTypeString, false)
-    cf.AddColumn("score", columnar.DataTypeInt64, false)
+    // Add columns (nullable and non-nullable)
+    cf.AddColumn("user_id", columnar.DataTypeInt64, false)  // Non-nullable
+    cf.AddColumn("username", columnar.DataTypeString, true) // Nullable
+    cf.AddColumn("score", columnar.DataTypeInt64, true)     // Nullable
     
-    // Load data
-    userData := []struct{ Key int64; RowNum uint64 }{
-        {1001, 0},
-        {1002, 1},
-        {1001, 2}, // Duplicate - will use bitmap
+    // Load data using clean type-safe API
+    userData := []columnar.IntData{
+        columnar.NewIntData(1001, 0),
+        columnar.NewIntData(1002, 1),
+        columnar.NewIntData(1001, 2), // Duplicate - will use bitmap
     }
     cf.LoadIntColumn("user_id", userData)
+    
+    // Load data with nulls seamlessly
+    usernameData := []columnar.StringData{
+        columnar.NewStringData("alice", 0),   // Non-null
+        columnar.NewNullStringData(1),        // NULL value
+        columnar.NewStringData("charlie", 2), // Non-null
+    }
+    cf.LoadStringColumn("username", usernameData)
     
     // Query data (returns bitmap)
     bitmap, _ := cf.QueryInt("user_id", 1001)
     fmt.Printf("Found %d rows for user_id=1001\n", bitmap.GetCardinality())
     
-    // Range query (returns bitmap)
+    // Query for NULL values
+    nullBitmap, _ := cf.QueryNull("username")
+    fmt.Printf("Found %d rows with NULL username\n", nullBitmap.GetCardinality())
+    
+    // Range query (automatically excludes NULLs)
     bitmap, _ = cf.RangeQueryInt("score", 100, 200)
     fmt.Printf("Found %d rows with score between 100-200\n", bitmap.GetCardinality())
     
@@ -186,6 +200,19 @@ activeBitmap, _ := cf.QueryGreaterThanOrEqual("active", true)
 nonActiveBitmap := cf.QueryNot(activeBitmap)
 ```
 
+#### NULL Operations
+Query for NULL and non-NULL values:
+```go
+// Find rows where column IS NULL
+nullBitmap, err := cf.QueryNull("optional_field")
+
+// Find rows where column IS NOT NULL  
+notNullBitmap, err := cf.QueryNotNull("optional_field")
+
+// Note: Regular comparison queries automatically exclude NULL values
+ageBitmap, _ := cf.QueryGreaterThan("age", int64(25))  // Excludes NULLs
+```
+
 ### Complex Query Examples
 
 #### Multi-Column Filtering
@@ -251,6 +278,168 @@ Our space-optimized B+ tree implementation removes child pointers from internal 
 
 This multi-layered approach delivers both storage efficiency and query performance.
 
+## NULL Handling
+
+ByteDB Columnar Format provides comprehensive first-class NULL support with clean, type-safe API design.
+
+### Nullable Column Declaration
+
+Columns can be declared as nullable or non-nullable during creation:
+
+```go
+// Non-nullable columns (IsNullable = false)
+cf.AddColumn("id", columnar.DataTypeInt64, false)      // Cannot contain NULLs
+cf.AddColumn("email", columnar.DataTypeString, false)  // Required field
+
+// Nullable columns (IsNullable = true)  
+cf.AddColumn("age", columnar.DataTypeInt64, true)      // Can contain NULLs
+cf.AddColumn("phone", columnar.DataTypeString, true)   // Optional field
+```
+
+### Type-Safe Data Structures
+
+The API uses clean data structures with `IsNull` boolean fields:
+
+```go
+// Integer data with null support
+type IntData struct {
+    Value  int64  // The actual value (ignored if IsNull is true)
+    RowNum uint64 // Row number for this value  
+    IsNull bool   // Whether this value is NULL
+}
+
+// String data with null support
+type StringData struct {
+    Value  string // The actual value (ignored if IsNull is true)
+    RowNum uint64 // Row number for this value
+    IsNull bool   // Whether this value is NULL
+}
+```
+
+### Loading Data with NULLs
+
+The unified API seamlessly handles both null and non-null data with built-in validation:
+
+```go
+// Load integer data with NULLs (into nullable column)
+intData := []columnar.IntData{
+    columnar.NewIntData(100, 0),       // Non-null value
+    columnar.NewNullIntData(1),        // NULL value
+    columnar.NewIntData(200, 2),       // Non-null value
+    columnar.NewNullIntData(3),        // NULL value
+}
+cf.LoadIntColumn("age", intData)  // One method handles all cases
+
+// Load string data with NULLs (into nullable column)
+stringData := []columnar.StringData{
+    columnar.NewStringData("Alice", 0),  // Non-null value
+    columnar.NewNullStringData(1),       // NULL value
+    columnar.NewStringData("Bob", 2),    // Non-null value
+}
+cf.LoadStringColumn("name", stringData)
+```
+
+### Data Integrity Validation
+
+The API enforces nullable constraints automatically:
+
+```go
+// ✅ Valid: Loading NULLs into nullable column
+cf.AddColumn("optional_field", columnar.DataTypeInt64, true)  // Nullable
+data := []columnar.IntData{
+    columnar.NewIntData(100, 0),
+    columnar.NewNullIntData(1),  // Allowed
+}
+cf.LoadIntColumn("optional_field", data)  // Success
+
+// ❌ Invalid: Loading NULLs into non-nullable column  
+cf.AddColumn("required_field", columnar.DataTypeInt64, false)  // Non-nullable
+invalidData := []columnar.IntData{
+    columnar.NewIntData(100, 0),
+    columnar.NewNullIntData(1),  // Not allowed!
+}
+err := cf.LoadIntColumn("required_field", invalidData)
+// Returns error: "column required_field is declared as non-nullable but received NULL value at row 1"
+```
+
+### NULL-Aware Queries
+
+Dedicated query methods for NULL handling:
+
+```go
+// Find rows where column IS NULL
+nullRows, err := cf.QueryNull("age")
+fmt.Printf("Found %d rows with NULL age\n", nullRows.GetCardinality())
+
+// Find rows where column IS NOT NULL  
+notNullRows, err := cf.QueryNotNull("age")
+fmt.Printf("Found %d rows with non-NULL age\n", notNullRows.GetCardinality())
+
+// Regular queries automatically exclude NULL values
+ageRange, err := cf.RangeQueryInt("age", 25, 35)  // NULLs excluded
+equalityMatch, err := cf.QueryInt("age", 30)       // NULLs excluded
+```
+
+### NULL Behavior in Operations
+
+#### Comparison Operations
+- **Regular queries** (=, >, <, BETWEEN) automatically **exclude NULL values**
+- **Range queries** only return rows with non-NULL values in the specified range
+- **NULL values are never included** in comparison results
+
+#### Logical Operations
+```go
+// Complex queries with NULL awareness
+hasAge, _ := cf.QueryNotNull("age")              // Rows with non-NULL age
+hasName, _ := cf.QueryNotNull("name")            // Rows with non-NULL name
+completeData := cf.QueryAnd(hasAge, hasName)     // Rows with both fields
+
+missingAge, _ := cf.QueryNull("age")             // Rows with NULL age  
+missingName, _ := cf.QueryNull("name")           // Rows with NULL name
+missingEither := cf.QueryOr(missingAge, missingName) // Rows missing at least one field
+```
+
+### NULL Statistics
+
+Column statistics include null counts and properly handle NULL values:
+
+```go
+stats, _ := cf.GetStats("nullable_column")
+fmt.Printf("Null count: %v\n", stats["null_count"])       // Number of NULL values
+fmt.Printf("Total keys: %v\n", stats["total_keys"])       // Non-NULL values only
+fmt.Printf("Distinct count: %v\n", stats["distinct_count"]) // Excludes NULL from count
+```
+
+### Performance Characteristics
+
+- **NULL Storage**: NULLs stored efficiently using RoaringBitmaps (1 bit per row)
+- **Query Performance**: NULL queries are O(1) bitmap operations
+- **Space Efficiency**: NULL values don't consume space in B+ tree indexes
+- **Memory Usage**: Minimal overhead for NULL tracking
+
+### Migration and Compatibility
+
+The new API is designed for clean usage while maintaining performance:
+
+```go
+// ✅ Clean, recommended approach
+data := []columnar.IntData{
+    columnar.NewIntData(value, rowNum),    // Non-null
+    columnar.NewNullIntData(rowNum),       // NULL
+}
+cf.LoadIntColumn("column", data)
+
+// ✅ Helper functions for bulk operations
+data := make([]columnar.IntData, 1000)
+for i := 0; i < 1000; i++ {
+    if shouldBeNull(i) {
+        data[i] = columnar.NewNullIntData(uint64(i))
+    } else {
+        data[i] = columnar.NewIntData(getValue(i), uint64(i))
+    }
+}
+```
+
 ## Bitmap API
 
 ByteDB Columnar Format provides a unified bitmap-based API for improved performance and memory efficiency. **All query operations now return bitmaps by default**, eliminating backward compatibility overhead and optimizing for analytical workloads.
@@ -299,8 +488,9 @@ for iterator.HasNext() {
 - **Reduced Allocations**: Reuse bitmap objects instead of creating new slices
 - **Cache Friendly**: Smaller memory footprint improves CPU cache utilization
 
-## Running the Example
+## Running the Examples
 
+### Basic Usage Example
 ```bash
 cd columnar/example
 go run main.go
@@ -308,10 +498,25 @@ go run main.go
 
 This will create an example file demonstrating:
 - Column creation with different data types
-- Data loading with duplicates
+- Data loading with duplicates using the new type-safe API
 - Point queries (exact match)
 - Range queries
+- Bitmap operations
 - Statistics retrieval
+
+### NULL Handling Example
+```bash
+cd columnar/example  
+go run null_example.go
+```
+
+This demonstrates comprehensive NULL support:
+- Nullable and non-nullable column creation
+- Loading data with NULL values using `IsNull` boolean field
+- NULL-specific queries (`QueryNull`, `QueryNotNull`)
+- Automatic NULL exclusion in regular queries
+- Complex NULL-aware logical operations
+- NULL statistics and tracking
 
 ## Performance Characteristics
 
@@ -395,6 +600,8 @@ For detailed technical specifications, see [BYTEDB_COLUMNAR_FORMAT.md](../../BYT
 
 ### ✅ Completed Optimizations (2024)
 - **Space-Optimized B+ Trees**: 50-89% space reduction in internal nodes
+- **Comprehensive NULL Support**: First-class null handling with nullable columns and type-safe API
+- **Clean Type-Safe API**: `IntData` and `StringData` structures with `IsNull` boolean field
 - **Unified Bitmap API**: All queries return bitmaps for optimal performance
 - **Enhanced Test Coverage**: Comprehensive data validation across all test cases
 - **Child Page Mapping**: Runtime reconstruction of B+ tree navigation
@@ -402,8 +609,10 @@ For detailed technical specifications, see [BYTEDB_COLUMNAR_FORMAT.md](../../BYT
 
 ### 🎯 Performance Gains
 - **Storage Efficiency**: 50-89% reduction in B+ tree space usage
+- **NULL Efficiency**: RoaringBitmap-based NULL storage with minimal overhead
 - **Query Performance**: Direct bitmap returns eliminate conversion overhead
 - **Memory Usage**: Compressed bitmap storage for sparse result sets
+- **Type Safety**: Compile-time safety with clean data structures
 - **Cache Utilization**: Smaller tree nodes improve CPU cache performance
 
 ## Future Enhancements

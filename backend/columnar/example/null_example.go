@@ -153,5 +153,27 @@ func main() {
 		}
 	}
 	
+	// Demonstrate validation: try to load null into non-nullable column
+	fmt.Println("\n=== Validation Demo: NULL in Non-Nullable Column ===")
+	
+	// Try to create a non-nullable column and load null data (this should fail)
+	if err := cf.AddColumn("required_id", columnar.DataTypeInt64, false); err != nil {
+		log.Fatal("Failed to add required_id column:", err)
+	}
+	
+	// Attempt to load null data into non-nullable column
+	invalidData := []columnar.IntData{
+		columnar.NewIntData(1000, 0),  // Valid
+		columnar.NewNullIntData(1),    // Invalid - should cause error
+	}
+	
+	fmt.Println("8. Attempting to load NULL into non-nullable column...")
+	err = cf.LoadIntColumn("required_id", invalidData)
+	if err != nil {
+		fmt.Printf("   ✅ Validation worked! Error: %v\n", err)
+	} else {
+		fmt.Printf("   ❌ Validation failed - no error was returned!\n")
+	}
+	
 	fmt.Println("\nNull example completed successfully!")
 }
