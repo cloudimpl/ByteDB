@@ -112,11 +112,16 @@ func testLargeDataset(t *testing.T, rowCount int) {
 		"active": activeData,
 	} {
 		col := cf.columns[colName]
-		if err := col.btree.BulkLoadWithDuplicates(data); err != nil {
+		stats, err := col.btree.BulkLoadWithDuplicates(data)
+		if err != nil {
 			t.Fatalf("Failed to load %s column: %v", colName, err)
 		}
 		col.metadata.RootPageID = col.btree.GetRootPageID()
-		col.metadata.TotalKeys = uint64(len(data))
+		col.metadata.TotalKeys = stats.TotalKeys
+		col.metadata.DistinctCount = stats.DistinctCount
+		col.metadata.MinValueOffset = stats.MinValue
+		col.metadata.MaxValueOffset = stats.MaxValue
+		col.metadata.AverageKeySize = stats.AverageKeySize
 	}
 
 	cf.Close()
@@ -379,9 +384,16 @@ func TestLargeDatasetEdgeCases(t *testing.T) {
 	cf.LoadIntColumn("reverse", reverseData)
 	
 	col := cf.columns["random"]
-	col.btree.BulkLoadWithDuplicates(randomData)
+	stats, err := col.btree.BulkLoadWithDuplicates(randomData)
+	if err != nil {
+		t.Fatalf("Failed to load random data: %v", err)
+	}
 	col.metadata.RootPageID = col.btree.GetRootPageID()
-	col.metadata.TotalKeys = uint64(len(randomData))
+	col.metadata.TotalKeys = stats.TotalKeys
+	col.metadata.DistinctCount = stats.DistinctCount
+	col.metadata.MinValueOffset = stats.MinValue
+	col.metadata.MaxValueOffset = stats.MaxValue
+	col.metadata.AverageKeySize = stats.AverageKeySize
 
 	cf.Close()
 

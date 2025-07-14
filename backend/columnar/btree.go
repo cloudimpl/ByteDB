@@ -442,16 +442,37 @@ func (bt *BPlusTree) BulkLoad(entries []BTreeLeafEntry) error {
 }
 
 // BulkLoadWithDuplicates creates a B+ tree handling duplicate keys with bitmaps
-func (bt *BPlusTree) BulkLoadWithDuplicates(keyRows []struct{Key uint64; RowNum uint64}) error {
+// Returns statistics calculated during tree construction for efficiency
+func (bt *BPlusTree) BulkLoadWithDuplicates(keyRows []struct{Key uint64; RowNum uint64}) (*ColumnStats, error) {
 	if len(keyRows) == 0 {
-		return nil
+		return &ColumnStats{}, nil
 	}
 	
-	// Group by key
+	// Initialize statistics
+	stats := &ColumnStats{
+		TotalKeys:     uint64(len(keyRows)),
+		NullCount:     0, // No null support yet
+		MinValue:      ^uint64(0), // Max uint64 value
+		MaxValue:      0,
+		AverageKeySize: uint8(GetDataTypeSize(bt.dataType)),
+	}
+	
+	// Group by key and calculate min/max in single pass
 	keyGroups := make(map[uint64][]uint64)
 	for _, kr := range keyRows {
 		keyGroups[kr.Key] = append(keyGroups[kr.Key], kr.RowNum)
+		
+		// Update min/max during grouping
+		if kr.Key < stats.MinValue {
+			stats.MinValue = kr.Key
+		}
+		if kr.Key > stats.MaxValue {
+			stats.MaxValue = kr.Key
+		}
 	}
+	
+	// Set distinct count
+	stats.DistinctCount = uint64(len(keyGroups))
 	
 	// Convert to leaf entries
 	entries := make([]BTreeLeafEntry, 0, len(keyGroups))
@@ -465,7 +486,7 @@ func (bt *BPlusTree) BulkLoadWithDuplicates(keyRows []struct{Key uint64; RowNum 
 			// Multiple rows - create bitmap
 			_, bitmapPageID, err := bt.bitmapManager.CreateBitmapFromRows(rows)
 			if err != nil {
-				return fmt.Errorf("failed to create bitmap for key %d: %w", key, err)
+				return nil, fmt.Errorf("failed to create bitmap for key %d: %w", key, err)
 			}
 			value = NewBitmapValue(bitmapPageID)
 		}
@@ -473,7 +494,11 @@ func (bt *BPlusTree) BulkLoadWithDuplicates(keyRows []struct{Key uint64; RowNum 
 		entries = append(entries, BTreeLeafEntry{Key: key, Value: value})
 	}
 	
-	return bt.BulkLoad(entries)
+	if err := bt.BulkLoad(entries); err != nil {
+		return nil, err
+	}
+	
+	return stats, nil
 }
 
 // buildLeaves creates leaf pages from sorted entries

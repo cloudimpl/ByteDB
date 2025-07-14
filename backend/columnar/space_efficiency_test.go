@@ -59,7 +59,8 @@ func TestSpaceEfficiencyWithDifferentDataTypes(t *testing.T) {
 			
 			// Create B+ tree and load data
 			col := cf.columns["value"]
-			if err := col.btree.BulkLoadWithDuplicates(tc.values); err != nil {
+			_, err = col.btree.BulkLoadWithDuplicates(tc.values)
+			if err != nil {
 				t.Fatalf("Failed to load data: %v", err)
 			}
 			
@@ -167,7 +168,8 @@ func TestBooleanColumnEfficiency(t *testing.T) {
 	}
 	
 	col := cf.columns["active"]
-	if err := col.btree.BulkLoadWithDuplicates(data); err != nil {
+	_, err = col.btree.BulkLoadWithDuplicates(data)
+	if err != nil {
 		t.Fatalf("Failed to load data: %v", err)
 	}
 	

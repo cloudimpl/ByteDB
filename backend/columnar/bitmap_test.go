@@ -213,7 +213,8 @@ func TestBPlusTreeWithBitmaps(t *testing.T) {
 			{30, 304},
 		}
 		
-		if err := tree.BulkLoadWithDuplicates(keyRows); err != nil {
+		_, err := tree.BulkLoadWithDuplicates(keyRows)
+		if err != nil {
 			t.Fatalf("BulkLoadWithDuplicates failed: %v", err)
 		}
 		

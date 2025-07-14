@@ -179,6 +179,16 @@ type ColumnMetadata struct {
 	MetadataPageID     uint64 // Page ID where this metadata is stored
 }
 
+// ColumnStats represents statistics calculated during B+ tree construction
+type ColumnStats struct {
+	TotalKeys     uint64
+	DistinctCount uint64
+	NullCount     uint64
+	MinValue      uint64
+	MaxValue      uint64
+	AverageKeySize uint8
+}
+
 // PageHeader represents the standard page header
 type PageHeader struct {
 	PageType       PageType

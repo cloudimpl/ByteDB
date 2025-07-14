@@ -48,9 +48,18 @@ func TestBitmapAPI(t *testing.T) {
 	cf.LoadStringColumn("category", categoryData)
 	
 	col := cf.columns["value"]
-	col.btree.BulkLoadWithDuplicates(valueData)
+	stats, err := col.btree.BulkLoadWithDuplicates(valueData)
+	if err != nil {
+		t.Fatalf("Failed to bulk load: %v", err)
+	}
 	col.metadata.RootPageID = col.btree.GetRootPageID()
-	col.metadata.TotalKeys = uint64(len(valueData))
+	
+	// Update metadata with statistics
+	col.metadata.TotalKeys = stats.TotalKeys
+	col.metadata.DistinctCount = stats.DistinctCount
+	col.metadata.MinValueOffset = stats.MinValue
+	col.metadata.MaxValueOffset = stats.MaxValue
+	col.metadata.AverageKeySize = stats.AverageKeySize
 	
 	cf.Close()
 	
@@ -307,9 +316,18 @@ func TestBitmapAPIPerformance(t *testing.T) {
 	cf.LoadStringColumn("category", categoryData)
 	
 	col := cf.columns["status"]
-	col.btree.BulkLoadWithDuplicates(statusData)
+	stats, err := col.btree.BulkLoadWithDuplicates(statusData)
+	if err != nil {
+		t.Fatalf("Failed to bulk load: %v", err)
+	}
 	col.metadata.RootPageID = col.btree.GetRootPageID()
-	col.metadata.TotalKeys = uint64(len(statusData))
+	
+	// Update metadata with statistics
+	col.metadata.TotalKeys = stats.TotalKeys
+	col.metadata.DistinctCount = stats.DistinctCount
+	col.metadata.MinValueOffset = stats.MinValue
+	col.metadata.MaxValueOffset = stats.MaxValue
+	col.metadata.AverageKeySize = stats.AverageKeySize
 	
 	cf.Close()
 	

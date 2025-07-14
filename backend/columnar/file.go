@@ -142,14 +142,21 @@ func (cf *ColumnarFile) LoadIntColumn(columnName string, data []struct{ Key int6
 		}
 	}
 	
-	// Bulk load with duplicates
-	if err := col.btree.BulkLoadWithDuplicates(keyRows); err != nil {
+	// Bulk load with duplicates and get statistics in single pass
+	stats, err := col.btree.BulkLoadWithDuplicates(keyRows)
+	if err != nil {
 		return err
 	}
 	
-	// Update metadata
+	// Update metadata with calculated statistics
 	col.metadata.RootPageID = col.btree.GetRootPageID()
-	col.metadata.TotalKeys = uint64(len(data))
+	col.metadata.TotalKeys = stats.TotalKeys
+	col.metadata.DistinctCount = stats.DistinctCount
+	col.metadata.NullCount = stats.NullCount
+	col.metadata.MinValueOffset = stats.MinValue
+	col.metadata.MaxValueOffset = stats.MaxValue
+	col.metadata.AverageKeySize = stats.AverageKeySize
+	col.metadata.BitmapPagesCount = 0 // Will be calculated when closing file
 	
 	return nil
 }
@@ -200,15 +207,22 @@ func (cf *ColumnarFile) LoadStringColumn(columnName string, data []struct{ Key s
 	col.btree = NewBPlusTree(cf.pageManager, DataTypeString, NewStringComparator(col.stringSegment))
 	
 	// Bulk load B+ tree
-	if err := col.btree.BulkLoadWithDuplicates(keyRows); err != nil {
+	// Bulk load with duplicates and get statistics in single pass
+	stats, err := col.btree.BulkLoadWithDuplicates(keyRows)
+	if err != nil {
 		return err
 	}
 	
-	// Update metadata
+	// Update metadata with calculated statistics
 	col.metadata.RootPageID = col.btree.GetRootPageID()
-	col.metadata.TotalKeys = uint64(len(data))
+	col.metadata.TotalKeys = stats.TotalKeys
+	col.metadata.DistinctCount = uint64(len(stringRows)) // For strings, use original string count
+	col.metadata.NullCount = stats.NullCount
 	col.metadata.StringSegmentStart = col.stringSegment.rootPageID
-	col.metadata.DistinctCount = uint64(len(stringRows))
+	col.metadata.MinValueOffset = stats.MinValue // Min string offset
+	col.metadata.MaxValueOffset = stats.MaxValue // Max string offset  
+	col.metadata.AverageKeySize = stats.AverageKeySize
+	col.metadata.BitmapPagesCount = 0 // Will be calculated when closing file
 	
 	return nil
 }
@@ -796,8 +810,49 @@ func (cf *ColumnarFile) GetStats(columnName string) (map[string]interface{}, err
 	stats["distinct_count"] = col.metadata.DistinctCount
 	stats["null_count"] = col.metadata.NullCount
 	stats["data_type"] = col.metadata.DataType
+	stats["min_value_offset"] = col.metadata.MinValueOffset
+	stats["max_value_offset"] = col.metadata.MaxValueOffset
+	stats["total_size_bytes"] = col.metadata.TotalSizeBytes
+	stats["bitmap_pages_count"] = col.metadata.BitmapPagesCount
+	stats["average_key_size"] = col.metadata.AverageKeySize
 	
 	return stats, nil
+}
+
+// Statistics calculation helper functions (deprecated - use BulkLoadWithDuplicates for efficiency)
+
+// UpdateStatisticsForUintColumn updates statistics for a column after bulk loading uint64 data
+// This function is now deprecated - use BulkLoadWithDuplicates which returns statistics directly
+func (cf *ColumnarFile) UpdateStatisticsForUintColumn(columnName string, data []struct{ Key uint64; RowNum uint64 }) error {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return fmt.Errorf("column %s not found", columnName)
+	}
+	
+	// For backward compatibility, manually calculate statistics
+	// Note: This is less efficient than using BulkLoadWithDuplicates directly
+	distinctKeys := make(map[uint64]bool)
+	var minVal, maxVal uint64 = ^uint64(0), 0
+	
+	for _, d := range data {
+		distinctKeys[d.Key] = true
+		if d.Key < minVal {
+			minVal = d.Key
+		}
+		if d.Key > maxVal {
+			maxVal = d.Key
+		}
+	}
+	
+	col.metadata.TotalKeys = uint64(len(data))
+	col.metadata.DistinctCount = uint64(len(distinctKeys))
+	col.metadata.NullCount = 0 // No null support yet
+	col.metadata.MinValueOffset = minVal
+	col.metadata.MaxValueOffset = maxVal
+	col.metadata.AverageKeySize = uint8(GetDataTypeSize(col.metadata.DataType))
+	col.metadata.BitmapPagesCount = 0 // Will be calculated when closing file
+	
+	return nil
 }
 
 // Helper functions for type conversion
