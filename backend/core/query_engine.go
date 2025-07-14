@@ -3299,24 +3299,37 @@ func (qe *QueryEngine) sortUnionRows(rows []Row, orderBy []OrderByColumn, column
 
 // canUseTopKOptimization checks if we can use Top-K optimization for ORDER BY + LIMIT
 func (qe *QueryEngine) canUseTopKOptimization(query *ParsedQuery) bool {
+	qe.tracer.Debug(TraceComponentOptimizer, "Checking Top-K optimization eligibility", TraceContext(
+		"has_order_by", len(query.OrderBy) > 0,
+		"order_by_count", len(query.OrderBy),
+		"limit", query.Limit,
+		"is_aggregate", query.IsAggregate,
+		"has_group_by", len(query.GroupBy) > 0,
+		"has_window_funcs", query.HasWindowFuncs,
+	))
+	
 	// Must have both ORDER BY and LIMIT
 	if len(query.OrderBy) == 0 || query.Limit <= 0 {
+		qe.tracer.Debug(TraceComponentOptimizer, "Top-K optimization not applicable - missing ORDER BY or LIMIT")
 		return false
 	}
 	
 	// Cannot use with aggregates or GROUP BY
 	if query.IsAggregate || len(query.GroupBy) > 0 {
+		qe.tracer.Debug(TraceComponentOptimizer, "Top-K optimization not applicable - has aggregates or GROUP BY")
 		return false
 	}
 	
 	// Cannot use with window functions
 	if query.HasWindowFuncs {
+		qe.tracer.Debug(TraceComponentOptimizer, "Top-K optimization not applicable - has window functions")
 		return false
 	}
 	
 	// Cannot use with subqueries in SELECT columns
 	for _, col := range query.Columns {
 		if col.Subquery != nil {
+			qe.tracer.Debug(TraceComponentOptimizer, "Top-K optimization not applicable - has subqueries in SELECT")
 			return false
 		}
 	}
@@ -3324,11 +3337,18 @@ func (qe *QueryEngine) canUseTopKOptimization(query *ParsedQuery) bool {
 	// Cannot use with CASE expressions in SELECT columns (they might be used in ORDER BY)
 	for _, col := range query.Columns {
 		if col.CaseExpr != nil {
+			qe.tracer.Debug(TraceComponentOptimizer, "Top-K optimization not applicable - has CASE expressions")
 			return false
 		}
 	}
 	
 	// All checks passed
+	qe.tracer.Info(TraceComponentOptimizer, "Query eligible for Top-K optimization", TraceContext(
+		"order_by_columns", len(query.OrderBy),
+		"limit", query.Limit,
+		"first_order_by", query.OrderBy[0].Column,
+		"direction", query.OrderBy[0].Direction,
+	))
 	return true
 }
 

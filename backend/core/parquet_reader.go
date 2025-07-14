@@ -2441,9 +2441,20 @@ func (h *genericTopKHeap) shouldReplace(vwr valueWithRow) bool {
 
 // canUseRowGroupStats checks if we can use row group statistics optimization
 func (pr *ParquetReader) canUseRowGroupStats(orderBy OrderByColumn) bool {
+	tracer := GetTracer()
+	
 	// Check if column exists and has statistics
 	stats, err := pr.getRowGroupStatistics(orderBy.Column)
-	return err == nil && len(stats) > 0
+	hasStats := err == nil && len(stats) > 0
+	
+	tracer.Debug(TraceComponentOptimizer, "Checking row group statistics availability", TraceContext(
+		"column", orderBy.Column,
+		"has_stats", hasStats,
+		"num_row_groups", len(stats),
+		"error", err,
+	))
+	
+	return hasStats
 }
 
 // readTopKWithRowGroupFiltering reads top K using row group filtering to avoid full table scan
@@ -2456,12 +2467,28 @@ func (pr *ParquetReader) readTopKWithRowGroupFiltering(limit int, orderBy OrderB
 		"limit", limit,
 		"order_by", orderBy.Column,
 		"direction", orderBy.Direction,
+		"where_conditions", len(whereConditions),
 	))
 	
 	// Get row group statistics
 	stats, err := pr.getRowGroupStatistics(orderBy.Column)
 	if err != nil {
 		return nil, err
+	}
+	
+	// Log row group statistics
+	tracer.Info(TraceComponentOptimizer, "Row group statistics retrieved", TraceContext(
+		"num_row_groups", len(stats),
+		"total_rows", pr.reader.NumRows(),
+	))
+	
+	for i, stat := range stats {
+		tracer.Debug(TraceComponentOptimizer, "Row group stats", TraceContext(
+			"row_group", i,
+			"min_value", stat.MinValue.String(),
+			"max_value", stat.MaxValue.String(),
+			"num_rows", stat.NumRows,
+		))
 	}
 	
 	// Create a TopK heap
@@ -2472,6 +2499,14 @@ func (pr *ParquetReader) readTopKWithRowGroupFiltering(limit int, orderBy OrderB
 		limit:    limit,
 	}
 	heap.Init(topK)
+	
+	tracer.Info(TraceComponentOptimizer, "Heap algorithm configuration", TraceContext(
+		"heap_type", fmt.Sprintf("%s-heap for %s order", 
+			map[bool]string{true: "min", false: "max"}[orderBy.Direction == "DESC"],
+			orderBy.Direction),
+		"capacity", limit,
+		"comparison_strategy", "maintain worst value at heap root",
+	))
 	
 	// Keep track of the current worst value
 	var currentWorstValue interface{}
@@ -2544,6 +2579,12 @@ func (pr *ParquetReader) readTopKWithRowGroupFiltering(limit int, orderBy OrderB
 		))
 		
 		// First, read only the ORDER BY column to find candidate rows
+		tracer.Debug(TraceComponentOptimizer, "Reading ORDER BY column for filtering", TraceContext(
+			"row_group", rgIndex,
+			"column", orderBy.Column,
+			"strategy", "column-first selective reading",
+		))
+		
 		columnValues, err := pr.readColumnFromRowGroup(rgIndex, orderBy.Column)
 		if err != nil {
 			tracer.Warn(TraceComponentOptimizer, "Failed to read column from row group", 
@@ -2558,8 +2599,10 @@ func (pr *ParquetReader) readTopKWithRowGroupFiltering(limit int, orderBy OrderB
 		
 		// Find indices of rows that could be in top K
 		candidateIndices := make([]int, 0)
+		nullCount := 0
 		for i, val := range columnValues {
 			if val == nil {
+				nullCount++
 				continue
 			}
 			
@@ -2574,10 +2617,14 @@ func (pr *ParquetReader) readTopKWithRowGroupFiltering(limit int, orderBy OrderB
 			}
 		}
 		
-		tracer.Debug(TraceComponentOptimizer, "Found candidate rows in row group", TraceContext(
+		selectivity := float64(len(candidateIndices)) / float64(len(columnValues) - nullCount) * 100
+		tracer.Info(TraceComponentOptimizer, "Column-based filtering results", TraceContext(
 			"row_group", rgIndex,
 			"total_rows", len(columnValues),
+			"null_values", nullCount,
 			"candidate_rows", len(candidateIndices),
+			"selectivity_pct", fmt.Sprintf("%.2f", selectivity),
+			"current_worst", currentWorstValue,
 		))
 		
 		// Read only the candidate rows
@@ -2688,14 +2735,32 @@ func (pr *ParquetReader) readTopKWithRowGroupFiltering(limit int, orderBy OrderB
 	}
 	
 	elapsed := time.Since(startTime)
+	
+	// Calculate optimization metrics
+	totalPossibleRows := pr.reader.NumRows()
+	rowsSkipped := totalPossibleRows - int64(totalRowsRead)
+	reductionPct := float64(rowsSkipped) / float64(totalPossibleRows) * 100
+	
 	tracer.Info(TraceComponentOptimizer, "Completed Top-K with row group filtering", TraceContext(
 		"row_groups_total", len(stats),
 		"row_groups_processed", rowGroupsProcessed,
 		"row_groups_skipped", rowGroupsSkipped,
 		"skip_ratio", float64(rowGroupsSkipped)/float64(len(stats)),
 		"rows_read", totalRowsRead,
+		"rows_skipped", rowsSkipped,
+		"reduction_pct", fmt.Sprintf("%.2f", reductionPct),
 		"result_rows", len(result),
 		"elapsed_ms", elapsed.Milliseconds(),
+		"throughput_rows_per_sec", int64(float64(totalRowsRead)/elapsed.Seconds()),
+	))
+	
+	// Log optimization summary
+	tracer.Info(TraceComponentOptimizer, "Top-K optimization summary", TraceContext(
+		"strategy", "row group filtering + column-based selection",
+		"total_file_rows", totalPossibleRows,
+		"rows_examined", totalRowsRead,
+		"optimization_benefit", fmt.Sprintf("%.1fx reduction", float64(totalPossibleRows)/float64(totalRowsRead)),
+		"column_projection", fmt.Sprintf("read 1/%d columns for filtering", len(pr.GetColumnNames())),
 	))
 	
 	return result, nil
