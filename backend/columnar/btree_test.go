@@ -74,6 +74,17 @@ func TestBPlusTreeBasic(t *testing.T) {
 			if len(results) != 1 || results[0] != tc.expected {
 				t.Errorf("Find(%d) = %v, expected [%d]", tc.key, results, tc.expected)
 			}
+			
+			// Validate using bitmap API as well
+			bitmap, err := tree.FindBitmap(tc.key)
+			if err != nil {
+				t.Errorf("FindBitmap(%d) failed: %v", tc.key, err)
+				continue
+			}
+			bitmapResults := BitmapToSlice(bitmap)
+			if len(bitmapResults) != 1 || bitmapResults[0] != tc.expected {
+				t.Errorf("FindBitmap(%d) = %v, expected [%d]", tc.key, bitmapResults, tc.expected)
+			}
 		}
 		
 		// Test not found
@@ -125,6 +136,38 @@ func TestBPlusTreeBasic(t *testing.T) {
 			if len(results) != tc.expected {
 				t.Errorf("RangeSearch(%d, %d) returned %d results, expected %d",
 					tc.min, tc.max, len(results), tc.expected)
+			}
+			
+			// Validate actual data: all results should be in range
+			for _, result := range results {
+				// Convert back to key: result = key * 10, so key = result / 10
+				key := result / 10
+				if key < tc.min || key > tc.max {
+					t.Errorf("RangeSearch(%d, %d) returned result %d (key %d) outside range",
+						tc.min, tc.max, result, key)
+				}
+			}
+			
+			// Test bitmap version as well
+			bitmap, err := tree.RangeSearchBitmap(tc.min, tc.max)
+			if err != nil {
+				t.Errorf("RangeSearchBitmap(%d, %d) failed: %v", tc.min, tc.max, err)
+				continue
+			}
+			bitmapResults := BitmapToSlice(bitmap)
+			if len(bitmapResults) != tc.expected {
+				t.Errorf("RangeSearchBitmap(%d, %d) returned %d results, expected %d",
+					tc.min, tc.max, len(bitmapResults), tc.expected)
+			}
+			
+			// Both methods should return same results
+			if len(results) == len(bitmapResults) {
+				for i, result := range results {
+					if result != bitmapResults[i] {
+						t.Errorf("RangeSearch and RangeSearchBitmap returned different results at index %d: %d vs %d",
+							i, result, bitmapResults[i])
+					}
+				}
 			}
 		}
 	})

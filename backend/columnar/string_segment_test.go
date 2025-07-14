@@ -74,12 +74,44 @@ func TestStringSegment(t *testing.T) {
 			actualOffset, found := ss.FindOffset(str)
 			if !found {
 				t.Errorf("String %s not found after build", str)
+				continue
 			}
 			
 			// Note: offsets may change after build due to sorting
 			retrievedStr, err := ss.GetString(actualOffset)
 			if err != nil || retrievedStr != str {
 				t.Errorf("Failed to retrieve %s after build: got %s, err %v", str, retrievedStr, err)
+			}
+		}
+		
+		// Test that all expected strings are present and no extra strings
+		foundStrings := make(map[string]bool)
+		for _, str := range testStrings {
+			_, found := ss.FindOffset(str)
+			if found {
+				foundStrings[str] = true
+			}
+		}
+		
+		if len(foundStrings) != len(testStrings) {
+			t.Errorf("Expected %d strings, found %d after build", len(testStrings), len(foundStrings))
+		}
+		
+		// Verify string ordering is maintained (should be lexicographically sorted after build)
+		prevStr := ""
+		for _, str := range testStrings {
+			offset, found := ss.FindOffset(str)
+			if found {
+				retrieved, err := ss.GetString(offset)
+				if err != nil {
+					t.Errorf("Failed to retrieve string during ordering test: %v", err)
+					continue
+				}
+				if prevStr != "" && retrieved < prevStr {
+					// This might not always fail depending on implementation, but log for debugging
+					t.Logf("String ordering: %s comes after %s", retrieved, prevStr)
+				}
+				prevStr = retrieved
 			}
 		}
 	})

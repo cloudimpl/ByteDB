@@ -67,6 +67,49 @@ func TestSpaceEfficiencyWithDifferentDataTypes(t *testing.T) {
 			col.metadata.RootPageID = col.btree.GetRootPageID()
 			col.metadata.TotalKeys = uint64(len(tc.values))
 			
+			// Test a few queries to validate data integrity
+			testKey := tc.values[0].Key
+			bitmap, err := col.btree.FindBitmap(testKey)
+			if err != nil {
+				t.Fatalf("Failed to query test key %d: %v", testKey, err)
+			}
+			results := BitmapToSlice(bitmap)
+			
+			// Count expected occurrences of test key
+			expectedCount := 0
+			for _, v := range tc.values {
+				if v.Key == testKey {
+					expectedCount++
+				}
+			}
+			
+			if len(results) != expectedCount {
+				t.Errorf("Query for key %d returned %d results, expected %d", testKey, len(results), expectedCount)
+			}
+			
+			// Validate actual row numbers match what we expect
+			expectedRows := make([]uint64, 0)
+			for _, v := range tc.values {
+				if v.Key == testKey {
+					expectedRows = append(expectedRows, v.RowNum)
+				}
+			}
+			
+			if len(results) == len(expectedRows) {
+				for _, result := range results {
+					found := false
+					for _, expected := range expectedRows {
+						if result == expected {
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Errorf("Query returned unexpected row %d", result)
+					}
+				}
+			}
+			
 			// Close file
 			cf.Close()
 			

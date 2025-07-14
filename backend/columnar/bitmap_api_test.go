@@ -70,6 +70,11 @@ func TestBitmapAPI(t *testing.T) {
 		if bitmap.GetCardinality() != 1 {
 			t.Errorf("Expected 1 result, got %d", bitmap.GetCardinality())
 		}
+		// Validate actual data: should contain row 500
+		rows := BitmapToSlice(bitmap)
+		if len(rows) != 1 || rows[0] != 500 {
+			t.Errorf("Expected row [500], got %v", rows)
+		}
 		
 		// Test string bitmap query
 		bitmap, err = cf.QueryString("category", "cat_2")
@@ -80,6 +85,27 @@ func TestBitmapAPI(t *testing.T) {
 		if bitmap.GetCardinality() != 100 {
 			t.Errorf("Expected 100 results, got %d", bitmap.GetCardinality())
 		}
+		// Validate actual data: should contain rows 2, 12, 22, ..., 992
+		rows = BitmapToSlice(bitmap)
+		expectedRows := make([]uint64, 100)
+		for i := 0; i < 100; i++ {
+			expectedRows[i] = uint64(2 + i*10)
+		}
+		if len(rows) != len(expectedRows) {
+			t.Errorf("Expected %d rows, got %d", len(expectedRows), len(rows))
+		} else {
+			// Check first few and last few rows
+			for i := 0; i < 5 && i < len(rows); i++ {
+				if rows[i] != expectedRows[i] {
+					t.Errorf("Row %d: expected %d, got %d", i, expectedRows[i], rows[i])
+				}
+			}
+			for i := len(rows) - 5; i < len(rows) && i >= 0; i++ {
+				if rows[i] != expectedRows[i] {
+					t.Errorf("Row %d: expected %d, got %d", i, expectedRows[i], rows[i])
+				}
+			}
+		}
 		
 		// Test range query
 		bitmap, err = cf.RangeQueryInt("id", 100, 200)
@@ -88,6 +114,22 @@ func TestBitmapAPI(t *testing.T) {
 		}
 		if bitmap.GetCardinality() != 101 { // 100-200 inclusive
 			t.Errorf("Expected 101 results, got %d", bitmap.GetCardinality())
+		}
+		// Validate actual data: should contain rows 100-200
+		rows = BitmapToSlice(bitmap)
+		if len(rows) != 101 {
+			t.Errorf("Expected 101 rows, got %d", len(rows))
+		} else {
+			// Check first, middle, and last values
+			if rows[0] != 100 {
+				t.Errorf("First row: expected 100, got %d", rows[0])
+			}
+			if rows[50] != 150 {
+				t.Errorf("Middle row: expected 150, got %d", rows[50])
+			}
+			if rows[100] != 200 {
+				t.Errorf("Last row: expected 200, got %d", rows[100])
+			}
 		}
 	})
 	
@@ -101,6 +143,23 @@ func TestBitmapAPI(t *testing.T) {
 		if bitmap.GetCardinality() != 90 {
 			t.Errorf("Expected 90 results for > 90, got %d", bitmap.GetCardinality())
 		}
+		// Validate actual data: should contain rows where i%100 > 90
+		rows := BitmapToSlice(bitmap)
+		for _, row := range rows {
+			if row%100 <= 90 {
+				t.Errorf("Row %d has value %d which should not be > 90", row, row%100)
+			}
+		}
+		// Check some specific expected rows
+		expectedRows := make(map[uint64]bool)
+		for i := 0; i < 1000; i++ {
+			if uint64(i)%100 > 90 {
+				expectedRows[uint64(i)] = true
+			}
+		}
+		if len(rows) != len(expectedRows) {
+			t.Errorf("Expected %d rows, got %d", len(expectedRows), len(rows))
+		}
 		
 		// Test less than or equal
 		bitmap, err = cf.QueryLessThanOrEqual("value", int32(10))
@@ -111,6 +170,23 @@ func TestBitmapAPI(t *testing.T) {
 		if bitmap.GetCardinality() != 110 {
 			t.Errorf("Expected 110 results for <= 10, got %d", bitmap.GetCardinality())
 		}
+		// Validate actual data: should contain rows where i%100 <= 10
+		rows = BitmapToSlice(bitmap)
+		for _, row := range rows {
+			if row%100 > 10 {
+				t.Errorf("Row %d has value %d which should be <= 10", row, row%100)
+			}
+		}
+		// Verify we have the right number of each value
+		valueCounts := make(map[uint64]int)
+		for _, row := range rows {
+			valueCounts[row%100]++
+		}
+		for val := uint64(0); val <= 10; val++ {
+			if valueCounts[val] != 10 {
+				t.Errorf("Value %d should appear 10 times, got %d", val, valueCounts[val])
+			}
+		}
 	})
 	
 	t.Run("BitmapLogicalOperations", func(t *testing.T) {
@@ -118,6 +194,14 @@ func TestBitmapAPI(t *testing.T) {
 		// Find: category = "cat_1" AND value > 50
 		catBitmap, _ := cf.QueryString("category", "cat_1")
 		valueBitmap, _ := cf.QueryGreaterThan("value", int32(50))
+		
+		// Validate cat_1 bitmap first
+		catRows := BitmapToSlice(catBitmap)
+		for _, row := range catRows {
+			if row%10 != 1 {
+				t.Errorf("Row %d should have category cat_1 (row %% 10 should be 1)", row)
+			}
+		}
 		
 		// Perform AND operation directly on bitmaps
 		result := cf.QueryAnd(catBitmap, valueBitmap)
@@ -133,12 +217,52 @@ func TestBitmapAPI(t *testing.T) {
 			t.Errorf("Expected %d results for AND operation, got %d", expectedCount, result.GetCardinality())
 		}
 		
+		// Validate actual AND result data
+		andRows := BitmapToSlice(result)
+		for _, row := range andRows {
+			// Must satisfy both conditions
+			if row%10 != 1 {
+				t.Errorf("AND result row %d should have category cat_1 (row %% 10 = 1)", row)
+			}
+			if row%100 <= 50 {
+				t.Errorf("AND result row %d should have value > 50 (value = %d)", row, row%100)
+			}
+		}
+		
 		// Test OR operation
 		result = cf.QueryOr(catBitmap, valueBitmap)
 		// This should give all unique rows from both sets
 		// We can verify it's more than either individual set
 		if result.GetCardinality() <= catBitmap.GetCardinality() || result.GetCardinality() <= valueBitmap.GetCardinality() {
 			t.Errorf("OR result should be larger than individual sets")
+		}
+		
+		// Validate OR result data - every row should satisfy at least one condition
+		orRows := BitmapToSlice(result)
+		for _, row := range orRows {
+			hasCat1 := (row%10 == 1)
+			hasValueGT50 := (row%100 > 50)
+			if !hasCat1 && !hasValueGT50 {
+				t.Errorf("OR result row %d should satisfy at least one condition: cat_1=%v, value>50=%v", row, hasCat1, hasValueGT50)
+			}
+		}
+		
+		// Verify OR result includes all AND result rows
+		andRowsMap := make(map[uint64]bool)
+		for _, row := range andRows {
+			andRowsMap[row] = true
+		}
+		for _, row := range andRows {
+			found := false
+			for _, orRow := range orRows {
+				if row == orRow {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("OR result should include AND result row %d", row)
+			}
 		}
 	})
 }
