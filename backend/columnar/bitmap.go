@@ -70,38 +70,48 @@ func (bm *BitmapManager) storeMultiPageBitmap(bitmap *roaring.Bitmap, data []byt
 	firstPage := bm.pageManager.AllocatePage(PageTypeRoaringBitmap)
 	currentPage := firstPage
 
-	// Write metadata to first page
-	pageBuf := bytes.NewBuffer(currentPage.Data[:0])
-	binary.Write(pageBuf, ByteOrder, uint32(bitmap.GetCardinality()))
-	binary.Write(pageBuf, ByteOrder, uint32(len(data)))
-	binary.Write(pageBuf, ByteOrder, uint64(0)) // Will be updated if needed
-
 	offset := 0
 	availableSpace := PageSize - PageHeaderSize - 16
-	firstPageDataSpace := availableSpace - 16 // Minus metadata
+	firstPageDataSpace := availableSpace
 
-	// Write data to first page
-	copySize := firstPageDataSpace
-	if copySize > len(data) {
-		copySize = len(data)
-	}
-	pageBuf.Write(data[offset : offset+copySize])
-	offset += copySize
+	// Check if we need additional pages
+	if len(data) > firstPageDataSpace {
+		// We need multiple pages, allocate the second page now
+		secondPage := bm.pageManager.AllocatePage(PageTypeRoaringBitmap)
+		
+		// Write metadata to first page with correct NextPageID
+		pageBuf := bytes.NewBuffer(currentPage.Data[:0])
+		binary.Write(pageBuf, ByteOrder, uint32(bitmap.GetCardinality()))
+		binary.Write(pageBuf, ByteOrder, uint32(len(data)))
+		binary.Write(pageBuf, ByteOrder, secondPage.Header.PageID) // Correct NextPageID
 
-	currentPage.Header.DataSize = uint32(pageBuf.Len())
+		// Write data to first page
+		copySize := firstPageDataSpace
+		pageBuf.Write(data[offset : offset+copySize])
+		offset += copySize
 
-	// Continue with additional pages if needed
-	for offset < len(data) {
-		nextPage := bm.pageManager.AllocatePage(PageTypeRoaringBitmap)
-		currentPage.Header.NextPageID = nextPage.Header.PageID
+		currentPage.Header.DataSize = uint32(pageBuf.Len())
+		currentPage.Header.NextPageID = secondPage.Header.PageID
 
 		if err := bm.pageManager.WritePage(currentPage); err != nil {
 			return 0, err
 		}
 
-		currentPage = nextPage
+		currentPage = secondPage
+	} else {
+		// Single page is enough
+		pageBuf := bytes.NewBuffer(currentPage.Data[:0])
+		binary.Write(pageBuf, ByteOrder, uint32(bitmap.GetCardinality()))
+		binary.Write(pageBuf, ByteOrder, uint32(len(data)))
+		binary.Write(pageBuf, ByteOrder, uint64(0)) // No next page
 
-		// Write data to next page
+		pageBuf.Write(data)
+		currentPage.Header.DataSize = uint32(pageBuf.Len())
+	}
+
+	// Continue with additional pages if needed
+	for offset < len(data) {
+		// Write data to current page
 		copySize := availableSpace
 		if offset+copySize > len(data) {
 			copySize = len(data) - offset
@@ -110,6 +120,18 @@ func (bm *BitmapManager) storeMultiPageBitmap(bitmap *roaring.Bitmap, data []byt
 		copy(currentPage.Data[:copySize], data[offset:offset+copySize])
 		currentPage.Header.DataSize = uint32(copySize)
 		offset += copySize
+
+		// Check if we need another page
+		if offset < len(data) {
+			nextPage := bm.pageManager.AllocatePage(PageTypeRoaringBitmap)
+			currentPage.Header.NextPageID = nextPage.Header.PageID
+
+			if err := bm.pageManager.WritePage(currentPage); err != nil {
+				return 0, err
+			}
+
+			currentPage = nextPage
+		}
 	}
 
 	// Write final page

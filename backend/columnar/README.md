@@ -2,6 +2,19 @@
 
 A high-performance columnar storage format optimized for analytical queries, featuring space-optimized B+ tree indexes for each column and RoaringBitmap integration for efficient duplicate handling.
 
+## File Extension Requirement
+
+All ByteDB columnar files **must** use the `.bytedb` extension. Both `CreateFile()` and `OpenFile()` functions enforce this requirement and will return an error if a different extension is used.
+
+```go
+// ✅ Correct
+cf, err := columnar.CreateFile("data.bytedb")
+
+// ❌ Will return error
+cf, err := columnar.CreateFile("data.db")      // Error: must have .bytedb extension
+cf, err := columnar.CreateFile("data.txt")     // Error: must have .bytedb extension
+```
+
 ## Key Features
 
 - **Column-Oriented Storage**: Each column stored independently with its own B+ tree index

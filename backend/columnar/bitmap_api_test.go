@@ -8,7 +8,7 @@ import (
 
 // TestBitmapAPI tests the new bitmap-based query API
 func TestBitmapAPI(t *testing.T) {
-	tmpFile := "test_bitmap_api.db"
+	tmpFile := "test_bitmap_api.bytedb"
 	defer os.Remove(tmpFile)
 	
 	// Create test data
@@ -282,7 +282,7 @@ func TestBitmapAPIPerformance(t *testing.T) {
 		t.Skip("Skipping performance test in short mode")
 	}
 	
-	tmpFile := "test_bitmap_perf.db"
+	tmpFile := "test_bitmap_perf.bytedb"
 	defer os.Remove(tmpFile)
 	
 	// Create larger dataset

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 	
 	roaring "github.com/RoaringBitmap/roaring/v2"
@@ -26,8 +27,13 @@ type Column struct {
 	bitmapManager *BitmapManager
 }
 
-// CreateFile creates a new columnar file
+// CreateFile creates a new columnar file with .bytedb extension
 func CreateFile(filename string) (*ColumnarFile, error) {
+	// Ensure .bytedb extension
+	if !strings.HasSuffix(filename, ".bytedb") {
+		return nil, fmt.Errorf("invalid filename: %s - columnar files must have .bytedb extension", filename)
+	}
+	
 	// Create page manager
 	pm, err := NewPageManager(filename, true)
 	if err != nil {
@@ -62,6 +68,11 @@ func CreateFile(filename string) (*ColumnarFile, error) {
 
 // OpenFile opens an existing columnar file
 func OpenFile(filename string) (*ColumnarFile, error) {
+	// Ensure .bytedb extension
+	if !strings.HasSuffix(filename, ".bytedb") {
+		return nil, fmt.Errorf("invalid filename: %s - columnar files must have .bytedb extension", filename)
+	}
+	
 	// Open page manager
 	pm, err := NewPageManager(filename, false)
 	if err != nil {

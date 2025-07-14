@@ -37,7 +37,7 @@ func TestMultiMillionRowDatasets(t *testing.T) {
 }
 
 func testLargeDataset(t *testing.T, rowCount int) {
-	tmpFile := fmt.Sprintf("test_large_%d.db", rowCount)
+	tmpFile := fmt.Sprintf("test_large_%d.bytedb", rowCount)
 	defer os.Remove(tmpFile)
 
 	// Create file
@@ -339,7 +339,7 @@ func TestLargeDatasetEdgeCases(t *testing.T) {
 		t.Skip("Skipping large dataset edge cases in short mode")
 	}
 
-	tmpFile := "test_large_edge_cases.db"
+	tmpFile := "test_large_edge_cases.bytedb"
 	defer os.Remove(tmpFile)
 
 	cf, err := CreateFile(tmpFile)

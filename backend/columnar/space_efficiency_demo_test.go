@@ -14,7 +14,7 @@ func TestSpaceEfficiencyDemo(t *testing.T) {
 	
 	// Test 1: Byte keys (0-255 range)
 	t.Run("ByteKeys", func(t *testing.T) {
-		tmpFile := "test_byte_keys.db"
+		tmpFile := "test_byte_keys.bytedb"
 		defer os.Remove(tmpFile)
 		
 		cf, _ := CreateFile(tmpFile)
@@ -46,7 +46,7 @@ func TestSpaceEfficiencyDemo(t *testing.T) {
 	
 	// Test 2: Same data with uint64 keys
 	t.Run("Uint64Keys", func(t *testing.T) {
-		tmpFile := "test_uint64_keys.db"
+		tmpFile := "test_uint64_keys.bytedb"
 		defer os.Remove(tmpFile)
 		
 		cf, _ := CreateFile(tmpFile)
@@ -78,7 +78,7 @@ func TestSpaceEfficiencyDemo(t *testing.T) {
 	
 	// Test 3: Unique values only (no bitmaps needed)
 	t.Run("UniqueByteKeys", func(t *testing.T) {
-		tmpFile := "test_unique_byte.db"
+		tmpFile := "test_unique_byte.bytedb"
 		defer os.Remove(tmpFile)
 		
 		cf, _ := CreateFile(tmpFile)
@@ -118,7 +118,7 @@ func TestSpaceEfficiencyDemo(t *testing.T) {
 	
 	// Test 4: Same with uint64
 	t.Run("UniqueUint64Keys", func(t *testing.T) {
-		tmpFile := "test_unique_uint64.db"
+		tmpFile := "test_unique_uint64.bytedb"
 		defer os.Remove(tmpFile)
 		
 		cf, _ := CreateFile(tmpFile)
@@ -187,7 +187,7 @@ func TestActualSpaceSavings(t *testing.T) {
 	}
 	
 	for _, tc := range dataTypes {
-		tmpFile := fmt.Sprintf("test_%s.db", tc.name)
+		tmpFile := fmt.Sprintf("test_%s.bytedb", tc.name)
 		defer os.Remove(tmpFile)
 		
 		cf, _ := CreateFile(tmpFile)

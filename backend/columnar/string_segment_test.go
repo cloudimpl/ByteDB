@@ -8,7 +8,7 @@ import (
 
 func TestStringSegment(t *testing.T) {
 	// Create temporary file
-	tmpFile := "test_string_segment.db"
+	tmpFile := "test_string_segment.bytedb"
 	defer os.Remove(tmpFile)
 	
 	// Create page manager
@@ -191,7 +191,7 @@ func TestStringSegment(t *testing.T) {
 
 func TestStringSegmentLargeScale(t *testing.T) {
 	// Create temporary file
-	tmpFile := "test_string_segment_large.db"
+	tmpFile := "test_string_segment_large.bytedb"
 	defer os.Remove(tmpFile)
 	
 	// Create page manager
@@ -249,7 +249,7 @@ func TestStringSegmentLargeScale(t *testing.T) {
 }
 
 func TestStringSegmentPersistence(t *testing.T) {
-	tmpFile := "test_string_segment_persist.db"
+	tmpFile := "test_string_segment_persist.bytedb"
 	defer os.Remove(tmpFile)
 	
 	var rootPageID uint64

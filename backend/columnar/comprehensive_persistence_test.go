@@ -11,7 +11,7 @@ import (
 
 // TestComprehensivePersistence tests all aspects of file persistence
 func TestComprehensivePersistence(t *testing.T) {
-	tmpFile := "test_comprehensive_persistence.db"
+	tmpFile := "test_comprehensive_persistence.bytedb"
 	defer os.Remove(tmpFile)
 
 	// Expected data for validation
@@ -260,7 +260,7 @@ func TestComprehensivePersistence(t *testing.T) {
 
 // TestCorruptionDetection tests file corruption scenarios
 func TestCorruptionDetection(t *testing.T) {
-	tmpFile := "test_corruption.db"
+	tmpFile := "test_corruption.bytedb"
 	defer os.Remove(tmpFile)
 
 	// Create valid file

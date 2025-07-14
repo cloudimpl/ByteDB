@@ -11,7 +11,7 @@ import (
 )
 
 func TestAllOperators(t *testing.T) {
-	tmpFile := "test_operators.db"
+	tmpFile := "test_operators.bytedb"
 	defer os.Remove(tmpFile)
 	
 	// Create test data
@@ -360,7 +360,7 @@ func TestAllOperators(t *testing.T) {
 
 // TestOperatorEdgeCases tests edge cases for operators
 func TestOperatorEdgeCases(t *testing.T) {
-	tmpFile := "test_edge_cases.db"
+	tmpFile := "test_edge_cases.bytedb"
 	defer os.Remove(tmpFile)
 	
 	cf, _ := CreateFile(tmpFile)
@@ -460,7 +460,7 @@ func TestOperatorPerformance(t *testing.T) {
 		t.Skip("Skipping performance test in short mode")
 	}
 	
-	tmpFile := "test_operator_perf.db"
+	tmpFile := "test_operator_perf.bytedb"
 	defer os.Remove(tmpFile)
 	
 	cf, _ := CreateFile(tmpFile)

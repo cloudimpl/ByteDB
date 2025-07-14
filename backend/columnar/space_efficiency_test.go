@@ -43,7 +43,7 @@ func TestSpaceEfficiencyWithDifferentDataTypes(t *testing.T) {
 	
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpFile := fmt.Sprintf("test_%s.db", tc.name)
+			tmpFile := fmt.Sprintf("test_%s.bytedb", tc.name)
 			defer os.Remove(tmpFile)
 			
 			// Create file
@@ -145,7 +145,7 @@ func generateTestData(count int, maxValue int) []struct{ Key uint64; RowNum uint
 }
 
 func TestBooleanColumnEfficiency(t *testing.T) {
-	tmpFile := "test_bool_efficiency.db"
+	tmpFile := "test_bool_efficiency.bytedb"
 	defer os.Remove(tmpFile)
 	
 	cf, err := CreateFile(tmpFile)
@@ -195,7 +195,7 @@ func TestBooleanColumnEfficiency(t *testing.T) {
 	t.Logf("With 10000 boolean values, using 1-byte keys instead of 8-byte keys")
 	
 	// Now create the same with uint64 for comparison
-	tmpFile2 := "test_uint64_efficiency.db"
+	tmpFile2 := "test_uint64_efficiency.bytedb"
 	defer os.Remove(tmpFile2)
 	
 	cf2, _ := CreateFile(tmpFile2)

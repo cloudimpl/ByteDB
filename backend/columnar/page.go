@@ -128,20 +128,20 @@ func NewPageManager(filename string, create bool) (*PageManager, error) {
 		}
 		pm.nextPageID = 1
 	} else {
-		// Read file header to determine next page ID
-		header, err := pm.ReadPage(0)
-		if err != nil {
-			file.Close()
-			return nil, err
-		}
-		
-		// Calculate next page ID based on file size
+		// Calculate next page ID based on file size first
 		info, err := file.Stat()
 		if err != nil {
 			file.Close()
 			return nil, err
 		}
 		pm.nextPageID = uint64(info.Size() / PageSize)
+		
+		// Now read file header to validate
+		header, err := pm.ReadPage(0)
+		if err != nil {
+			file.Close()
+			return nil, err
+		}
 		
 		// Validate header
 		if header.Header.PageType != PageTypeFileHeader {
@@ -177,6 +177,11 @@ func (pm *PageManager) ReadPage(pageID uint64) (*Page, error) {
 	}
 	pm.cacheLock.RUnlock()
 	
+	// Check if page ID is beyond our allocated pages
+	if pageID >= pm.nextPageID {
+		return nil, fmt.Errorf("page %d does not exist (max page ID: %d)", pageID, pm.nextPageID-1)
+	}
+	
 	// Read from disk
 	offset := int64(pageID * PageSize)
 	buf := make([]byte, PageSize)
@@ -186,6 +191,11 @@ func (pm *PageManager) ReadPage(pageID uint64) (*Page, error) {
 		return nil, err
 	}
 	if n != PageSize {
+		// If we can't read a full page, it might be because the file is truncated
+		// or we're trying to read beyond the file size
+		if n == 0 {
+			return nil, fmt.Errorf("page %d is beyond file size", pageID)
+		}
 		return nil, fmt.Errorf("incomplete page read: expected %d, got %d", PageSize, n)
 	}
 	
@@ -259,6 +269,10 @@ func (pm *PageManager) Flush() error {
 // Close flushes all pages and closes the file
 func (pm *PageManager) Close() error {
 	if err := pm.Flush(); err != nil {
+		return err
+	}
+	// Ensure all data is written to disk
+	if err := pm.file.Sync(); err != nil {
 		return err
 	}
 	return pm.file.Close()

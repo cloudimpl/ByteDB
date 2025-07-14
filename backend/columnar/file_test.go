@@ -7,7 +7,7 @@ import (
 )
 
 func TestColumnarFile(t *testing.T) {
-	tmpFile := "test_columnar_file.db"
+	tmpFile := "test_columnar_file.bytedb"
 	defer os.Remove(tmpFile)
 	
 	// Test 1: Create and basic operations
@@ -189,7 +189,7 @@ func TestColumnarFile(t *testing.T) {
 }
 
 func TestColumnarFilePersistence(t *testing.T) {
-	tmpFile := "test_columnar_persist.db"
+	tmpFile := "test_columnar_persist.bytedb"
 	defer os.Remove(tmpFile)
 	
 	// Phase 1: Create and populate
@@ -293,7 +293,7 @@ func TestColumnarFileLargeScale(t *testing.T) {
 		t.Skip("Skipping large scale test in short mode")
 	}
 	
-	tmpFile := "test_columnar_large.db"
+	tmpFile := "test_columnar_large.bytedb"
 	defer os.Remove(tmpFile)
 	
 	cf, err := CreateFile(tmpFile)
@@ -385,7 +385,7 @@ func TestColumnarFileLargeScale(t *testing.T) {
 
 // Benchmark tests
 func BenchmarkColumnarFileQueries(b *testing.B) {
-	tmpFile := "bench_columnar.db"
+	tmpFile := "bench_columnar.bytedb"
 	defer os.Remove(tmpFile)
 	
 	// Setup

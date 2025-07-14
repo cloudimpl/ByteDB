@@ -291,8 +291,12 @@ func (bt *BPlusTree) RangeSearchLessThan(key uint64) ([]uint64, error) {
 			break
 		}
 		
-		// For internal nodes, always go to first child
-		currentPageID = ByteOrder.Uint64(page.Data[0:8])
+		// For internal nodes, get first child from childPageMap
+		children, exists := bt.childPageMap[currentPageID]
+		if !exists || len(children) == 0 {
+			return nil, fmt.Errorf("no children found for internal page %d", currentPageID)
+		}
+		currentPageID = children[0]
 	}
 	
 	results := make([]uint64, 0)
@@ -355,8 +359,12 @@ func (bt *BPlusTree) RangeSearchLessThanOrEqual(key uint64) ([]uint64, error) {
 			break
 		}
 		
-		// For internal nodes, always go to first child
-		currentPageID = ByteOrder.Uint64(page.Data[0:8])
+		// For internal nodes, get first child from childPageMap
+		children, exists := bt.childPageMap[currentPageID]
+		if !exists || len(children) == 0 {
+			return nil, fmt.Errorf("no children found for internal page %d", currentPageID)
+		}
+		currentPageID = children[0]
 	}
 	
 	results := make([]uint64, 0)
@@ -511,12 +519,19 @@ func (bt *BPlusTree) buildLeaves(entries []BTreeLeafEntry) ([]*Page, error) {
 	keySize := GetDataTypeSize(bt.dataType)
 	
 	for i, entry := range entries {
-		// Check if entry fits in current leaf
+		// Calculate entry size
 		entrySize := keySize + 8 // variable key size + 8 bytes value
-		if buf.Len()+entrySize > len(currentLeaf.Data) {
+		
+		// Check if entry fits in current leaf
+		if buf.Len()+entrySize > len(currentLeaf.Data) && entryCount > 0 {
 			// Finalize current leaf
 			currentLeaf.Header.EntryCount = entryCount
 			currentLeaf.Header.DataSize = uint32(buf.Len())
+			
+			// Create new leaf before writing current one
+			newLeaf := bt.pageManager.AllocatePage(PageTypeBTreeLeaf)
+			currentLeaf.Header.NextPageID = newLeaf.Header.PageID
+			newLeaf.Header.PrevPageID = currentLeaf.Header.PageID
 			
 			if err := bt.pageManager.WritePage(currentLeaf); err != nil {
 				return nil, err
@@ -524,17 +539,12 @@ func (bt *BPlusTree) buildLeaves(entries []BTreeLeafEntry) ([]*Page, error) {
 			
 			leaves = append(leaves, currentLeaf)
 			
-			// Create new leaf
-			newLeaf := bt.pageManager.AllocatePage(PageTypeBTreeLeaf)
-			currentLeaf.Header.NextPageID = newLeaf.Header.PageID
-			newLeaf.Header.PrevPageID = currentLeaf.Header.PageID
-			
 			currentLeaf = newLeaf
 			buf = bytes.NewBuffer(currentLeaf.Data[:0])
 			entryCount = 0
 		}
 		
-		// Write entry
+		// Write entry to current leaf
 		buf.Write(EncodeKey(entry.Key, bt.dataType))
 		binary.Write(buf, ByteOrder, entry.Value.Data)
 		entryCount++
@@ -586,7 +596,7 @@ func (bt *BPlusTree) buildInternalLevel(children []*Page) ([]*Page, error) {
 		
 		// Check if entry fits (only key size, no child pointer)
 		entrySize := keySize // Only store keys, no child pointers
-		if buf.Len()+entrySize > len(currentInternal.Data) {
+		if buf.Len()+entrySize > len(currentInternal.Data) && entryCount > 0 {
 			// Finalize current internal node
 			currentInternal.Header.EntryCount = entryCount
 			currentInternal.Header.DataSize = uint32(buf.Len())
@@ -614,9 +624,12 @@ func (bt *BPlusTree) buildInternalLevel(children []*Page) ([]*Page, error) {
 			currentChildPages = append(currentChildPages, child.Header.PageID)
 		}
 		
-		// Write key only (no child pointer)
-		buf.Write(EncodeKey(firstKey, bt.dataType))
-		entryCount++
+		// For all children except the first in this internal node, write the separator key
+		if len(currentChildPages) > 1 {
+			// Write key only (no child pointer)
+			buf.Write(EncodeKey(firstKey, bt.dataType))
+			entryCount++
+		}
 		
 		// Update child's parent pointer
 		child.Header.ParentPageID = currentInternal.Header.PageID
@@ -845,10 +858,21 @@ func (bt *BPlusTree) reconstructMappingRecursive(pageID uint64) error {
 	childPages := make([]uint64, 0)
 	
 	// Find all pages that have this page as their parent
-	for childPageID := uint64(1); childPageID < bt.pageManager.GetPageCount(); childPageID++ {
+	// Note: We need to be careful about the actual page count since some pages might not exist
+	maxPageID := bt.pageManager.GetPageCount()
+	
+	for childPageID := uint64(1); childPageID < maxPageID; childPageID++ {
 		childPage, err := bt.pageManager.ReadPage(childPageID)
 		if err != nil {
-			continue // Skip inaccessible pages
+			// Skip pages that can't be read - they might be beyond the actual file size
+			// or might be invalid pages
+			continue
+		}
+		
+		// Only consider B-tree pages (leaf or internal)
+		if childPage.Header.PageType != PageTypeBTreeLeaf && 
+		   childPage.Header.PageType != PageTypeBTreeInternal {
+			continue
 		}
 		
 		// Check if this child points to our current page as parent
@@ -1162,8 +1186,12 @@ func (bt *BPlusTree) RangeSearchLessThanBitmap(key uint64) (*roaring.Bitmap, err
 			break
 		}
 		
-		// For internal nodes, always go to first child
-		currentPageID = ByteOrder.Uint64(page.Data[0:8])
+		// For internal nodes, get first child from childPageMap
+		children, exists := bt.childPageMap[currentPageID]
+		if !exists || len(children) == 0 {
+			return nil, fmt.Errorf("no children found for internal page %d", currentPageID)
+		}
+		currentPageID = children[0]
 	}
 	
 	// Scan leaves until we reach or exceed the key
@@ -1226,8 +1254,12 @@ func (bt *BPlusTree) RangeSearchLessThanOrEqualBitmap(key uint64) (*roaring.Bitm
 			break
 		}
 		
-		// For internal nodes, always go to first child
-		currentPageID = ByteOrder.Uint64(page.Data[0:8])
+		// For internal nodes, get first child from childPageMap
+		children, exists := bt.childPageMap[currentPageID]
+		if !exists || len(children) == 0 {
+			return nil, fmt.Errorf("no children found for internal page %d", currentPageID)
+		}
+		currentPageID = children[0]
 	}
 	
 	// Scan leaves until we exceed the key

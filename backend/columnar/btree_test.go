@@ -6,7 +6,7 @@ import (
 )
 
 func TestBPlusTreeBasic(t *testing.T) {
-	tmpFile := "test_btree.db"
+	tmpFile := "test_btree.bytedb"
 	defer os.Remove(tmpFile)
 	
 	pm, err := NewPageManager(tmpFile, true)
@@ -174,7 +174,7 @@ func TestBPlusTreeBasic(t *testing.T) {
 }
 
 func TestBPlusTreeWithStringKeys(t *testing.T) {
-	tmpFile := "test_btree_string.db"
+	tmpFile := "test_btree_string.bytedb"
 	defer os.Remove(tmpFile)
 	
 	pm, err := NewPageManager(tmpFile, true)
@@ -254,7 +254,7 @@ func TestBPlusTreeWithStringKeys(t *testing.T) {
 }
 
 func TestBPlusTreeLargeScale(t *testing.T) {
-	tmpFile := "test_btree_large.db"
+	tmpFile := "test_btree_large.bytedb"
 	defer os.Remove(tmpFile)
 	
 	pm, err := NewPageManager(tmpFile, true)
@@ -377,7 +377,7 @@ func TestValueTypes(t *testing.T) {
 
 // Benchmark tests
 func BenchmarkBPlusTreeFind(b *testing.B) {
-	tmpFile := "bench_btree.db"
+	tmpFile := "bench_btree.bytedb"
 	defer os.Remove(tmpFile)
 	
 	pm, _ := NewPageManager(tmpFile, true)
@@ -404,7 +404,7 @@ func BenchmarkBPlusTreeFind(b *testing.B) {
 }
 
 func BenchmarkBPlusTreeRangeSearch(b *testing.B) {
-	tmpFile := "bench_btree_range.db"
+	tmpFile := "bench_btree_range.bytedb"
 	defer os.Remove(tmpFile)
 	
 	pm, _ := NewPageManager(tmpFile, true)

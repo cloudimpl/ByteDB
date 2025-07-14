@@ -6,7 +6,7 @@ import (
 )
 
 func TestColumnStatisticsValidation(t *testing.T) {
-	tmpFile := "test_stats_validation.db"
+	tmpFile := "test_stats_validation.bytedb"
 	defer os.Remove(tmpFile)
 
 	// Create file with various data patterns
@@ -186,7 +186,7 @@ func TestColumnStatisticsValidation(t *testing.T) {
 
 func TestStatisticsCalculationIssues(t *testing.T) {
 	// Test to identify what statistics are NOT being calculated correctly
-	tmpFile := "test_stats_issues.db"
+	tmpFile := "test_stats_issues.bytedb"
 	defer os.Remove(tmpFile)
 
 	cf, err := CreateFile(tmpFile)

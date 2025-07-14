@@ -8,7 +8,7 @@ import (
 )
 
 func TestBitmapManager(t *testing.T) {
-	tmpFile := "test_bitmap.db"
+	tmpFile := "test_bitmap.bytedb"
 	defer os.Remove(tmpFile)
 	
 	pm, err := NewPageManager(tmpFile, true)
@@ -187,7 +187,7 @@ func TestBitmapManager(t *testing.T) {
 }
 
 func TestBPlusTreeWithBitmaps(t *testing.T) {
-	tmpFile := "test_btree_bitmap.db"
+	tmpFile := "test_btree_bitmap.bytedb"
 	defer os.Remove(tmpFile)
 	
 	pm, err := NewPageManager(tmpFile, true)
@@ -259,7 +259,7 @@ func TestBPlusTreeWithBitmaps(t *testing.T) {
 }
 
 func BenchmarkBitmapOperations(b *testing.B) {
-	tmpFile := "bench_bitmap.db"
+	tmpFile := "bench_bitmap.bytedb"
 	defer os.Remove(tmpFile)
 	
 	pm, _ := NewPageManager(tmpFile, true)
