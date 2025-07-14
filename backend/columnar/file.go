@@ -740,6 +740,11 @@ func (cf *ColumnarFile) readColumnMetadata() error {
 		
 		col.btree.SetRootPageID(metadata.RootPageID)
 		
+		// Reconstruct child page mapping for optimized B+ tree navigation
+		if err := col.btree.ReconstructChildPageMapping(); err != nil {
+			return fmt.Errorf("failed to reconstruct child page mapping for column %s: %w", colName, err)
+		}
+		
 		cf.columns[colName] = col
 		cf.columnOrder = append(cf.columnOrder, colName)
 		
