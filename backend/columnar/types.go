@@ -186,6 +186,8 @@ type ColumnMetadata struct {
 	StringSegmentStart uint64 // For string/binary columns
 	NullBitmapPageID   uint64 // Page ID for null bitmap (0 if no nulls)
 	MetadataPageID     uint64 // Page ID where this metadata is stored
+	RowKeyRootPageID   uint64 // Root page ID for row→key B+ tree index
+	RowKeyTreeHeight   uint32 // Height of row→key B+ tree
 }
 
 // ColumnStats represents statistics calculated during B+ tree construction

@@ -22,7 +22,8 @@ type ColumnarFile struct {
 // Column represents a single column with its metadata and indexes
 type Column struct {
 	metadata      *ColumnMetadata
-	btree         *BPlusTree
+	btree         *BPlusTree      // Key→Row index
+	rowKeyBTree   *BPlusTree      // Row→Key index (reverse lookup)
 	stringSegment *StringSegment // For string columns
 	bitmapManager *BitmapManager
 	nullBitmap    *roaring.Bitmap // Bitmap tracking NULL rows (nil if no nulls)
@@ -119,6 +120,7 @@ func (cf *ColumnarFile) AddColumn(name string, dataType DataType, nullable bool)
 	col := &Column{
 		metadata:      metadata,
 		btree:         NewBPlusTree(cf.pageManager, dataType, nil),
+		rowKeyBTree:   NewBPlusTree(cf.pageManager, DataTypeUint64, nil), // Row numbers are always uint64
 		bitmapManager: NewBitmapManager(cf.pageManager),
 	}
 	
@@ -199,9 +201,25 @@ func (cf *ColumnarFile) LoadIntColumn(columnName string, data []IntData) error {
 			return err
 		}
 		
+		// Build row→key index
+		rowKeyEntries := make([]BTreeLeafEntry, 0, len(keyRows))
+		for _, kr := range keyRows {
+			rowKeyEntries = append(rowKeyEntries, BTreeLeafEntry{
+				Key:   kr.RowNum,
+				Value: NewRowNumberValue(kr.Key), // Store the key as the value
+			})
+		}
+		
+		// Bulk load row→key index
+		if err := col.rowKeyBTree.BulkLoad(rowKeyEntries); err != nil {
+			return fmt.Errorf("failed to build row-key index: %w", err)
+		}
+		
 		// Update metadata with calculated statistics
 		col.metadata.RootPageID = col.btree.GetRootPageID()
 		col.metadata.TreeHeight = col.btree.GetHeight()
+		col.metadata.RowKeyRootPageID = col.rowKeyBTree.GetRootPageID()
+		col.metadata.RowKeyTreeHeight = col.rowKeyBTree.GetHeight()
 		col.metadata.TotalKeys = stats.TotalKeys
 		col.metadata.DistinctCount = stats.DistinctCount
 		col.metadata.MinValueOffset = stats.MinValue
@@ -309,9 +327,26 @@ func (cf *ColumnarFile) LoadStringColumn(columnName string, data []StringData) e
 			return err
 		}
 		
+		// Build row→key index for strings
+		// For strings, we store the string offset as the value
+		rowKeyEntries := make([]BTreeLeafEntry, 0, len(keyRows))
+		for _, kr := range keyRows {
+			rowKeyEntries = append(rowKeyEntries, BTreeLeafEntry{
+				Key:   kr.RowNum,
+				Value: NewRowNumberValue(kr.Key), // Store the string offset as the value
+			})
+		}
+		
+		// Bulk load row→key index
+		if err := col.rowKeyBTree.BulkLoad(rowKeyEntries); err != nil {
+			return fmt.Errorf("failed to build row-key index: %w", err)
+		}
+		
 		// Update metadata
 		col.metadata.RootPageID = col.btree.GetRootPageID()
 		col.metadata.TreeHeight = col.btree.GetHeight()
+		col.metadata.RowKeyRootPageID = col.rowKeyBTree.GetRootPageID()
+		col.metadata.RowKeyTreeHeight = col.rowKeyBTree.GetHeight()
 		col.metadata.TotalKeys = stats.TotalKeys
 		col.metadata.DistinctCount = uint64(len(stringRows))
 		col.metadata.StringSegmentStart = col.stringSegment.rootPageID
@@ -1067,6 +1102,8 @@ func (cf *ColumnarFile) writeColumnMetadata() error {
 		binary.Write(buf, ByteOrder, col.metadata.AverageKeySize)
 		binary.Write(buf, ByteOrder, col.metadata.StringSegmentStart)
 		binary.Write(buf, ByteOrder, col.metadata.NullBitmapPageID)
+		binary.Write(buf, ByteOrder, col.metadata.RowKeyRootPageID)
+		binary.Write(buf, ByteOrder, col.metadata.RowKeyTreeHeight)
 		
 		page.Header.DataSize = uint32(buf.Len())
 		if err := cf.pageManager.WritePage(page); err != nil {
@@ -1125,6 +1162,8 @@ func (cf *ColumnarFile) readColumnMetadata() error {
 		binary.Read(buf, ByteOrder, &metadata.AverageKeySize)
 		binary.Read(buf, ByteOrder, &metadata.StringSegmentStart)
 		binary.Read(buf, ByteOrder, &metadata.NullBitmapPageID)
+		binary.Read(buf, ByteOrder, &metadata.RowKeyRootPageID)
+		binary.Read(buf, ByteOrder, &metadata.RowKeyTreeHeight)
 		
 		// Extract column name
 		colName := string(bytes.TrimRight(metadata.ColumnName[:], "\x00"))
@@ -1157,6 +1196,18 @@ func (cf *ColumnarFile) readColumnMetadata() error {
 		// Reconstruct child page mapping for optimized B+ tree navigation
 		if err := col.btree.ReconstructChildPageMapping(); err != nil {
 			return fmt.Errorf("failed to reconstruct child page mapping for column %s: %w", colName, err)
+		}
+		
+		// Create row→key B+ tree
+		col.rowKeyBTree = NewBPlusTree(cf.pageManager, DataTypeUint64, nil)
+		col.rowKeyBTree.SetRootPageID(metadata.RowKeyRootPageID)
+		col.rowKeyBTree.SetHeight(metadata.RowKeyTreeHeight)
+		
+		// Reconstruct child page mapping for row→key B+ tree
+		if metadata.RowKeyRootPageID != 0 {
+			if err := col.rowKeyBTree.ReconstructChildPageMapping(); err != nil {
+				return fmt.Errorf("failed to reconstruct row-key child page mapping for column %s: %w", colName, err)
+			}
 		}
 		
 		// Load null bitmap if it exists
@@ -1226,6 +1277,143 @@ func (cf *ColumnarFile) GetStats(columnName string) (map[string]interface{}, err
 	stats["average_key_size"] = col.metadata.AverageKeySize
 	
 	return stats, nil
+}
+
+// LookupIntByRow retrieves the integer value for a given row number
+func (cf *ColumnarFile) LookupIntByRow(columnName string, rowNum uint64) (int64, bool, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return 0, false, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	if col.metadata.DataType != DataTypeInt64 {
+		return 0, false, fmt.Errorf("column %s is not int64 type", columnName)
+	}
+	
+	// Check if row is null
+	if col.nullBitmap != nil && col.nullBitmap.Contains(uint32(rowNum)) {
+		return 0, false, nil // Row is NULL
+	}
+	
+	// Lookup in row→key index
+	rows, err := col.rowKeyBTree.Find(rowNum)
+	if err != nil {
+		return 0, false, err
+	}
+	
+	if len(rows) == 0 {
+		return 0, false, nil // Row not found
+	}
+	
+	// The value stored in the B+ tree is the actual int value
+	return int64(rows[0]), true, nil
+}
+
+// LookupStringByRow retrieves the string value for a given row number
+func (cf *ColumnarFile) LookupStringByRow(columnName string, rowNum uint64) (string, bool, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return "", false, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	if col.metadata.DataType != DataTypeString {
+		return "", false, fmt.Errorf("column %s is not string type", columnName)
+	}
+	
+	// Check if row is null
+	if col.nullBitmap != nil && col.nullBitmap.Contains(uint32(rowNum)) {
+		return "", false, nil // Row is NULL
+	}
+	
+	// Lookup in row→key index
+	rows, err := col.rowKeyBTree.Find(rowNum)
+	if err != nil {
+		return "", false, err
+	}
+	
+	if len(rows) == 0 {
+		return "", false, nil // Row not found
+	}
+	
+	// The value stored is the string offset
+	offset := rows[0]
+	
+	// Get string from string segment
+	str, err := col.stringSegment.GetString(offset)
+	if err != nil {
+		return "", false, err
+	}
+	
+	return str, true, nil
+}
+
+// LookupValueByRow retrieves the value for a given row number (generic version)
+func (cf *ColumnarFile) LookupValueByRow(columnName string, rowNum uint64) (interface{}, bool, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, false, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	// Check if row is null
+	if col.nullBitmap != nil && col.nullBitmap.Contains(uint32(rowNum)) {
+		return nil, false, nil // Row is NULL
+	}
+	
+	// Lookup in row→key index
+	rows, err := col.rowKeyBTree.Find(rowNum)
+	if err != nil {
+		return nil, false, err
+	}
+	
+	if len(rows) == 0 {
+		return nil, false, nil // Row not found
+	}
+	
+	// Convert based on data type
+	switch col.metadata.DataType {
+	case DataTypeInt8:
+		return int8(rows[0]), true, nil
+	case DataTypeInt16:
+		return int16(rows[0]), true, nil
+	case DataTypeInt32:
+		return int32(rows[0]), true, nil
+	case DataTypeInt64:
+		return int64(rows[0]), true, nil
+	case DataTypeUint8:
+		return uint8(rows[0]), true, nil
+	case DataTypeUint16:
+		return uint16(rows[0]), true, nil
+	case DataTypeUint32:
+		return uint32(rows[0]), true, nil
+	case DataTypeUint64:
+		return rows[0], true, nil
+	case DataTypeBool:
+		return rows[0] != 0, true, nil
+	case DataTypeString:
+		// For strings, the value is an offset into the string segment
+		str, err := col.stringSegment.GetString(rows[0])
+		if err != nil {
+			return nil, false, err
+		}
+		return str, true, nil
+	default:
+		return nil, false, fmt.Errorf("unsupported data type %v", col.metadata.DataType)
+	}
+}
+
+// GetRowsForColumn returns all row numbers that have values in the specified column
+func (cf *ColumnarFile) GetRowsForColumn(columnName string) ([]uint64, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	allRows, err := cf.getAllRowsForColumn(col)
+	if err != nil {
+		return nil, err
+	}
+	
+	return BitmapToSlice(allRows), nil
 }
 
 // Statistics calculation helper functions (deprecated - use BulkLoadWithDuplicates for efficiency)
