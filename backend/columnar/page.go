@@ -91,15 +91,75 @@ func (p *Page) Unmarshal(buf []byte) error {
 
 // PageManager manages pages in memory and on disk
 type PageManager struct {
-	file      *os.File
-	cache     map[uint64]*Page
-	cacheLock sync.RWMutex
-	nextPageID uint64
-	isDirty    map[uint64]bool
+	file               *os.File
+	cache              map[uint64]*Page
+	cacheLock          sync.RWMutex
+	nextPageID         uint64
+	isDirty            map[uint64]bool
+	compressionOptions *CompressionOptions
+	compressors        map[CompressionType]Compressor
+	compressionStats   *CompressionStats
 }
 
 // NewPageManager creates a new page manager
 func NewPageManager(filename string, create bool) (*PageManager, error) {
+	return NewPageManagerWithOptions(filename, create, nil)
+}
+
+// NewPageManagerReadOnly creates a new page manager in read-only mode
+func NewPageManagerReadOnly(filename string) (*PageManager, error) {
+	file, err := os.OpenFile(filename, os.O_RDONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Use default options for read-only
+	options := NewCompressionOptions()
+	
+	pm := &PageManager{
+		file:               file,
+		cache:              make(map[uint64]*Page),
+		isDirty:            make(map[uint64]bool),
+		compressionOptions: options,
+		compressors:        make(map[CompressionType]Compressor),
+		compressionStats: &CompressionStats{
+			PageCompressions: make(map[PageType]int64),
+			ColumnStats:      make(map[string]*ColumnCompressionStats),
+		},
+	}
+	
+	// Initialize compressors based on options
+	if err := pm.initializeCompressors(); err != nil {
+		file.Close()
+		return nil, err
+	}
+	
+	// Calculate next page ID based on file size
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	pm.nextPageID = uint64(info.Size() / PageSize)
+	
+	// Read and validate file header
+	header, err := pm.ReadPage(0)
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	
+	// Validate header
+	if header.Header.PageType != PageTypeFileHeader {
+		file.Close()
+		return nil, ErrInvalidPageType
+	}
+	
+	return pm, nil
+}
+
+// NewPageManagerWithOptions creates a new page manager with compression options
+func NewPageManagerWithOptions(filename string, create bool, options *CompressionOptions) (*PageManager, error) {
 	var file *os.File
 	var err error
 	
@@ -113,10 +173,27 @@ func NewPageManager(filename string, create bool) (*PageManager, error) {
 		return nil, err
 	}
 	
+	// Use default options if none provided
+	if options == nil {
+		options = NewCompressionOptions()
+	}
+	
 	pm := &PageManager{
-		file:    file,
-		cache:   make(map[uint64]*Page),
-		isDirty: make(map[uint64]bool),
+		file:               file,
+		cache:              make(map[uint64]*Page),
+		isDirty:            make(map[uint64]bool),
+		compressionOptions: options,
+		compressors:        make(map[CompressionType]Compressor),
+		compressionStats: &CompressionStats{
+			PageCompressions: make(map[PageType]int64),
+			ColumnStats:      make(map[string]*ColumnCompressionStats),
+		},
+	}
+	
+	// Initialize compressors based on options
+	if err := pm.initializeCompressors(); err != nil {
+		file.Close()
+		return nil, err
 	}
 	
 	if create {
@@ -210,6 +287,11 @@ func (pm *PageManager) ReadPage(pageID uint64) (*Page, error) {
 		return nil, fmt.Errorf("checksum mismatch for page %d", pageID)
 	}
 	
+	// Decompress if needed
+	if err := pm.decompressPage(page); err != nil {
+		return nil, fmt.Errorf("failed to decompress page %d: %w", pageID, err)
+	}
+	
 	// Cache the page
 	pm.cacheLock.Lock()
 	pm.cache[pageID] = page
@@ -220,12 +302,21 @@ func (pm *PageManager) ReadPage(pageID uint64) (*Page, error) {
 
 // WritePage writes a page to disk
 func (pm *PageManager) WritePage(page *Page) error {
-	// Update checksum
-	page.Header.Checksum = uint64(page.CalculateChecksum())
+	// Create a copy for compression so we don't modify the cached version
+	compressedPage := &Page{}
+	*compressedPage = *page
+	
+	// Compress if enabled
+	if err := pm.compressPage(compressedPage); err != nil {
+		return fmt.Errorf("failed to compress page %d: %w", page.Header.PageID, err)
+	}
+	
+	// Update checksum on compressed page
+	compressedPage.Header.Checksum = uint64(compressedPage.CalculateChecksum())
 	
 	// Write to disk
 	offset := int64(page.Header.PageID * PageSize)
-	buf := page.Marshal()
+	buf := compressedPage.Marshal()
 	
 	n, err := pm.file.WriteAt(buf, offset)
 	if err != nil {
@@ -281,4 +372,168 @@ func (pm *PageManager) Close() error {
 // GetPageCount returns the total number of pages
 func (pm *PageManager) GetPageCount() uint64 {
 	return pm.nextPageID
+}
+
+// initializeCompressors creates compressor instances based on options
+func (pm *PageManager) initializeCompressors() error {
+	// Create compressors for each unique compression type
+	compressionTypes := []CompressionType{
+		pm.compressionOptions.DefaultPageCompression,
+		pm.compressionOptions.LeafPageCompression,
+		pm.compressionOptions.InternalPageCompression,
+		pm.compressionOptions.StringPageCompression,
+		pm.compressionOptions.BitmapPageCompression,
+	}
+	
+	for _, compType := range compressionTypes {
+		if compType != CompressionNone {
+			if _, exists := pm.compressors[compType]; !exists {
+				compressor, err := CreateCompressor(compType, pm.compressionOptions.DefaultCompressionLevel)
+				if err != nil {
+					return err
+				}
+				pm.compressors[compType] = compressor
+			}
+		}
+	}
+	
+	return nil
+}
+
+// getCompressionType returns the appropriate compression type for a page
+func (pm *PageManager) getCompressionType(pageType PageType) CompressionType {
+	switch pageType {
+	case PageTypeBTreeLeaf:
+		return pm.compressionOptions.LeafPageCompression
+	case PageTypeBTreeInternal:
+		return pm.compressionOptions.InternalPageCompression
+	case PageTypeStringSegment:
+		return pm.compressionOptions.StringPageCompression
+	case PageTypeRoaringBitmap:
+		return pm.compressionOptions.BitmapPageCompression
+	default:
+		return pm.compressionOptions.DefaultPageCompression
+	}
+}
+
+// compressPage compresses a page's data section
+func (pm *PageManager) compressPage(page *Page) error {
+	compressionType := pm.getCompressionType(page.Header.PageType)
+	
+	// Skip if no compression or data is too small
+	if compressionType == CompressionNone || 
+	   int(page.Header.DataSize) < pm.compressionOptions.MinPageSizeToCompress {
+		return nil
+	}
+	
+	compressor, exists := pm.compressors[compressionType]
+	if !exists {
+		return fmt.Errorf("compressor not found for type %d", compressionType)
+	}
+	
+	// Compress only the used portion of data
+	// Ensure DataSize doesn't exceed actual data length
+	if page.Header.DataSize > uint32(len(page.Data)) {
+		page.Header.DataSize = uint32(len(page.Data))
+	}
+	
+	originalData := page.Data[:page.Header.DataSize]
+	compressedData, err := compressor.Compress(originalData)
+	if err != nil {
+		return err
+	}
+	
+	// Only use compression if it actually reduces size
+	if len(compressedData) < len(originalData) {
+		// Store original size in reserved field
+		ByteOrder.PutUint32(page.Header.Reserved[:4], page.Header.DataSize)
+		
+		// Update page with compressed data
+		copy(page.Data[:], compressedData)
+		page.Header.DataSize = uint32(len(compressedData))
+		page.Header.CompressionType = uint8(compressionType)
+		
+		// Update stats
+		pm.compressionStats.UncompressedBytes += int64(len(originalData))
+		pm.compressionStats.CompressedBytes += int64(len(compressedData))
+		pm.compressionStats.PageCompressions[page.Header.PageType]++
+	}
+	
+	return nil
+}
+
+// decompressPage decompresses a page's data section
+func (pm *PageManager) decompressPage(page *Page) error {
+	if page.Header.CompressionType == 0 {
+		return nil // Not compressed
+	}
+	
+	compressor, exists := pm.compressors[CompressionType(page.Header.CompressionType)]
+	if !exists {
+		return fmt.Errorf("compressor not found for type %d", page.Header.CompressionType)
+	}
+	
+	// Get original size from reserved field
+	originalSize := ByteOrder.Uint32(page.Header.Reserved[:4])
+	
+	// Decompress data
+	compressedData := page.Data[:page.Header.DataSize]
+	decompressedData, err := compressor.Decompress(compressedData)
+	if err != nil {
+		return err
+	}
+	
+	// Verify size
+	if uint32(len(decompressedData)) != originalSize {
+		return fmt.Errorf("decompression size mismatch: expected %d, got %d", 
+			originalSize, len(decompressedData))
+	}
+	
+	// Update page with decompressed data
+	copy(page.Data[:], decompressedData)
+	page.Header.DataSize = originalSize
+	page.Header.CompressionType = 0
+	
+	return nil
+}
+
+// GetCompressionStats returns compression statistics
+func (pm *PageManager) GetCompressionStats() *CompressionStats {
+	if pm.compressionStats.UncompressedBytes > 0 {
+		pm.compressionStats.CompressionRatio = float64(pm.compressionStats.CompressedBytes) / 
+			float64(pm.compressionStats.UncompressedBytes)
+	}
+	return pm.compressionStats
+}
+
+// EstimateCompressedSize estimates the compressed size of data for a given page type
+func (pm *PageManager) EstimateCompressedSize(pageType PageType, data []byte) (int, error) {
+	compressionType := pm.getCompressionType(pageType)
+	
+	// No compression
+	if compressionType == CompressionNone {
+		return len(data), nil
+	}
+	
+	// Too small to compress
+	if len(data) < pm.compressionOptions.MinPageSizeToCompress {
+		return len(data), nil
+	}
+	
+	compressor, exists := pm.compressors[compressionType]
+	if !exists {
+		return len(data), nil // Assume no compression if compressor not found
+	}
+	
+	// Compress to get actual size
+	compressed, err := compressor.Compress(data)
+	if err != nil {
+		return len(data), err
+	}
+	
+	// Return smaller of compressed or original
+	if len(compressed) < len(data) {
+		return len(compressed), nil
+	}
+	return len(data), nil
 }

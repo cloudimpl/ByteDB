@@ -163,8 +163,16 @@ type FileHeader struct {
 	ValueStorageOffset   uint64
 	CreationTimestamp    uint64
 	TotalPages           uint64
-	CompressionType      uint32
+	CompressionType      uint32 // Deprecated - use CompressionMetadata instead
 	HeaderChecksum       uint64
+	// New fields for compression metadata
+	DefaultCompression   uint8
+	LeafCompression      uint8
+	InternalCompression  uint8
+	StringCompression    uint8
+	BitmapCompression    uint8
+	CompressionLevel     uint8
+	CompressionFlags     uint16 // For future flags like EnableAdaptiveCompression
 }
 
 // ColumnMetadata represents metadata for a single column

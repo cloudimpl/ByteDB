@@ -130,7 +130,7 @@ func (ss *StringSegment) Build() error {
 
 // writeToPages writes the string segment to disk pages
 func (ss *StringSegment) writeToPages() error {
-	// First page is the directory
+	// First page is the directory header
 	dirPage := ss.pageManager.AllocatePage(PageTypeStringSegment)
 	ss.rootPageID = dirPage.Header.PageID
 	
@@ -138,25 +138,75 @@ func (ss *StringSegment) writeToPages() error {
 	buf := bytes.NewBuffer(dirPage.Data[:0])
 	binary.Write(buf, ByteOrder, uint32(len(ss.entries))) // string count
 	binary.Write(buf, ByteOrder, uint32(ss.totalSize))    // total size
-	binary.Write(buf, ByteOrder, uint64(0))               // next segment page (for future use)
+	binary.Write(buf, ByteOrder, uint64(0))               // first directory entry page (will be set later)
 	
-	// Write directory entries (as many as fit)
-	entriesPerPage := (PageSize - PageHeaderSize - 16) / 16 // 16 bytes per entry
-	entriesToWrite := len(ss.entries)
-	if entriesToWrite > entriesPerPage {
-		entriesToWrite = entriesPerPage
+	// Calculate entries per page
+	entriesPerPage := (PageSize - PageHeaderSize - 8) / 16 // 16 bytes per entry, 8 bytes for next page pointer
+	
+	// Allocate pages for directory entries
+	var firstDirEntryPage *Page
+	var currentDirPage *Page
+	var previousDirPage *Page
+	entryIndex := 0
+	
+	for entryIndex < len(ss.entries) {
+		// Allocate a new directory entry page
+		newDirPage := ss.pageManager.AllocatePage(PageTypeStringSegment)
+		newDirPage.Header.ParentPageID = dirPage.Header.PageID
+		
+		if firstDirEntryPage == nil {
+			firstDirEntryPage = newDirPage
+			// Update header with first directory entry page
+			buf := bytes.NewBuffer(dirPage.Data[:16])
+			buf.Reset()
+			binary.Write(buf, ByteOrder, uint32(len(ss.entries))) // string count
+			binary.Write(buf, ByteOrder, uint32(ss.totalSize))    // total size
+			binary.Write(buf, ByteOrder, newDirPage.Header.PageID) // first dir entry page
+		}
+		
+		if previousDirPage != nil {
+			// Link previous directory page to this one
+			// The next page pointer is already reserved in the data, just update it
+			nextPtrOffset := previousDirPage.Header.DataSize - 8
+			ByteOrder.PutUint64(previousDirPage.Data[nextPtrOffset:], newDirPage.Header.PageID)
+			if err := ss.pageManager.WritePage(previousDirPage); err != nil {
+				return err
+			}
+		}
+		
+		// Write entries to this page
+		pageBuf := bytes.NewBuffer(newDirPage.Data[:0])
+		entriesInThisPage := 0
+		
+		for entryIndex < len(ss.entries) && entriesInThisPage < entriesPerPage {
+			entry := ss.entries[entryIndex]
+			binary.Write(pageBuf, ByteOrder, entry.Offset)
+			binary.Write(pageBuf, ByteOrder, entry.Length)
+			binary.Write(pageBuf, ByteOrder, entry.Hash)
+			entryIndex++
+			entriesInThisPage++
+		}
+		
+		newDirPage.Header.EntryCount = uint32(entriesInThisPage)
+		
+		// Reserve space for next page pointer
+		binary.Write(pageBuf, ByteOrder, uint64(0))
+		
+		newDirPage.Header.DataSize = uint32(pageBuf.Len())
+		
+		currentDirPage = newDirPage
+		previousDirPage = currentDirPage
 	}
 	
-	for i := 0; i < entriesToWrite; i++ {
-		entry := ss.entries[i]
-		binary.Write(buf, ByteOrder, entry.Offset)
-		binary.Write(buf, ByteOrder, entry.Length)
-		binary.Write(buf, ByteOrder, entry.Hash)
+	// Write the last directory page
+	if currentDirPage != nil {
+		if err := ss.pageManager.WritePage(currentDirPage); err != nil {
+			return err
+		}
 	}
 	
-	dirPage.Header.EntryCount = uint32(entriesToWrite)
-	dirPage.Header.DataSize = uint32(buf.Len())
-	
+	// Update and write the main directory header page
+	dirPage.Header.DataSize = 16 // header size
 	if err := ss.pageManager.WritePage(dirPage); err != nil {
 		return err
 	}
@@ -190,15 +240,18 @@ func (ss *StringSegment) writeToPages() error {
 		// Check if string fits in current page
 		totalBytes := 4 + len(strBytes)
 		if pageOffset+totalBytes > len(currentPage.Data) {
-			// Write current page and allocate new one
+			// Allocate new page and link it
+			newPage := ss.pageManager.AllocatePage(PageTypeStringSegment)
+			newPage.Header.ParentPageID = dirPage.Header.PageID
+			
+			// Set next page pointer and data size
+			currentPage.Header.NextPageID = newPage.Header.PageID
 			currentPage.Header.DataSize = uint32(pageOffset)
+			
+			// Write current page with the link
 			if err := ss.pageManager.WritePage(currentPage); err != nil {
 				return err
 			}
-			
-			newPage := ss.pageManager.AllocatePage(PageTypeStringSegment)
-			newPage.Header.ParentPageID = dirPage.Header.PageID
-			currentPage.Header.NextPageID = newPage.Header.PageID
 			
 			currentPage = newPage
 			pageOffset = 0
@@ -434,26 +487,39 @@ func (ss *StringSegment) loadDirectory() error {
 	buf := bytes.NewReader(dirPage.Data[:])
 	var stringCount uint32
 	var totalSize uint32
-	var nextSegmentPage uint64
+	var firstDirEntryPageID uint64
 	
 	binary.Read(buf, ByteOrder, &stringCount)
 	binary.Read(buf, ByteOrder, &totalSize)
-	binary.Read(buf, ByteOrder, &nextSegmentPage)
-	
-	// Read directory entries
-	entriesPerPage := (PageSize - PageHeaderSize - 16) / 16
-	entriesToRead := int(stringCount)
-	if entriesToRead > entriesPerPage {
-		entriesToRead = entriesPerPage
-	}
+	binary.Read(buf, ByteOrder, &firstDirEntryPageID)
 	
 	ss.entries = make([]StringEntry, 0, stringCount)
-	for i := 0; i < entriesToRead; i++ {
-		var entry StringEntry
-		binary.Read(buf, ByteOrder, &entry.Offset)
-		binary.Read(buf, ByteOrder, &entry.Length)
-		binary.Read(buf, ByteOrder, &entry.Hash)
-		ss.entries = append(ss.entries, entry)
+	ss.totalSize = uint64(totalSize)
+	
+	// Read directory entries from multiple pages
+	dirEntryPageID := firstDirEntryPageID
+	
+	for dirEntryPageID != 0 && len(ss.entries) < int(stringCount) {
+		dirEntryPage, err := ss.pageManager.ReadPage(dirEntryPageID)
+		if err != nil {
+			return fmt.Errorf("failed to read directory entry page %d: %w", dirEntryPageID, err)
+		}
+		
+		// Read entries from this page
+		entryBuf := bytes.NewReader(dirEntryPage.Data[:dirEntryPage.Header.DataSize])
+		entriesInThisPage := int(dirEntryPage.Header.EntryCount)
+		
+		for i := 0; i < entriesInThisPage && len(ss.entries) < int(stringCount); i++ {
+			var entry StringEntry
+			binary.Read(entryBuf, ByteOrder, &entry.Offset)
+			binary.Read(entryBuf, ByteOrder, &entry.Length)
+			binary.Read(entryBuf, ByteOrder, &entry.Hash)
+			ss.entries = append(ss.entries, entry)
+		}
+		
+		// Read next page pointer (it's the last 8 bytes of the data)
+		nextPtrOffset := dirEntryPage.Header.DataSize - 8
+		dirEntryPageID = ByteOrder.Uint64(dirEntryPage.Data[nextPtrOffset:])
 	}
 	
 	// Load actual strings from data pages

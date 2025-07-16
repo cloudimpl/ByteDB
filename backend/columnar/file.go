@@ -12,11 +12,14 @@ import (
 
 // ColumnarFile represents a complete columnar file
 type ColumnarFile struct {
-	filename      string
-	pageManager   *PageManager
-	header        *FileHeader
-	columns       map[string]*Column
-	columnOrder   []string
+	filename           string
+	pageManager        *PageManager
+	header             *FileHeader
+	columns            map[string]*Column
+	columnOrder        []string
+	compressionOptions *CompressionOptions
+	compressionStats   *CompressionStats
+	readOnly           bool // Whether the file is opened in read-only mode
 }
 
 // Column represents a single column with its metadata and indexes
@@ -31,32 +34,58 @@ type Column struct {
 
 // CreateFile creates a new columnar file with .bytedb extension
 func CreateFile(filename string) (*ColumnarFile, error) {
+	return CreateFileWithOptions(filename, nil)
+}
+
+// CreateFileWithOptions creates a new columnar file with compression options
+func CreateFileWithOptions(filename string, options *CompressionOptions) (*ColumnarFile, error) {
 	// Ensure .bytedb extension
 	if !strings.HasSuffix(filename, ".bytedb") {
 		return nil, fmt.Errorf("invalid filename: %s - columnar files must have .bytedb extension", filename)
 	}
 	
-	// Create page manager
-	pm, err := NewPageManager(filename, true)
+	// Use default options if none provided
+	if options == nil {
+		options = NewCompressionOptions()
+	}
+	
+	// Validate page size configuration
+	if err := options.ValidatePageSize(); err != nil {
+		return nil, fmt.Errorf("page size validation failed: %w", err)
+	}
+	
+	// Create page manager with compression options
+	pm, err := NewPageManagerWithOptions(filename, true, options)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create page manager: %w", err)
 	}
 	
-	// Create file header
+	// Create file header with compression metadata
 	header := &FileHeader{
-		MagicNumber:       MagicNumber,
-		MajorVersion:      MajorVersion,
-		MinorVersion:      MinorVersion,
-		PageSize:          PageSize,
-		CreationTimestamp: uint64(time.Now().Unix()),
+		MagicNumber:         MagicNumber,
+		MajorVersion:        MajorVersion,
+		MinorVersion:        MinorVersion,
+		PageSize:            uint32(options.PageSize),
+		CreationTimestamp:   uint64(time.Now().Unix()),
+		DefaultCompression:  uint8(options.DefaultPageCompression),
+		LeafCompression:     uint8(options.LeafPageCompression),
+		InternalCompression: uint8(options.InternalPageCompression),
+		StringCompression:   uint8(options.StringPageCompression),
+		BitmapCompression:   uint8(options.BitmapPageCompression),
+		CompressionLevel:    uint8(options.DefaultCompressionLevel),
 	}
 	
 	cf := &ColumnarFile{
-		filename:    filename,
-		pageManager: pm,
-		header:      header,
-		columns:     make(map[string]*Column),
-		columnOrder: make([]string, 0),
+		filename:           filename,
+		pageManager:        pm,
+		header:             header,
+		columns:            make(map[string]*Column),
+		columnOrder:        make([]string, 0),
+		compressionOptions: options,
+		compressionStats:   &CompressionStats{
+			PageCompressions: make(map[PageType]int64),
+			ColumnStats:      make(map[string]*ColumnCompressionStats),
+		},
 	}
 	
 	// Write initial header
@@ -68,15 +97,33 @@ func CreateFile(filename string) (*ColumnarFile, error) {
 	return cf, nil
 }
 
-// OpenFile opens an existing columnar file
+// OpenFile opens an existing columnar file in read-write mode
 func OpenFile(filename string) (*ColumnarFile, error) {
+	return openFileWithMode(filename, false)
+}
+
+// OpenFileReadOnly opens an existing columnar file in read-only mode
+func OpenFileReadOnly(filename string) (*ColumnarFile, error) {
+	return openFileWithMode(filename, true)
+}
+
+// openFileWithMode opens an existing columnar file with specified mode
+func openFileWithMode(filename string, readOnly bool) (*ColumnarFile, error) {
 	// Ensure .bytedb extension
 	if !strings.HasSuffix(filename, ".bytedb") {
 		return nil, fmt.Errorf("invalid filename: %s - columnar files must have .bytedb extension", filename)
 	}
 	
-	// Open page manager
-	pm, err := NewPageManager(filename, false)
+	// Open page manager without compression first to read header
+	var pm *PageManager
+	var err error
+	
+	if readOnly {
+		pm, err = NewPageManagerReadOnly(filename)
+	} else {
+		pm, err = NewPageManager(filename, false)
+	}
+	
 	if err != nil {
 		return nil, fmt.Errorf("failed to open page manager: %w", err)
 	}
@@ -86,6 +133,7 @@ func OpenFile(filename string) (*ColumnarFile, error) {
 		pageManager: pm,
 		columns:     make(map[string]*Column),
 		columnOrder: make([]string, 0),
+		readOnly:    readOnly,
 	}
 	
 	// Read header
@@ -93,6 +141,34 @@ func OpenFile(filename string) (*ColumnarFile, error) {
 		pm.Close()
 		return nil, err
 	}
+	
+	// Reconstruct compression options from header
+	compressionOptions := &CompressionOptions{
+		PageSize:                int(cf.header.PageSize),
+		DefaultPageCompression:  CompressionType(cf.header.DefaultCompression),
+		LeafPageCompression:     CompressionType(cf.header.LeafCompression),
+		InternalPageCompression: CompressionType(cf.header.InternalCompression),
+		StringPageCompression:   CompressionType(cf.header.StringCompression),
+		BitmapPageCompression:   CompressionType(cf.header.BitmapCompression),
+		DefaultCompressionLevel: CompressionLevel(cf.header.CompressionLevel),
+		ColumnStrategies:        make(map[string]*ColumnCompressionStrategy),
+		MinPageSizeToCompress:   512,
+	}
+	
+	// Reinitialize page manager with compression support
+	pm.compressionOptions = compressionOptions
+	pm.compressors = make(map[CompressionType]Compressor)
+	pm.compressionStats = &CompressionStats{
+		PageCompressions: make(map[PageType]int64),
+		ColumnStats:      make(map[string]*ColumnCompressionStats),
+	}
+	if err := pm.initializeCompressors(); err != nil {
+		pm.Close()
+		return nil, err
+	}
+	
+	cf.compressionOptions = compressionOptions
+	cf.compressionStats = pm.compressionStats
 	
 	// Read column metadata
 	if err := cf.readColumnMetadata(); err != nil {
@@ -103,8 +179,19 @@ func OpenFile(filename string) (*ColumnarFile, error) {
 	return cf, nil
 }
 
+// checkWriteAllowed returns an error if the file is read-only
+func (cf *ColumnarFile) checkWriteAllowed() error {
+	if cf.readOnly {
+		return fmt.Errorf("cannot perform write operation: file is opened in read-only mode")
+	}
+	return nil
+}
+
 // AddColumn adds a new column to the file
 func (cf *ColumnarFile) AddColumn(name string, dataType DataType, nullable bool) error {
+	if err := cf.checkWriteAllowed(); err != nil {
+		return err
+	}
 	if _, exists := cf.columns[name]; exists {
 		return fmt.Errorf("column %s already exists", name)
 	}
@@ -138,6 +225,10 @@ func (cf *ColumnarFile) AddColumn(name string, dataType DataType, nullable bool)
 
 // LoadIntColumn loads data into an integer column (automatically handles nulls)
 func (cf *ColumnarFile) LoadIntColumn(columnName string, data []IntData) error {
+	if err := cf.checkWriteAllowed(); err != nil {
+		return err
+	}
+	
 	col, exists := cf.columns[columnName]
 	if !exists {
 		return fmt.Errorf("column %s not found", columnName)
@@ -239,6 +330,10 @@ func (cf *ColumnarFile) LoadIntColumn(columnName string, data []IntData) error {
 
 // LoadStringColumn loads data into a string column (automatically handles nulls)
 func (cf *ColumnarFile) LoadStringColumn(columnName string, data []StringData) error {
+	if err := cf.checkWriteAllowed(); err != nil {
+		return err
+	}
+	
 	col, exists := cf.columns[columnName]
 	if !exists {
 		return fmt.Errorf("column %s not found", columnName)
@@ -1018,6 +1113,14 @@ func (cf *ColumnarFile) writeHeader() error {
 	binary.Write(buf, ByteOrder, cf.header.TotalPages)
 	binary.Write(buf, ByteOrder, cf.header.CompressionType)
 	binary.Write(buf, ByteOrder, cf.header.HeaderChecksum)
+	// Write compression metadata
+	binary.Write(buf, ByteOrder, cf.header.DefaultCompression)
+	binary.Write(buf, ByteOrder, cf.header.LeafCompression)
+	binary.Write(buf, ByteOrder, cf.header.InternalCompression)
+	binary.Write(buf, ByteOrder, cf.header.StringCompression)
+	binary.Write(buf, ByteOrder, cf.header.BitmapCompression)
+	binary.Write(buf, ByteOrder, cf.header.CompressionLevel)
+	binary.Write(buf, ByteOrder, cf.header.CompressionFlags)
 	
 	// Also write column metadata page IDs after the header
 	// For now, we know metadata starts at page 1
@@ -1056,6 +1159,16 @@ func (cf *ColumnarFile) readHeader() error {
 	binary.Read(buf, ByteOrder, &cf.header.TotalPages)
 	binary.Read(buf, ByteOrder, &cf.header.CompressionType)
 	binary.Read(buf, ByteOrder, &cf.header.HeaderChecksum)
+	// Read compression metadata (may not exist in older files)
+	if buf.Len() >= 7 { // Check if we have compression metadata
+		binary.Read(buf, ByteOrder, &cf.header.DefaultCompression)
+		binary.Read(buf, ByteOrder, &cf.header.LeafCompression)
+		binary.Read(buf, ByteOrder, &cf.header.InternalCompression)
+		binary.Read(buf, ByteOrder, &cf.header.StringCompression)
+		binary.Read(buf, ByteOrder, &cf.header.BitmapCompression)
+		binary.Read(buf, ByteOrder, &cf.header.CompressionLevel)
+		binary.Read(buf, ByteOrder, &cf.header.CompressionFlags)
+	}
 	
 	// Validate magic number
 	if cf.header.MagicNumber != MagicNumber {

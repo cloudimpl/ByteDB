@@ -511,6 +511,15 @@ func (bt *BPlusTree) BulkLoadWithDuplicates(keyRows []struct{Key uint64; RowNum 
 
 // buildLeaves creates leaf pages from sorted entries
 func (bt *BPlusTree) buildLeaves(entries []BTreeLeafEntry) ([]*Page, error) {
+	if bt.pageManager.compressionOptions != nil && 
+	   bt.pageManager.compressionOptions.LeafPageCompression != CompressionNone {
+		return bt.buildLeavesCompressed(entries)
+	}
+	return bt.buildLeavesUncompressed(entries)
+}
+
+// buildLeavesUncompressed is the original implementation
+func (bt *BPlusTree) buildLeavesUncompressed(entries []BTreeLeafEntry) ([]*Page, error) {
 	leaves := make([]*Page, 0)
 	currentLeaf := bt.pageManager.AllocatePage(PageTypeBTreeLeaf)
 	
@@ -565,8 +574,99 @@ func (bt *BPlusTree) buildLeaves(entries []BTreeLeafEntry) ([]*Page, error) {
 	return leaves, nil
 }
 
+// buildLeavesCompressed creates leaf pages with compression awareness
+func (bt *BPlusTree) buildLeavesCompressed(entries []BTreeLeafEntry) ([]*Page, error) {
+	leaves := make([]*Page, 0)
+	currentLeaf := bt.pageManager.AllocatePage(PageTypeBTreeLeaf)
+	
+	buf := bytes.NewBuffer(currentLeaf.Data[:0])
+	entryCount := uint32(0)
+	
+	// We'll allow buffer to grow beyond page size, then check compressed size
+	tempBuf := new(bytes.Buffer)
+	tempEntryCount := uint32(0)
+	
+	for i, entry := range entries {
+		// Write entry to temp buffer
+		tempBuf.Write(EncodeKey(entry.Key, bt.dataType))
+		binary.Write(tempBuf, ByteOrder, entry.Value.Data)
+		tempEntryCount++
+		
+		// Check both uncompressed and compressed size constraints
+		// 1. Uncompressed data must fit in page (for decompression)
+		// 2. Compressed data must fit in page (for storage)
+		uncompressedSize := tempBuf.Len()
+		compressedSize, _ := bt.pageManager.EstimateCompressedSize(PageTypeBTreeLeaf, tempBuf.Bytes())
+		
+		// If both sizes fit in page, update the actual buffer
+		if uncompressedSize <= len(currentLeaf.Data) && compressedSize <= len(currentLeaf.Data) {
+			// Copy temp buffer to page data
+			copy(currentLeaf.Data[:], tempBuf.Bytes())
+			buf = bytes.NewBuffer(currentLeaf.Data[:tempBuf.Len()])
+			entryCount = tempEntryCount
+		} else if entryCount > 0 {
+			// Compressed data doesn't fit, finalize current page with previous data
+			currentLeaf.Header.EntryCount = entryCount
+			currentLeaf.Header.DataSize = uint32(buf.Len())
+			
+			// Create new leaf
+			newLeaf := bt.pageManager.AllocatePage(PageTypeBTreeLeaf)
+			currentLeaf.Header.NextPageID = newLeaf.Header.PageID
+			newLeaf.Header.PrevPageID = currentLeaf.Header.PageID
+			
+			if err := bt.pageManager.WritePage(currentLeaf); err != nil {
+				return nil, err
+			}
+			
+			leaves = append(leaves, currentLeaf)
+			
+			// Start fresh with current entry
+			currentLeaf = newLeaf
+			tempBuf = new(bytes.Buffer)
+			tempBuf.Write(EncodeKey(entry.Key, bt.dataType))
+			binary.Write(tempBuf, ByteOrder, entry.Value.Data)
+			tempEntryCount = 1
+			
+			// Copy temp buffer to page data
+			copy(currentLeaf.Data[:], tempBuf.Bytes())
+			buf = bytes.NewBuffer(currentLeaf.Data[:tempBuf.Len()])
+			entryCount = 1
+		}
+		
+		// Handle last entry
+		if i == len(entries)-1 {
+			// Ensure data is written to page if we haven't written yet
+			if buf.Len() == 0 && tempBuf.Len() > 0 {
+				copy(currentLeaf.Data[:], tempBuf.Bytes())
+				currentLeaf.Header.EntryCount = tempEntryCount
+				currentLeaf.Header.DataSize = uint32(tempBuf.Len())
+			} else {
+				currentLeaf.Header.EntryCount = entryCount
+				currentLeaf.Header.DataSize = uint32(buf.Len())
+			}
+			
+			if err := bt.pageManager.WritePage(currentLeaf); err != nil {
+				return nil, err
+			}
+			
+			leaves = append(leaves, currentLeaf)
+		}
+	}
+	
+	return leaves, nil
+}
+
 // buildInternalLevel builds one level of internal nodes (keys only, no child pointers)
 func (bt *BPlusTree) buildInternalLevel(children []*Page) ([]*Page, error) {
+	if bt.pageManager.compressionOptions != nil && 
+	   bt.pageManager.compressionOptions.InternalPageCompression != CompressionNone {
+		return bt.buildInternalLevelCompressed(children)
+	}
+	return bt.buildInternalLevelUncompressed(children)
+}
+
+// buildInternalLevelUncompressed is the original implementation
+func (bt *BPlusTree) buildInternalLevelUncompressed(children []*Page) ([]*Page, error) {
 	internals := make([]*Page, 0)
 	currentInternal := bt.pageManager.AllocatePage(PageTypeBTreeInternal)
 	
@@ -635,6 +735,119 @@ func (bt *BPlusTree) buildInternalLevel(children []*Page) ([]*Page, error) {
 		child.Header.ParentPageID = currentInternal.Header.PageID
 		if err := bt.pageManager.WritePage(child); err != nil {
 			return nil, err
+		}
+	}
+	
+	// Finalize last internal node
+	currentInternal.Header.EntryCount = entryCount
+	currentInternal.Header.DataSize = uint32(buf.Len())
+	
+	// Store child page mapping for the final internal node
+	bt.childPageMap[currentInternal.Header.PageID] = make([]uint64, len(currentChildPages))
+	copy(bt.childPageMap[currentInternal.Header.PageID], currentChildPages)
+	
+	if err := bt.pageManager.WritePage(currentInternal); err != nil {
+		return nil, err
+	}
+	
+	internals = append(internals, currentInternal)
+	
+	return internals, nil
+}
+
+// buildInternalLevelCompressed builds internal nodes with compression awareness
+func (bt *BPlusTree) buildInternalLevelCompressed(children []*Page) ([]*Page, error) {
+	internals := make([]*Page, 0)
+	currentInternal := bt.pageManager.AllocatePage(PageTypeBTreeInternal)
+	
+	buf := bytes.NewBuffer(currentInternal.Data[:0])
+	entryCount := uint32(0)
+	
+	// Track child pages for current internal node
+	currentChildPages := make([]uint64, 0)
+	currentChildPages = append(currentChildPages, children[0].Header.PageID) // First child
+	
+	// Set parent pointer for the first child
+	children[0].Header.ParentPageID = currentInternal.Header.PageID
+	if err := bt.pageManager.WritePage(children[0]); err != nil {
+		return nil, err
+	}
+	
+	// Temp buffer for compression estimation
+	tempBuf := new(bytes.Buffer)
+	tempEntryCount := uint32(0)
+	tempChildPages := make([]uint64, len(currentChildPages))
+	copy(tempChildPages, currentChildPages)
+	
+	// Skip the first child - we'll store keys starting from the second child
+	for i := 1; i < len(children); i++ {
+		child := children[i]
+		
+		// Get first key from child
+		firstKey, err := bt.getFirstKeyFromPage(child)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Add to temp buffer
+		tempChildPages = append(tempChildPages, child.Header.PageID)
+		if len(tempChildPages) > 1 {
+			tempBuf.Write(EncodeKey(firstKey, bt.dataType))
+			tempEntryCount++
+		}
+		
+		// Check both uncompressed and compressed size constraints
+		uncompressedSize := tempBuf.Len()
+		compressedSize, _ := bt.pageManager.EstimateCompressedSize(PageTypeBTreeInternal, tempBuf.Bytes())
+		
+		// If both sizes fit, update actual buffer
+		if uncompressedSize <= len(currentInternal.Data) && compressedSize <= len(currentInternal.Data) {
+			currentChildPages = append(currentChildPages, child.Header.PageID)
+			if len(currentChildPages) > 1 {
+				buf.Write(EncodeKey(firstKey, bt.dataType))
+				entryCount++
+			}
+			
+			// Update child's parent pointer
+			child.Header.ParentPageID = currentInternal.Header.PageID
+			if err := bt.pageManager.WritePage(child); err != nil {
+				return nil, err
+			}
+		} else if entryCount > 0 {
+			// Finalize current internal node
+			currentInternal.Header.EntryCount = entryCount
+			currentInternal.Header.DataSize = uint32(buf.Len())
+			
+			// Store child page mapping for this internal node
+			bt.childPageMap[currentInternal.Header.PageID] = make([]uint64, len(currentChildPages))
+			copy(bt.childPageMap[currentInternal.Header.PageID], currentChildPages)
+			
+			if err := bt.pageManager.WritePage(currentInternal); err != nil {
+				return nil, err
+			}
+			
+			internals = append(internals, currentInternal)
+			
+			// Create new internal node
+			currentInternal = bt.pageManager.AllocatePage(PageTypeBTreeInternal)
+			buf = bytes.NewBuffer(currentInternal.Data[:0])
+			entryCount = 0
+			
+			// Reset with current child
+			currentChildPages = make([]uint64, 0)
+			currentChildPages = append(currentChildPages, child.Header.PageID)
+			
+			// Update child's parent pointer
+			child.Header.ParentPageID = currentInternal.Header.PageID
+			if err := bt.pageManager.WritePage(child); err != nil {
+				return nil, err
+			}
+			
+			// Reset temp buffer
+			tempBuf = new(bytes.Buffer)
+			tempEntryCount = 0
+			tempChildPages = make([]uint64, 1)
+			tempChildPages[0] = child.Header.PageID
 		}
 	}
 	
