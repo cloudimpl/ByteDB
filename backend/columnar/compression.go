@@ -68,7 +68,7 @@ type CompressionOptions struct {
 // NewCompressionOptions creates default compression options
 func NewCompressionOptions() *CompressionOptions {
 	return &CompressionOptions{
-		PageSize:                  4096, // Currently only 4KB is supported
+		PageSize:                  16 * 1024, // Default to 16KB for optimal compression
 		DefaultPageCompression:    CompressionNone,
 		DefaultCompressionLevel:   CompressionLevelDefault,
 		LeafPageCompression:       CompressionNone,
@@ -82,8 +82,7 @@ func NewCompressionOptions() *CompressionOptions {
 }
 
 // WithPageSize sets the page size for the file
-// NOTE: Dynamic page sizes are not yet fully implemented. Currently, only 4KB (4096) is supported.
-// This method stores the configuration for future compatibility when dynamic page sizes are implemented.
+// Page size must be a power of 2 between 1KB and 128KB
 func (opts *CompressionOptions) WithPageSize(pageSize int) *CompressionOptions {
 	// Validate page size (must be power of 2, between 1KB and 128KB)
 	if pageSize < 1024 || pageSize > 128*1024 || (pageSize&(pageSize-1)) != 0 {
@@ -91,16 +90,6 @@ func (opts *CompressionOptions) WithPageSize(pageSize int) *CompressionOptions {
 	}
 	opts.PageSize = pageSize
 	return opts
-}
-
-// ValidatePageSize checks if the configured page size is supported
-// Currently only 4KB pages are fully implemented
-func (opts *CompressionOptions) ValidatePageSize() error {
-	if opts.PageSize != 4096 {
-		return fmt.Errorf("dynamic page size not yet supported: requested %d bytes, system currently only supports 4096 bytes", 
-			opts.PageSize)
-	}
-	return nil
 }
 
 // WithPageCompression sets default page compression

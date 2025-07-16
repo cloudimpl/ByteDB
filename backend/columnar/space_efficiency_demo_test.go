@@ -106,10 +106,11 @@ func TestSpaceEfficiencyDemo(t *testing.T) {
 		info, _ := os.Stat(tmpFile)
 		
 		// Calculate entries per leaf page
+		pageSize := cf.pageManager.GetPageSize()
 		keySize := GetDataTypeSize(DataTypeUint8) // 1 byte
 		valueSize := 8 // row number
 		entrySize := keySize + valueSize
-		maxEntriesPerPage := (PageSize - PageHeaderSize) / entrySize
+		maxEntriesPerPage := (pageSize - PageHeaderSize) / entrySize
 		
 		t.Logf("Unique byte keys - File size: %d bytes, Leaf pages: %d, Internal pages: %d", 
 			info.Size(), leafPages, internalPages)
@@ -146,10 +147,11 @@ func TestSpaceEfficiencyDemo(t *testing.T) {
 		info, _ := os.Stat(tmpFile)
 		
 		// Calculate entries per leaf page
+		pageSize := cf.pageManager.GetPageSize()
 		keySize := GetDataTypeSize(DataTypeUint64) // 8 bytes
 		valueSize := 8 // row number
 		entrySize := keySize + valueSize
-		maxEntriesPerPage := (PageSize - PageHeaderSize) / entrySize
+		maxEntriesPerPage := (pageSize - PageHeaderSize) / entrySize
 		
 		t.Logf("Unique uint64 keys - File size: %d bytes, Leaf pages: %d, Internal pages: %d", 
 			info.Size(), leafPages, internalPages)

@@ -34,7 +34,8 @@ func (bm *BitmapManager) StoreBitmap(bitmap *roaring.Bitmap) (uint64, error) {
 	data := buf.Bytes()
 
 	// Check if it fits in a single page
-	availableSpace := PageSize - PageHeaderSize - 16 // 16 bytes for metadata
+	pageSize := bm.pageManager.GetPageSize()
+	availableSpace := pageSize - PageHeaderSize - 16 // 16 bytes for metadata
 	if len(data) <= availableSpace {
 		// Store in single page
 		page := bm.pageManager.AllocatePage(PageTypeRoaringBitmap)
@@ -70,8 +71,9 @@ func (bm *BitmapManager) storeMultiPageBitmap(bitmap *roaring.Bitmap, data []byt
 	firstPage := bm.pageManager.AllocatePage(PageTypeRoaringBitmap)
 	currentPage := firstPage
 
+	pageSize := bm.pageManager.GetPageSize()
 	offset := 0
-	availableSpace := PageSize - PageHeaderSize - 16
+	availableSpace := pageSize - PageHeaderSize - 16
 	firstPageDataSpace := availableSpace
 
 	// Check if we need additional pages

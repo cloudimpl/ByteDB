@@ -87,10 +87,10 @@ func TestCompressionReducesFileSize(t *testing.T) {
 			sizeRatio := float64(info2.Size()) / float64(info1.Size())
 			
 			t.Logf("%s results:", test.name)
-			t.Logf("  Uncompressed: %d bytes (%d pages)", info1.Size(), info1.Size()/PageSize)
+			t.Logf("  Uncompressed: %d bytes", info1.Size())
 			t.Logf("  Compressed: %d bytes (%d pages)", info2.Size(), totalPages)
 			t.Logf("  Size ratio: %.2f (expected < %.2f)", sizeRatio, test.expectedRatio)
-			t.Logf("  Page reduction: %.1f%%", (1.0-float64(totalPages)/(float64(info1.Size())/PageSize))*100)
+			t.Logf("  File size reduction: %.1f%%", (1.0-float64(info2.Size())/float64(info1.Size()))*100)
 			t.Logf("  Data compression ratio: %.2f", stats.CompressionRatio)
 			
 			// Verify file is actually smaller

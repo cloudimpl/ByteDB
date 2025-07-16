@@ -7,7 +7,6 @@ import (
 
 // Constants
 const (
-	PageSize       = 4096 // 4KB pages
 	MagicNumber    = 0x42594442 // "BYDB"
 	MajorVersion   = 1
 	MinorVersion   = 0
@@ -15,15 +14,25 @@ const (
 	// Page header size
 	PageHeaderSize = 64
 	
-	// Maximum entries per page type
-	MaxInternalEntries = (PageSize - PageHeaderSize - 8) / 40  // ~100 entries
-	MaxLeafEntries     = (PageSize - PageHeaderSize - 16) / 16  // ~250 entries
-	MaxStringsPerPage  = (PageSize - PageHeaderSize - 16) / 16  // ~250 strings
-	
 	// Value flags
 	ValueFlagBitmap    = uint64(1) << 63
 	ValueMask          = ^ValueFlagBitmap
 )
+
+// CalculateMaxInternalEntries calculates max entries for internal pages based on page size
+func CalculateMaxInternalEntries(pageSize int) int {
+	return (pageSize - PageHeaderSize - 8) / 40
+}
+
+// CalculateMaxLeafEntries calculates max entries for leaf pages based on page size
+func CalculateMaxLeafEntries(pageSize int) int {
+	return (pageSize - PageHeaderSize - 16) / 16
+}
+
+// CalculateMaxStringsPerPage calculates max strings per page based on page size
+func CalculateMaxStringsPerPage(pageSize int) int {
+	return (pageSize - PageHeaderSize - 16) / 16
+}
 
 // Errors
 var (

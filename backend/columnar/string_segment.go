@@ -141,7 +141,8 @@ func (ss *StringSegment) writeToPages() error {
 	binary.Write(buf, ByteOrder, uint64(0))               // first directory entry page (will be set later)
 	
 	// Calculate entries per page
-	entriesPerPage := (PageSize - PageHeaderSize - 8) / 16 // 16 bytes per entry, 8 bytes for next page pointer
+	pageSize := ss.pageManager.GetPageSize()
+	entriesPerPage := (pageSize - PageHeaderSize - 8) / 16 // 16 bytes per entry, 8 bytes for next page pointer
 	
 	// Allocate pages for directory entries
 	var firstDirEntryPage *Page

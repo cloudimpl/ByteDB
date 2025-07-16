@@ -106,18 +106,19 @@ func TestStringSegmentMultipleDirectoryPages(t *testing.T) {
 	filename := "test_string_directory_pages.bytedb"
 	defer os.Remove(filename)
 
-	// Calculate how many entries fit per directory page
-	entriesPerPage := (PageSize - PageHeaderSize - 8) / 16
-	t.Logf("Entries per directory page: %d", entriesPerPage)
-
-	// Test with enough strings to require multiple directory pages
-	numStrings := entriesPerPage*3 + 50 // Three full pages plus some extra
-	t.Logf("Testing with %d unique strings (requires %d directory pages)", numStrings, (numStrings+entriesPerPage-1)/entriesPerPage)
-
 	cf, err := CreateFile(filename)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Calculate how many entries fit per directory page based on actual page size
+	pageSize := cf.pageManager.GetPageSize()
+	entriesPerPage := (pageSize - PageHeaderSize - 8) / 16
+	t.Logf("Page size: %d, Entries per directory page: %d", pageSize, entriesPerPage)
+
+	// Test with enough strings to require multiple directory pages
+	numStrings := entriesPerPage*3 + 50 // Three full pages plus some extra
+	t.Logf("Testing with %d unique strings (requires %d directory pages)", numStrings, (numStrings+entriesPerPage-1)/entriesPerPage)
 
 	cf.AddColumn("str", DataTypeString, false)
 

@@ -49,11 +49,6 @@ func CreateFileWithOptions(filename string, options *CompressionOptions) (*Colum
 		options = NewCompressionOptions()
 	}
 	
-	// Validate page size configuration
-	if err := options.ValidatePageSize(); err != nil {
-		return nil, fmt.Errorf("page size validation failed: %w", err)
-	}
-	
 	// Create page manager with compression options
 	pm, err := NewPageManagerWithOptions(filename, true, options)
 	if err != nil {
@@ -1071,7 +1066,7 @@ func (cf *ColumnarFile) QueryGreaterThanWithNulls(columnName string, value inter
 // Close closes the columnar file
 func (cf *ColumnarFile) Close() error {
 	// Update file size in header
-	cf.header.FileSize = uint64(cf.pageManager.GetPageCount()) * PageSize
+	cf.header.FileSize = uint64(cf.pageManager.GetPageCount()) * uint64(cf.pageManager.GetPageSize())
 	cf.header.TotalPages = cf.pageManager.GetPageCount()
 	cf.header.RowCount = cf.calculateTotalRows()
 	
