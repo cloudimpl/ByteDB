@@ -82,6 +82,35 @@ func (ss *StringSegment) FindOffset(str string) (uint64, bool) {
 	return offset, exists
 }
 
+// FindClosestOffset finds the offset of the string that would come after the given string
+// in sorted order. This is useful for range queries on strings that don't exist.
+func (ss *StringSegment) FindClosestOffset(str string) uint64 {
+	// If the exact string exists, return its offset
+	if offset, exists := ss.stringMap[str]; exists {
+		return offset
+	}
+	
+	// Find the position where this string would be inserted
+	closestOffset := uint64(0)
+	closestString := ""
+	
+	// Linear search through all strings to find the first one greater than str
+	// This could be optimized with a sorted slice of strings
+	for s, offset := range ss.stringMap {
+		if s > str && (closestString == "" || s < closestString) {
+			closestString = s
+			closestOffset = offset
+		}
+	}
+	
+	// If no string is greater, return max uint64 to indicate end
+	if closestOffset == 0 {
+		return ^uint64(0) // Max uint64
+	}
+	
+	return closestOffset
+}
+
 // Build creates the segment pages from collected strings
 func (ss *StringSegment) Build() error {
 	// Sort strings for optimal B+ tree construction

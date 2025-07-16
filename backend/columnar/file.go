@@ -229,8 +229,13 @@ func (cf *ColumnarFile) LoadIntColumn(columnName string, data []IntData) error {
 		return fmt.Errorf("column %s not found", columnName)
 	}
 	
-	if col.metadata.DataType != DataTypeInt64 {
-		return fmt.Errorf("column %s is not int64 type", columnName)
+	// Allow all integer and boolean types
+	switch col.metadata.DataType {
+	case DataTypeBool, DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		// All these types can be loaded as integers
+	default:
+		return fmt.Errorf("column %s is not an integer type", columnName)
 	}
 	
 	// Validate nullable constraint before processing data
@@ -1716,4 +1721,266 @@ func (cf *ColumnarFile) queryStringLessThanOrEqual(col *Column, value string) (*
 	
 	// Value doesn't exist, just return less than
 	return cf.queryStringLessThan(col, value)
+}
+
+// Iterator methods
+
+// NewIterator creates a new iterator for the entire column in sorted order
+func (cf *ColumnarFile) NewIterator(columnName string) (ColumnIterator, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	// Support all data types with B-tree
+	switch col.metadata.DataType {
+	case DataTypeBool, DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		return NewBTreeIterator(col.btree, col.metadata.DataType, nil), nil
+	case DataTypeString:
+		return NewBTreeIterator(col.btree, col.metadata.DataType, col.stringSegment), nil
+	default:
+		return nil, fmt.Errorf("iterators not yet supported for data type %v", col.metadata.DataType)
+	}
+}
+
+// NewRangeIterator creates a new iterator for a range of values
+func (cf *ColumnarFile) NewRangeIterator(columnName string, min, max interface{}) (RangeIterator, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	// Support all data types with B-tree
+	switch col.metadata.DataType {
+	case DataTypeBool, DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		
+		// Convert min/max to uint64
+		minVal := toUint64(min)
+		maxVal := toUint64(max)
+		
+		return NewBTreeRangeIterator(col.btree, col.metadata.DataType, nil, minVal, maxVal), nil
+	case DataTypeString:
+		// For strings, convert min/max to string offsets
+		minStr, ok := min.(string)
+		if !ok {
+			return nil, fmt.Errorf("min value must be string for string column")
+		}
+		maxStr, ok := max.(string)
+		if !ok {
+			return nil, fmt.Errorf("max value must be string for string column")
+		}
+		
+		// Find offsets for min and max strings
+		minOffset, foundMin := col.stringSegment.FindOffset(minStr)
+		maxOffset, foundMax := col.stringSegment.FindOffset(maxStr)
+		
+		// If exact min string not found, find the next closest one
+		if !foundMin {
+			minOffset = col.stringSegment.FindClosestOffset(minStr)
+		}
+		
+		// For max string, if not found, we want to include all strings up to it
+		// So find the closest one and if it's less than maxStr, include it
+		if !foundMax {
+			// Find the largest string that is <= maxStr
+			largestOffset := uint64(0)
+			foundLargest := false
+			for str, offset := range col.stringSegment.stringMap {
+				if str <= maxStr {
+					if !foundLargest || offset > largestOffset {
+						largestOffset = offset
+						foundLargest = true
+					}
+				}
+			}
+			if foundLargest {
+				maxOffset = largestOffset
+			} else {
+				// No string <= maxStr, use max uint64 to indicate no upper bound
+				maxOffset = ^uint64(0)
+			}
+		}
+		
+		return NewBTreeRangeIterator(col.btree, col.metadata.DataType, col.stringSegment, minOffset, maxOffset), nil
+	default:
+		return nil, fmt.Errorf("range iterators not yet supported for data type %v", col.metadata.DataType)
+	}
+}
+
+// NewRangeIteratorInt creates a new iterator for a range of int64 values (convenience method)
+func (cf *ColumnarFile) NewRangeIteratorInt(columnName string, min, max int64) (RangeIterator, error) {
+	return cf.NewRangeIterator(columnName, min, max)
+}
+
+// BitmapToIterator converts a bitmap result to an iterator
+func (cf *ColumnarFile) BitmapToIterator(columnName string, bitmap *roaring.Bitmap) (ColumnIterator, error) {
+	col, exists := cf.columns[columnName]
+	if !exists {
+		return nil, fmt.Errorf("column %s not found", columnName)
+	}
+	
+	// Support all data types with B-tree
+	switch col.metadata.DataType {
+	case DataTypeBool, DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
+		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
+		return NewBitmapIterator(col.btree, col.metadata.DataType, nil, bitmap), nil
+	case DataTypeString:
+		return NewBitmapIterator(col.btree, col.metadata.DataType, col.stringSegment, bitmap), nil
+	default:
+		return nil, fmt.Errorf("bitmap iterators not yet supported for data type %v", col.metadata.DataType)
+	}
+}
+
+// BitmapIterator implements ColumnIterator for bitmap results
+type BitmapIterator struct {
+	btree         *BPlusTree
+	dataType      DataType
+	stringSegment *StringSegment
+	bitmap        *roaring.Bitmap
+	iter          roaring.IntIterable
+	current       uint32
+	valid         bool
+	err           error
+}
+
+// NewBitmapIterator creates a new bitmap iterator
+func NewBitmapIterator(btree *BPlusTree, dataType DataType, stringSegment *StringSegment, bitmap *roaring.Bitmap) *BitmapIterator {
+	iter := &BitmapIterator{
+		btree:         btree,
+		dataType:      dataType,
+		stringSegment: stringSegment,
+		bitmap:        bitmap,
+		iter:          bitmap.Iterator(),
+	}
+	
+	// Don't call Next() here - let the first Next() call return the first element
+	return iter
+}
+
+// Next moves to the next item
+func (iter *BitmapIterator) Next() bool {
+	if iter.err != nil {
+		return false
+	}
+	
+	if iter.iter.HasNext() {
+		iter.current = iter.iter.Next()
+		iter.valid = true
+		return true
+	}
+	
+	iter.valid = false
+	return false
+}
+
+// Prev moves to the previous item (not efficiently supported for bitmap iterator)
+func (iter *BitmapIterator) Prev() bool {
+	// Not efficiently supported for bitmap iterator
+	iter.err = fmt.Errorf("reverse iteration not supported for bitmap iterator")
+	return false
+}
+
+// Seek positions the iterator at the first row >= value
+func (iter *BitmapIterator) Seek(value interface{}) bool {
+	// Not efficiently supported for bitmap iterator
+	iter.err = fmt.Errorf("seek not supported for bitmap iterator")
+	return false
+}
+
+// SeekFirst positions at the first item
+func (iter *BitmapIterator) SeekFirst() bool {
+	iter.iter = iter.bitmap.Iterator()
+	return iter.Next()
+}
+
+// SeekLast positions at the last item
+func (iter *BitmapIterator) SeekLast() bool {
+	// Not efficiently supported for bitmap iterator
+	iter.err = fmt.Errorf("seek last not supported for bitmap iterator")
+	return false
+}
+
+// Key returns the current key value (requires lookup)
+func (iter *BitmapIterator) Key() interface{} {
+	if !iter.valid {
+		return nil
+	}
+	
+	// Look up the key value for this row
+	key, found, err := iter.btree.LookupByRow(uint64(iter.current))
+	if err != nil {
+		iter.err = err
+		return nil
+	}
+	
+	if !found {
+		iter.err = fmt.Errorf("key not found for row %d", iter.current)
+		return nil
+	}
+	
+	// Handle different data types
+	switch iter.dataType {
+	case DataTypeBool:
+		return key != 0
+	case DataTypeInt8:
+		return int8(key)
+	case DataTypeInt16:
+		return int16(key)
+	case DataTypeInt32:
+		return int32(key)
+	case DataTypeInt64:
+		return int64(key)
+	case DataTypeUint8:
+		return uint8(key)
+	case DataTypeUint16:
+		return uint16(key)
+	case DataTypeUint32:
+		return uint32(key)
+	case DataTypeUint64:
+		return key
+	case DataTypeString:
+		// For strings, key is the offset in the string segment
+		if iter.stringSegment != nil {
+			str, err := iter.stringSegment.GetString(key)
+			if err != nil {
+				iter.err = err
+				return nil
+			}
+			return str
+		}
+		return nil
+	default:
+		// Float types not yet supported
+		return nil
+	}
+}
+
+// Rows returns a bitmap with the current row
+func (iter *BitmapIterator) Rows() *roaring.Bitmap {
+	if !iter.valid {
+		return nil
+	}
+	bitmap := roaring.New()
+	bitmap.Add(iter.current)
+	return bitmap
+}
+
+// Valid returns true if the iterator is positioned at a valid entry
+func (iter *BitmapIterator) Valid() bool {
+	return iter.valid && iter.err == nil
+}
+
+// Error returns any error that occurred
+func (iter *BitmapIterator) Error() error {
+	return iter.err
+}
+
+// Close releases resources
+func (iter *BitmapIterator) Close() error {
+	iter.bitmap = nil
+	iter.iter = nil
+	iter.valid = false
+	return nil
 }

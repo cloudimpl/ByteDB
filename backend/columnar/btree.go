@@ -1526,3 +1526,134 @@ func (bt *BPlusTree) RangeSearchLessThanOrEqualBitmap(key uint64) (*roaring.Bitm
 	
 	return result, nil
 }
+
+// Iterator support methods
+
+// findLeafPage finds the leaf page that would contain the given key
+func (bt *BPlusTree) findLeafPage(key uint64) (*Page, error) {
+	return bt.navigateToLeaf(key)
+}
+
+// findLeftmostLeaf finds the leftmost leaf page in the tree
+func (bt *BPlusTree) findLeftmostLeaf() (*Page, error) {
+	if bt.rootPageID == 0 {
+		return nil, fmt.Errorf("empty tree")
+	}
+	
+	currentPageID := bt.rootPageID
+	
+	for {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return nil, err
+		}
+		
+		if page.Header.PageType == PageTypeBTreeLeaf {
+			return page, nil
+		}
+		
+		if page.Header.PageType != PageTypeBTreeInternal {
+			return nil, fmt.Errorf("unexpected page type in navigation: %v", page.Header.PageType)
+		}
+		
+		// For internal pages, get the first child using childPageMap
+		childPages, exists := bt.childPageMap[page.Header.PageID]
+		if !exists {
+			return nil, fmt.Errorf("no child page mapping found for internal page %d", page.Header.PageID)
+		}
+		
+		if len(childPages) == 0 {
+			return nil, fmt.Errorf("empty child page list for internal page %d", page.Header.PageID)
+		}
+		
+		// First child is the leftmost
+		currentPageID = childPages[0]
+	}
+}
+
+// findRightmostLeaf finds the rightmost leaf page in the tree
+func (bt *BPlusTree) findRightmostLeaf() (*Page, error) {
+	if bt.rootPageID == 0 {
+		return nil, fmt.Errorf("empty tree")
+	}
+	
+	currentPageID := bt.rootPageID
+	
+	for {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return nil, err
+		}
+		
+		if page.Header.PageType == PageTypeBTreeLeaf {
+			return page, nil
+		}
+		
+		if page.Header.PageType != PageTypeBTreeInternal {
+			return nil, fmt.Errorf("unexpected page type in navigation: %v", page.Header.PageType)
+		}
+		
+		// For internal pages, get the last child using childPageMap
+		childPages, exists := bt.childPageMap[page.Header.PageID]
+		if !exists {
+			return nil, fmt.Errorf("no child page mapping found for internal page %d", page.Header.PageID)
+		}
+		
+		if len(childPages) == 0 {
+			return nil, fmt.Errorf("empty child page list for internal page %d", page.Header.PageID)
+		}
+		
+		// Last child is the rightmost
+		currentPageID = childPages[len(childPages)-1]
+	}
+}
+
+// LookupByRow performs a reverse lookup to find the key for a given row number
+func (bt *BPlusTree) LookupByRow(rowNum uint64) (uint64, bool, error) {
+	if bt.rootPageID == 0 {
+		return 0, false, nil
+	}
+	
+	// Start from the leftmost leaf and scan until we find the row
+	leaf, err := bt.findLeftmostLeaf()
+	if err != nil {
+		return 0, false, err
+	}
+	
+	currentPage := leaf
+	
+	for currentPage != nil {
+		entries, err := bt.readLeafEntries(currentPage)
+		if err != nil {
+			return 0, false, err
+		}
+		
+		for _, entry := range entries {
+			if entry.Value.IsRowNumber() && entry.Value.GetRowNumber() == rowNum {
+				return entry.Key, true, nil
+			} else if !entry.Value.IsRowNumber() {
+				// Check if the row is in the bitmap
+				bitmap, err := bt.bitmapManager.LoadBitmap(entry.Value.GetBitmapOffset())
+				if err != nil {
+					return 0, false, err
+				}
+				
+				if bitmap.Contains(uint32(rowNum)) {
+					return entry.Key, true, nil
+				}
+			}
+		}
+		
+		// Move to next page
+		if currentPage.Header.NextPageID != 0 {
+			currentPage, err = bt.pageManager.ReadPage(currentPage.Header.NextPageID)
+			if err != nil {
+				return 0, false, err
+			}
+		} else {
+			break
+		}
+	}
+	
+	return 0, false, nil
+}
