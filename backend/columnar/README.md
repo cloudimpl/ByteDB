@@ -26,6 +26,7 @@ cf, err := columnar.CreateFile("data.txt")     // Error: must have .bytedb exten
 - **String Deduplication**: Unique strings stored once with offset-based indexing
 - **Bitmap Compression**: RoaringBitmap for efficient storage of duplicate values
 - **Unified Bitmap API**: All query operations return bitmaps for optimal performance
+- **Efficient Iterator Interface**: Memory-efficient forward/reverse iteration with range support
 - **Immutable Design**: Write-once architecture for simplified concurrency
 - **4KB Page Architecture**: Optimized for modern storage systems
 
@@ -488,6 +489,217 @@ for iterator.HasNext() {
 - **Reduced Allocations**: Reuse bitmap objects instead of creating new slices
 - **Cache Friendly**: Smaller memory footprint improves CPU cache utilization
 
+## Iterator API
+
+ByteDB Columnar Format provides efficient iterators for ordered traversal of column data, offering both forward and reverse iteration capabilities with range support.
+
+### Creating Iterators
+
+```go
+// Basic column iterator
+iter, err := cf.NewIterator("user_id")
+if err != nil {
+    panic(err)
+}
+defer iter.Close()
+
+// Range iterator with bounds
+rangeIter, err := cf.NewRangeIterator("score", int32(100), int32(200))
+if err != nil {
+    panic(err)
+}
+defer rangeIter.Close()
+
+// Convert bitmap results to iterator
+bitmap, _ := cf.QueryGreaterThan("age", uint8(25))
+bitmapIter, err := cf.BitmapToIterator("age", bitmap)
+```
+
+### Iterator Navigation
+
+```go
+// Forward iteration
+for iter.Next() {
+    key := iter.Key()           // Get current key value (typed)
+    rows := iter.Rows()         // Get bitmap of rows for this key
+    fmt.Printf("Key %v: %d rows\n", key, rows.GetCardinality())
+}
+
+// Reverse iteration
+iter.SeekLast()                 // Position at last element
+for iter.Prev() {
+    key := iter.Key()
+    rows := iter.Rows()
+    // Process in reverse order
+}
+
+// Seek operations
+iter.Seek(int64(150))          // Position at first key >= 150
+iter.SeekFirst()               // Position at first key
+iter.SeekLast()                // Position at last key
+
+// Mixed navigation
+iter.SeekFirst()
+iter.Next()                    // Move forward
+iter.Next()
+iter.Prev()                    // Move backward
+```
+
+### Type-Safe Key Access
+
+The iterator returns properly typed keys based on the column data type:
+
+```go
+// Integer columns
+iter, _ := cf.NewIterator("user_id")  // int64 column
+for iter.Next() {
+    userId := iter.Key().(int64)      // Type assertion to int64
+    // Process userId
+}
+
+// String columns  
+iter, _ := cf.NewIterator("username")  // string column
+for iter.Next() {
+    username := iter.Key().(string)    // Type assertion to string
+    // Process username
+}
+
+// Boolean columns
+iter, _ := cf.NewIterator("is_active") // bool column
+for iter.Next() {
+    isActive := iter.Key().(bool)      // Type assertion to bool
+    // Process boolean value
+}
+```
+
+### Range Iteration
+
+```go
+// Create range iterator
+iter, err := cf.NewRangeIterator("price", float64(10.0), float64(100.0))
+
+// Iterate through range
+for iter.Next() {
+    price := iter.Key().(float64)
+    if !iter.InBounds() {
+        break  // Outside range
+    }
+    // Process price within [10.0, 100.0]
+}
+
+// Check range bounds
+if iter.HasLowerBound() {
+    lower := iter.LowerBound()  // Get lower bound value
+}
+if iter.HasUpperBound() {
+    upper := iter.UpperBound()  // Get upper bound value
+}
+```
+
+### Iterator with Duplicates
+
+When a key has multiple associated rows, the iterator returns all rows as a bitmap:
+
+```go
+// Column with duplicate values
+iter, _ := cf.NewIterator("category")
+for iter.Next() {
+    category := iter.Key().(string)
+    rowBitmap := iter.Rows()
+    
+    // Process all rows for this category
+    fmt.Printf("Category %s appears in %d rows\n", 
+        category, rowBitmap.GetCardinality())
+    
+    // Iterate through individual rows if needed
+    rowIter := rowBitmap.Iterator()
+    for rowIter.HasNext() {
+        rowNum := rowIter.Next()
+        // Process individual row
+    }
+}
+```
+
+### Error Handling
+
+```go
+iter, err := cf.NewIterator("column_name")
+if err != nil {
+    // Handle creation error
+}
+
+// Check for errors during iteration
+for iter.Next() {
+    if iter.Error() != nil {
+        // Handle iteration error
+        break
+    }
+    // Process data
+}
+
+// Check validity
+if !iter.Valid() {
+    // Iterator is not positioned at valid entry
+}
+```
+
+### Performance Characteristics
+
+- **Memory Efficient**: Streaming design - doesn't load entire column into memory
+- **Page Caching**: Caches recently accessed B-tree pages for efficiency
+- **O(log n) Seeks**: Fast positioning using B-tree structure
+- **Compression Aware**: Works transparently with compressed columns
+- **Type Safe**: Returns properly typed values based on column type
+
+### Supported Data Types
+
+Iterators are available for all data types except float32/float64:
+- ✅ Boolean, Int8, Int16, Int32, Int64
+- ✅ Uint8, Uint16, Uint32, Uint64
+- ✅ String (with lexicographic ordering)
+- ❌ Float32, Float64 (B-tree index not yet implemented)
+
+### Use Cases
+
+1. **Ordered Data Processing**:
+   ```go
+   // Process users in ID order
+   iter, _ := cf.NewIterator("user_id")
+   for iter.Next() {
+       processUser(iter.Key().(int64), iter.Rows())
+   }
+   ```
+
+2. **Range Analysis**:
+   ```go
+   // Analyze scores in specific range
+   iter, _ := cf.NewRangeIterator("score", 80, 100)
+   for iter.Next() {
+       analyzeHighScores(iter.Key().(int32), iter.Rows())
+   }
+   ```
+
+3. **Reverse Processing**:
+   ```go
+   // Process latest entries first
+   iter, _ := cf.NewIterator("timestamp")
+   iter.SeekLast()
+   for count := 0; count < 100 && iter.Valid(); count++ {
+       processRecentEntry(iter.Key().(int64), iter.Rows())
+       iter.Prev()
+   }
+   ```
+
+4. **Memory-Efficient Exports**:
+   ```go
+   // Export large dataset without loading into memory
+   iter, _ := cf.NewIterator("product_id")
+   writer := csv.NewWriter(outputFile)
+   for iter.Next() {
+       exportProduct(writer, iter.Key(), iter.Rows())
+   }
+   ```
+
 ## Running the Examples
 
 ### Basic Usage Example
@@ -518,6 +730,20 @@ This demonstrates comprehensive NULL support:
 - Complex NULL-aware logical operations
 - NULL statistics and tracking
 
+### Iterator Example
+```bash
+cd columnar/example
+go run iterator_example.go
+```
+
+This demonstrates the iterator functionality:
+- Forward and reverse iteration
+- Range-bounded iteration
+- Seek operations
+- Handling duplicate values with bitmaps
+- Type-safe key access
+- Complex filtering with iterators
+
 ## Performance Characteristics
 
 ### Time Complexity
@@ -528,6 +754,9 @@ This demonstrates comprehensive NULL support:
 - **OR Operation**: O(n₁ + n₂ + ...) where nᵢ = size of result set i
 - **NOT Operation**: O(n) where n = total rows in column
 - **Multi-Column Filter**: O(m × log n) where m = number of predicates
+- **Iterator Seek**: O(log n) for positioning
+- **Iterator Next/Prev**: O(1) amortized for sequential access
+- **Iterator Range Scan**: O(log n + k) where k = keys in range
 
 ### Operator Performance (100K rows dataset)
 - **Equality**: ~19µs
@@ -606,6 +835,9 @@ For detailed technical specifications, see [BYTEDB_COLUMNAR_FORMAT.md](../../BYT
 - **Enhanced Test Coverage**: Comprehensive data validation across all test cases
 - **Child Page Mapping**: Runtime reconstruction of B+ tree navigation
 - **Zero Backward Compatibility Overhead**: Streamlined API for early-stage development
+- **Efficient Iterator Interface**: Memory-efficient streaming iteration with forward/reverse support
+- **Range Iterator Support**: Bounded iteration within specified key ranges
+- **Type-Safe Iteration**: Properly typed key values based on column data type
 
 ### 🎯 Performance Gains
 - **Storage Efficiency**: 50-89% reduction in B+ tree space usage
