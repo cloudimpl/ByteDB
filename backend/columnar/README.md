@@ -121,6 +121,44 @@ func main() {
 }
 ```
 
+### Working with Different Data Types
+
+```go
+// All integer and boolean types use LoadIntColumn
+cf.AddColumn("age", columnar.DataTypeUint8, false)
+cf.AddColumn("count", columnar.DataTypeInt32, false)
+cf.AddColumn("is_active", columnar.DataTypeBool, false)
+
+// Load data - all use IntData
+ageData := []columnar.IntData{
+    columnar.NewIntData(25, 0),   // uint8 value
+    columnar.NewIntData(30, 1),
+}
+cf.LoadIntColumn("age", ageData)
+
+countData := []columnar.IntData{
+    columnar.NewIntData(1000, 0),  // int32 value
+    columnar.NewIntData(-500, 1),
+}
+cf.LoadIntColumn("count", countData)
+
+boolData := []columnar.IntData{
+    columnar.NewIntData(1, 0),     // true (non-zero)
+    columnar.NewIntData(0, 1),     // false (zero)
+}
+cf.LoadIntColumn("is_active", boolData)
+
+// Querying non-Int64 types requires comparison operators
+// For equality on uint8:
+age25_gte, _ := cf.QueryGreaterThanOrEqual("age", uint8(25))
+age25_lte, _ := cf.QueryLessThanOrEqual("age", uint8(25))
+age25 := cf.QueryAnd(age25_gte, age25_lte)
+
+// For boolean values:
+activeBitmap, _ := cf.QueryGreaterThanOrEqual("is_active", true)
+}
+```
+
 ## Query Operators
 
 ByteDB Columnar Format supports a comprehensive set of query operators for building complex analytical queries.
@@ -241,7 +279,9 @@ matchingRows := columnar.BitmapToSlice(namesBitmap)
 
 ### Supported Data Types
 
-All operators work with the following data types:
+#### Fully Supported Types
+The following data types have complete support for loading, querying, and iteration:
+
 - `DataTypeBool` - Boolean values (true/false)
 - `DataTypeInt8` - Signed 8-bit integers
 - `DataTypeInt16` - Signed 16-bit integers  
@@ -251,10 +291,22 @@ All operators work with the following data types:
 - `DataTypeUint16` - Unsigned 16-bit integers
 - `DataTypeUint32` - Unsigned 32-bit integers
 - `DataTypeUint64` - Unsigned 64-bit integers
-- `DataTypeFloat32` - 32-bit floating point
-- `DataTypeFloat64` - 64-bit floating point
 - `DataTypeString` - Variable-length strings
-- `DataTypeBinary` - Variable-length binary data
+
+**Note on Integer Types**: While all integer types are supported, direct equality queries using `QueryInt()` only work with `DataTypeInt64`. For other integer types, use comparison operators or range queries:
+```go
+// For non-Int64 types, use range query for equality
+bitmap, _ := cf.QueryGreaterThanOrEqual("age", uint8(25))
+bitmap2, _ := cf.QueryLessThanOrEqual("age", uint8(25))
+result := cf.QueryAnd(bitmap, bitmap2)  // age = 25
+```
+
+#### Not Yet Supported
+The following types are defined but not fully implemented:
+
+- `DataTypeFloat32` - 32-bit floating point (no LoadFloatColumn method)
+- `DataTypeFloat64` - 64-bit floating point (no LoadFloatColumn method)
+- `DataTypeBinary` - Variable-length binary data (no LoadBinaryColumn method)
 
 ### Space Efficiency by Data Type
 
@@ -653,13 +705,14 @@ if !iter.Valid() {
 - **Compression Aware**: Works transparently with compressed columns
 - **Type Safe**: Returns properly typed values based on column type
 
-### Supported Data Types
+### Iterator Data Type Support
 
-Iterators are available for all data types except float32/float64:
+Iterators work with all fully supported data types:
 - ✅ Boolean, Int8, Int16, Int32, Int64
 - ✅ Uint8, Uint16, Uint32, Uint64
 - ✅ String (with lexicographic ordering)
-- ❌ Float32, Float64 (B-tree index not yet implemented)
+- ❌ Float32, Float64 (not yet implemented)
+- ❌ Binary (not yet implemented)
 
 ### Use Cases
 
@@ -1038,6 +1091,8 @@ For detailed technical specifications, see [BYTEDB_COLUMNAR_FORMAT.md](../../BYT
 - **Type-Safe Iteration**: Properly typed key values based on column data type
 - **Logical Deletion Bitmap**: Track deleted rows for cleanup during file consolidation
 - **File Merge Functionality**: Combine multiple files with configurable deletion handling
+- **Global Row Number Support**: Cross-file deletion references for distributed datasets
+- **Multiple Integer Types**: Support for Int8/16/32/64 and Uint8/16/32/64 with compression
 
 ### 🎯 Performance Gains
 - **Storage Efficiency**: 50-89% reduction in B+ tree space usage
@@ -1049,7 +1104,7 @@ For detailed technical specifications, see [BYTEDB_COLUMNAR_FORMAT.md](../../BYT
 
 ## Future Enhancements
 
-- [ ] Compression support (Snappy, Zstd, LZ4)
+- [x] Compression support (Gzip, Snappy, Zstd)
 - [ ] Page-level statistics for enhanced filtering
 - [ ] Parallel query execution
 - [ ] Distributed file support
@@ -1059,3 +1114,7 @@ For detailed technical specifications, see [BYTEDB_COLUMNAR_FORMAT.md](../../BYT
 - [ ] Adaptive indexing based on query patterns
 - [ ] Advanced bitmap operations (XOR, ANDNOT)
 - [ ] Vectorized query execution
+- [ ] Float32/Float64 data type support
+- [ ] Binary data type support
+- [ ] Generic equality query method for all types
+- [ ] Direct LoadFloatColumn and LoadBinaryColumn methods
