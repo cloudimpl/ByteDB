@@ -187,8 +187,8 @@ func main() {
 	mergedFile := "transactions_consolidated.bytedb"
 	
 	options := &columnar.MergeOptions{
-		DeletedRowHandling: columnar.ExcludeDeleted,
-		DeduplicateKeys:    false, // Preserve all transactions
+		// Deleted rows are always excluded during merge
+		DeduplicateKeys: false, // Preserve all transactions
 	}
 	
 	err = columnar.MergeFiles(mergedFile, []string{file1, file2, file3}, options)

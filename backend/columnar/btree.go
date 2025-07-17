@@ -26,6 +26,13 @@ func (ic *IntComparator) Compare(a, b uint64) (int, error) {
 	return 0, nil
 }
 
+// GetComparatorForDataType returns the appropriate comparator for a data type
+func GetComparatorForDataType(dataType DataType) KeyComparator {
+	// For signed types with sort-preserving conversion, we can use the default comparator
+	// because the conversion ensures correct ordering
+	return &IntComparator{}
+}
+
 // BPlusTree represents a B+ tree optimized for columnar storage
 type BPlusTree struct {
 	pageManager   *PageManager
@@ -1038,6 +1045,114 @@ func (bt *BPlusTree) GetHeight() uint32 {
 func (bt *BPlusTree) SetHeight(height uint32) {
 	bt.height = height
 }
+
+// FindStringOffset searches for a string in the B+ tree and returns its offset
+// This is optimized for string B-trees where keys are string offsets
+func (bt *BPlusTree) FindStringOffset(str string, stringSegment *StringSegment) (uint64, bool, error) {
+	if bt.rootPageID == 0 {
+		return 0, false, nil
+	}
+	
+	// Navigate through the tree using string comparisons
+	currentPageID := bt.rootPageID
+	
+	for {
+		page, err := bt.pageManager.ReadPage(currentPageID)
+		if err != nil {
+			return 0, false, err
+		}
+		
+		if page.Header.PageType == PageTypeBTreeLeaf {
+			// We've reached a leaf, search for the string
+			entries, err := bt.readLeafEntries(page)
+			if err != nil {
+				return 0, false, err
+			}
+			
+			// Binary search through leaf entries
+			left, right := 0, len(entries)-1
+			
+			for left <= right {
+				mid := (left + right) / 2
+				
+				// Get string at this offset
+				storedStr, err := stringSegment.GetString(entries[mid].Key)
+				if err != nil {
+					// If we can't read the string, skip to next
+					if left == right {
+						break
+					}
+					// Try the left half
+					right = mid - 1
+					continue
+				}
+				
+				if storedStr == str {
+					// Found the string
+					return entries[mid].Key, true, nil
+				} else if str < storedStr {
+					right = mid - 1
+				} else {
+					left = mid + 1
+				}
+			}
+			
+			// Not found in this leaf
+			return 0, false, nil
+		}
+		
+		// Internal node - navigate using string comparisons
+		if page.Header.PageType != PageTypeBTreeInternal {
+			return 0, false, fmt.Errorf("unexpected page type in navigation: %v", page.Header.PageType)
+		}
+		
+		// Get child pages for this internal node
+		childPages, exists := bt.childPageMap[page.Header.PageID]
+		if !exists {
+			return 0, false, fmt.Errorf("no child page mapping found for internal page %d", page.Header.PageID)
+		}
+		
+		// Get internal entries to find the right child
+		entries, err := bt.readInternalEntries(page)
+		if err != nil {
+			return 0, false, err
+		}
+		
+		// Binary search within the internal node to find the right child
+		childIndex := 0
+		left, right := 0, len(entries)-1
+		
+		for left <= right {
+			mid := (left + right) / 2
+			
+			// Get the string for this key offset
+			keyStr, err := stringSegment.GetString(entries[mid].Key)
+			if err != nil {
+				// If we can't read the string, treat it as greater than target
+				right = mid - 1
+				continue
+			}
+			
+			// Compare strings lexicographically
+			if str < keyStr {
+				right = mid - 1
+			} else {
+				// str >= keyStr, this could be our child
+				childIndex = mid + 1
+				left = mid + 1
+			}
+		}
+		
+		// Ensure childIndex is within bounds
+		if childIndex >= len(childPages) {
+			childIndex = len(childPages) - 1
+		}
+		
+		// Navigate to the selected child
+		currentPageID = childPages[childIndex]
+	}
+}
+
 
 // SetRootPageID sets the root page ID (used when loading existing tree)
 func (bt *BPlusTree) SetRootPageID(pageID uint64) {

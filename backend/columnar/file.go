@@ -216,7 +216,7 @@ func (cf *ColumnarFile) AddColumn(name string, dataType DataType, nullable bool)
 	// Create column
 	col := &Column{
 		metadata:      metadata,
-		btree:         NewBPlusTree(cf.pageManager, dataType, nil),
+		btree:         NewBPlusTree(cf.pageManager, dataType, GetComparatorForDataType(dataType)),
 		rowKeyBTree:   NewBPlusTree(cf.pageManager, DataTypeUint64, nil), // Row numbers are always uint64
 		bitmapManager: NewBitmapManager(cf.pageManager),
 	}
@@ -277,7 +277,7 @@ func (cf *ColumnarFile) LoadIntColumn(columnName string, data []IntData) error {
 		} else {
 			// Non-null value - convert to uint64 for B+ tree
 			keyRows = append(keyRows, struct{ Key uint64; RowNum uint64 }{
-				Key:    uint64(d.Value),
+				Key:    toUint64WithType(d.Value, col.metadata.DataType),
 				RowNum: d.RowNum,
 			})
 		}
@@ -486,7 +486,8 @@ func (cf *ColumnarFile) QueryInt(columnName string, value int64) (*roaring.Bitma
 		return nil, fmt.Errorf("column %s is not int64 type", columnName)
 	}
 	
-	return col.btree.FindBitmap(uint64(value))
+	// Use toUint64WithType for sort-preserving conversion
+	return col.btree.FindBitmap(toUint64WithType(value, col.metadata.DataType))
 }
 
 // QueryString performs an equality query on a string column
@@ -520,7 +521,8 @@ func (cf *ColumnarFile) RangeQueryInt(columnName string, min, max int64) (*roari
 	switch col.metadata.DataType {
 	case DataTypeInt8, DataTypeInt16, DataTypeInt32, DataTypeInt64,
 		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
-		return col.btree.RangeSearchBitmap(uint64(min), uint64(max))
+		// Use toUint64WithType for sort-preserving conversion
+		return col.btree.RangeSearchBitmap(toUint64WithType(min, col.metadata.DataType), toUint64WithType(max, col.metadata.DataType))
 	default:
 		return nil, fmt.Errorf("column %s is not an integer type", columnName)
 	}
@@ -917,7 +919,10 @@ func (cf *ColumnarFile) RangeQueryIntWithNulls(columnName string, min, max int64
 		 DataTypeUint8, DataTypeUint16, DataTypeUint32, DataTypeUint64:
 		
 		// Get non-null results from range query
-		result, err := col.btree.RangeSearchBitmap(uint64(min), uint64(max))
+		// Convert min/max using toUint64WithType to handle sort preservation
+		minUint := toUint64WithType(min, col.metadata.DataType)
+		maxUint := toUint64WithType(max, col.metadata.DataType)
+		result, err := col.btree.RangeSearchBitmap(minUint, maxUint)
 		if err != nil {
 			return nil, err
 		}
@@ -1334,7 +1339,7 @@ func (cf *ColumnarFile) readColumnMetadata() error {
 			
 			col.btree = NewBPlusTree(cf.pageManager, metadata.DataType, NewStringComparator(col.stringSegment))
 		} else {
-			col.btree = NewBPlusTree(cf.pageManager, metadata.DataType, nil)
+			col.btree = NewBPlusTree(cf.pageManager, metadata.DataType, GetComparatorForDataType(metadata.DataType))
 		}
 		
 		col.btree.SetRootPageID(metadata.RootPageID)
@@ -1599,19 +1604,100 @@ func (cf *ColumnarFile) UpdateStatisticsForUintColumn(columnName string, data []
 	return nil
 }
 
+// toUint64WithType converts a value to uint64 with sort preservation based on the target data type
+func toUint64WithType(value interface{}, dataType DataType) uint64 {
+	// For signed types, we need to apply sort-preserving conversion based on the target type
+	switch dataType {
+	case DataTypeInt8:
+		v := int8(toInt64(value))
+		return uint64(uint8(v) ^ 0x80)
+	case DataTypeInt16:
+		v := int16(toInt64(value))
+		return uint64(uint16(v) ^ 0x8000)
+	case DataTypeInt32:
+		v := int32(toInt64(value))
+		return uint64(uint32(v) ^ 0x80000000)
+	case DataTypeInt64:
+		v := toInt64(value)
+		return uint64(v) ^ 0x8000000000000000
+	case DataTypeUint8:
+		return uint64(uint8(toInt64(value)))
+	case DataTypeUint16:
+		return uint64(uint16(toInt64(value)))
+	case DataTypeUint32:
+		return uint64(uint32(toInt64(value)))
+	case DataTypeUint64:
+		return uint64(toInt64(value))
+	case DataTypeBool:
+		if toBool(value) {
+			return 1
+		}
+		return 0
+	default:
+		return toUint64(value)
+	}
+}
+
+// Helper to convert any numeric type to int64
+func toInt64(value interface{}) int64 {
+	switch v := value.(type) {
+	case int:
+		return int64(v)
+	case int8:
+		return int64(v)
+	case int16:
+		return int64(v)
+	case int32:
+		return int64(v)
+	case int64:
+		return v
+	case uint:
+		return int64(v)
+	case uint8:
+		return int64(v)
+	case uint16:
+		return int64(v)
+	case uint32:
+		return int64(v)
+	case uint64:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
+// Helper to convert to bool
+func toBool(value interface{}) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case int64:
+		return v != 0
+	case uint64:
+		return v != 0
+	default:
+		return false
+	}
+}
+
 // Helper functions for type conversion
 func toUint64(value interface{}) uint64 {
 	switch v := value.(type) {
 	case int:
-		return uint64(v)
+		// Treat as int64 for consistent behavior
+		return uint64(int64(v)) ^ 0x8000000000000000
 	case int8:
-		return uint64(v)
+		// Convert to uint8 then flip sign bit to preserve sort order
+		return uint64(uint8(v) ^ 0x80)
 	case int16:
-		return uint64(v)
+		// Convert to uint16 then flip sign bit
+		return uint64(uint16(v) ^ 0x8000)
 	case int32:
-		return uint64(v)
+		// Convert to uint32 then flip sign bit
+		return uint64(uint32(v) ^ 0x80000000)
 	case int64:
-		return uint64(v)
+		// Flip sign bit for sort preservation
+		return uint64(v) ^ 0x8000000000000000
 	case uint:
 		return uint64(v)
 	case uint8:
@@ -1959,13 +2045,17 @@ func (iter *BitmapIterator) Key() interface{} {
 	case DataTypeBool:
 		return key != 0
 	case DataTypeInt8:
-		return int8(key)
+		// Reverse sort-preserving conversion
+		return int8(uint8(key) ^ 0x80)
 	case DataTypeInt16:
-		return int16(key)
+		// Reverse sort-preserving conversion
+		return int16(uint16(key) ^ 0x8000)
 	case DataTypeInt32:
-		return int32(key)
+		// Reverse sort-preserving conversion
+		return int32(uint32(key) ^ 0x80000000)
 	case DataTypeInt64:
-		return int64(key)
+		// Reverse sort-preserving conversion
+		return int64(key ^ 0x8000000000000000)
 	case DataTypeUint8:
 		return uint8(key)
 	case DataTypeUint16:
@@ -2009,6 +2099,13 @@ func (iter *BitmapIterator) Valid() bool {
 // Error returns any error that occurred
 func (iter *BitmapIterator) Error() error {
 	return iter.err
+}
+
+// PeekNext returns the next key without advancing the iterator
+func (iter *BitmapIterator) PeekNext() (interface{}, bool) {
+	// BitmapIterator doesn't support peeking since it's already iterating over rows
+	// This is a limitation of the bitmap-based iteration
+	return nil, false
 }
 
 // Close releases resources

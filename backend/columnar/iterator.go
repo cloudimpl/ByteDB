@@ -20,6 +20,9 @@ type ColumnIterator interface {
 	Key() interface{}             // Current key value
 	Rows() *roaring.Bitmap       // Current rows bitmap
 	
+	// Peek - look at next key without advancing
+	PeekNext() (interface{}, bool) // Returns next key and whether it exists
+	
 	// State
 	Valid() bool                 // Is current position valid?
 	Error() error               // Any error occurred?
@@ -236,36 +239,12 @@ func (iter *BTreeIterator) Seek(value interface{}) bool {
 			return false
 		}
 	} else {
-		// For numeric types, convert to uint64
+		// For numeric types, convert to uint64 using sort-preserving conversion
 		var ok bool
 		keyValue, ok = value.(uint64)
 		if !ok {
-			// Try to convert from various numeric types
-			switch v := value.(type) {
-			case int64:
-				keyValue = uint64(v)
-			case int32:
-				keyValue = uint64(v)
-			case int16:
-				keyValue = uint64(v)
-			case int8:
-				keyValue = uint64(v)
-			case uint32:
-				keyValue = uint64(v)
-			case uint16:
-				keyValue = uint64(v)
-			case uint8:
-				keyValue = uint64(v)
-			case bool:
-				if v {
-					keyValue = 1
-				} else {
-					keyValue = 0
-				}
-			default:
-				iter.err = fmt.Errorf("invalid value type for seek: %T", value)
-				return false
-			}
+			// Use sort-preserving conversion for proper ordering
+			keyValue = toUint64WithType(value, iter.dataType)
 		}
 	}
 	
@@ -446,13 +425,17 @@ func (iter *BTreeIterator) Key() interface{} {
 	case DataTypeBool:
 		return iter.currentKey != 0
 	case DataTypeInt8:
-		return int8(iter.currentKey)
+		// Reverse sort-preserving conversion: flip sign bit back
+		return int8(uint8(iter.currentKey) ^ 0x80)
 	case DataTypeInt16:
-		return int16(iter.currentKey)
+		// Reverse sort-preserving conversion
+		return int16(uint16(iter.currentKey) ^ 0x8000)
 	case DataTypeInt32:
-		return int32(iter.currentKey)
+		// Reverse sort-preserving conversion
+		return int32(uint32(iter.currentKey) ^ 0x80000000)
 	case DataTypeInt64:
-		return int64(iter.currentKey)
+		// Reverse sort-preserving conversion
+		return int64(iter.currentKey ^ 0x8000000000000000)
 	case DataTypeUint8:
 		return uint8(iter.currentKey)
 	case DataTypeUint16:
@@ -494,6 +477,58 @@ func (iter *BTreeIterator) Valid() bool {
 // Error returns any error that occurred
 func (iter *BTreeIterator) Error() error {
 	return iter.err
+}
+
+// PeekNext returns the next key without advancing the iterator
+func (iter *BTreeIterator) PeekNext() (interface{}, bool) {
+	if !iter.valid {
+		return nil, false
+	}
+	
+	// Save current state
+	savedPageID := iter.currentPageID
+	savedEntryIdx := iter.currentEntryIdx
+	savedKey := iter.currentKey
+	savedRows := iter.currentRows
+	savedValid := iter.valid
+	
+	// Try to move to next
+	if iter.Next() {
+		nextKey := iter.Key()
+		// Restore state
+		iter.currentPageID = savedPageID
+		iter.currentEntryIdx = savedEntryIdx
+		iter.currentKey = savedKey
+		iter.currentRows = savedRows
+		iter.valid = savedValid
+		
+		// Re-load current page if needed
+		if iter.currentPage == nil || iter.currentPage.Header.PageID != savedPageID {
+			page, err := iter.btree.pageManager.ReadPage(savedPageID)
+			if err == nil {
+				iter.currentPage = page
+			}
+		}
+		
+		return nextKey, true
+	}
+	
+	// Restore state even if Next() failed
+	iter.currentPageID = savedPageID
+	iter.currentEntryIdx = savedEntryIdx
+	iter.currentKey = savedKey
+	iter.currentRows = savedRows
+	iter.valid = savedValid
+	
+	// Re-load current page if needed
+	if savedValid && (iter.currentPage == nil || iter.currentPage.Header.PageID != savedPageID) {
+		page, err := iter.btree.pageManager.ReadPage(savedPageID)
+		if err == nil {
+			iter.currentPage = page
+		}
+	}
+	
+	return nil, false
 }
 
 // Close releases resources

@@ -167,16 +167,13 @@ func TestMergeWithDeletion(t *testing.T) {
 	cf2.DeleteRow(200)
 	cf2.Close()
 	
-	// Test ExcludeDeleted mode (default)
-	t.Run("ExcludeDeleted", func(t *testing.T) {
+	// Test that deleted rows are excluded (default behavior)
+	t.Run("DeletedRowsExcluded", func(t *testing.T) {
 		outputFile := "test_merge_exclude.bytedb"
 		defer os.Remove(outputFile)
 		
-		options := &MergeOptions{
-			DeletedRowHandling: ExcludeDeleted,
-		}
-		
-		err = MergeFiles(outputFile, []string{file1, file2}, options)
+		// No need to specify options - deleted rows are always excluded
+		err = MergeFiles(outputFile, []string{file1, file2}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -213,51 +210,10 @@ func TestMergeWithDeletion(t *testing.T) {
 		
 		// Merged file should have no deleted rows
 		if merged.GetDeletedCount() != 0 {
-			t.Error("Merged file should have no deleted rows when using ExcludeDeleted")
+			t.Error("Merged file should have no deleted rows")
 		}
 	})
 	
-	// Test ConsolidateDeleted mode
-	t.Run("ConsolidateDeleted", func(t *testing.T) {
-		outputFile := "test_merge_consolidate.bytedb"
-		defer os.Remove(outputFile)
-		
-		options := &MergeOptions{
-			DeletedRowHandling: ConsolidateDeleted,
-			DeduplicateKeys:    false, // Keep all rows to test consolidation
-		}
-		
-		err = MergeFiles(outputFile, []string{file1, file2}, options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		
-		merged, err := OpenFile(outputFile)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer merged.Close()
-		
-		// All rows should be present
-		allIDs := []int64{100, 200, 300, 400, 500, 600}
-		for _, id := range allIDs {
-			bitmap, err := merged.QueryInt("id", id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if bitmap.GetCardinality() != 1 {
-				t.Errorf("ID %d should be in merged file", id)
-			}
-		}
-		
-		// Check that deleted bitmap is consolidated
-		// Note: Row numbers will be different in merged file
-		// We need to check which rows correspond to deleted IDs
-		deletedCount := merged.GetDeletedCount()
-		if deletedCount == 0 {
-			t.Error("Merged file should have consolidated deleted bitmap")
-		}
-	})
 }
 
 // TestMergeWithDuplicates tests merging with duplicate keys
@@ -687,13 +643,12 @@ func TestMergeWithGlobalRowNumbers(t *testing.T) {
 	cf3.DeleteRow(2003) // Row from file2
 	cf3.Close()
 	
-	// Merge all files with ExcludeDeleted
+	// Merge all files (deleted rows are always excluded)
 	outputFile := "test_merge_global_output.bytedb"
 	defer os.Remove(outputFile)
 	
 	options := &MergeOptions{
-		DeletedRowHandling: ExcludeDeleted,
-		DeduplicateKeys:    false, // Keep original row numbers
+		DeduplicateKeys: false, // Keep original row numbers
 	}
 	
 	err = MergeFiles(outputFile, []string{file1, file2, file3}, options)
@@ -738,6 +693,6 @@ func TestMergeWithGlobalRowNumbers(t *testing.T) {
 	
 	// Verify the merged file has no deleted rows
 	if merged.GetDeletedCount() != 0 {
-		t.Error("Merged file should have no deleted rows when using ExcludeDeleted")
+		t.Error("Merged file should have no deleted rows")
 	}
 }

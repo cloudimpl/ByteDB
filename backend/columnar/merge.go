@@ -9,32 +9,19 @@ import (
 
 // MergeOptions configures how files are merged
 type MergeOptions struct {
-	// DeletedRowHandling specifies how to handle deleted rows
-	DeletedRowHandling DeletedRowHandling
-	
 	// CompressionOptions for the output file
 	CompressionOptions *CompressionOptions
 	
-	// Whether to deduplicate data across files
+	// Whether to deduplicate data across files (only used in regular merge)
 	DeduplicateKeys bool
 	
 	// Column-specific merge strategies
 	ColumnStrategies map[string]ColumnMergeStrategy
+	
+	// UseStreamingMerge enables memory-efficient streaming merge
+	// When true, uses iterators to merge without loading all data into memory
+	UseStreamingMerge bool
 }
-
-// DeletedRowHandling specifies how to handle deleted rows during merge
-type DeletedRowHandling int
-
-const (
-	// ExcludeDeleted excludes all deleted rows from the merged file
-	ExcludeDeleted DeletedRowHandling = iota
-	
-	// PreserveDeleted preserves deleted rows and their deleted status
-	PreserveDeleted
-	
-	// ConsolidateDeleted merges deleted bitmaps from all files
-	ConsolidateDeleted
-)
 
 // ColumnMergeStrategy defines how to merge a specific column
 type ColumnMergeStrategy struct {
@@ -53,8 +40,7 @@ func MergeFiles(outputFilename string, inputFiles []string, options *MergeOption
 	
 	if options == nil {
 		options = &MergeOptions{
-			DeletedRowHandling: ExcludeDeleted,
-			DeduplicateKeys:    true,
+			DeduplicateKeys: true,
 		}
 	}
 	
@@ -135,23 +121,20 @@ func MergeFiles(outputFilename string, inputFiles []string, options *MergeOption
 	
 	// Merge each column
 	for colName, colInfo := range columnSet {
-		if err := mergeColumn(outputFile, files, colName, colInfo, options, globalDeletedBitmap); err != nil {
-			return fmt.Errorf("failed to merge column %s: %w", colName, err)
+		if options.UseStreamingMerge {
+			if err := mergeColumnStreaming(outputFile, files, colName, colInfo, options, globalDeletedBitmap); err != nil {
+				return fmt.Errorf("failed to merge column %s: %w", colName, err)
+			}
+		} else {
+			if err := mergeColumn(outputFile, files, colName, colInfo, options, globalDeletedBitmap); err != nil {
+				return fmt.Errorf("failed to merge column %s: %w", colName, err)
+			}
 		}
 	}
 	
-	// Handle consolidated deleted bitmap if requested
-	if options.DeletedRowHandling == ConsolidateDeleted {
-		// The output file gets the union of all deleted bitmaps
-		// This represents rows that are deleted globally but may exist in some input files
-		outputFile.deletedBitmap = globalDeletedBitmap.Clone()
-	} else if options.DeletedRowHandling == PreserveDeleted {
-		// For PreserveDeleted, we need to track which rows in the OUTPUT file
-		// correspond to deleted rows from the input files
-		// This requires mapping from original row numbers to new row numbers
-		// For now, we'll just note this in documentation as a limitation
-		outputFile.deletedBitmap = roaring.New()
-	}
+	// Deleted rows are always excluded during merge
+	// The output file starts with no deleted rows
+	outputFile.deletedBitmap = roaring.New()
 	
 	return nil
 }
@@ -191,10 +174,9 @@ func mergeColumn(output *ColumnarFile, inputs []*ColumnarFile, colName string, c
 			for rowIter.HasNext() {
 				rowNum := uint64(rowIter.Next())
 				
-				// Check if row is deleted in the global deleted bitmap
-				if options.DeletedRowHandling == ExcludeDeleted && 
-				   globalDeletedBitmap != nil && globalDeletedBitmap.Contains(uint32(rowNum)) {
-					continue // Skip globally deleted rows
+				// Skip deleted rows (always excluded)
+				if globalDeletedBitmap != nil && globalDeletedBitmap.Contains(uint32(rowNum)) {
+					continue
 				}
 				
 				allData = append(allData, MergeEntry{
@@ -212,10 +194,9 @@ func mergeColumn(output *ColumnarFile, inputs []*ColumnarFile, colName string, c
 			for nullIter.HasNext() {
 				rowNum := uint64(nullIter.Next())
 				
-				// Check if row is deleted in the global deleted bitmap
-				if options.DeletedRowHandling == ExcludeDeleted && 
-				   globalDeletedBitmap != nil && globalDeletedBitmap.Contains(uint32(rowNum)) {
-					continue // Skip globally deleted rows
+				// Skip deleted rows (always excluded)
+				if globalDeletedBitmap != nil && globalDeletedBitmap.Contains(uint32(rowNum)) {
+					continue
 				}
 				
 				allData = append(allData, MergeEntry{
@@ -348,31 +329,3 @@ func compareKeys(a, b interface{}, dataType DataType) int {
 	}
 }
 
-// toInt64 converts various numeric types to int64
-func toInt64(value interface{}) int64 {
-	switch v := value.(type) {
-	case int8:
-		return int64(v)
-	case int16:
-		return int64(v)
-	case int32:
-		return int64(v)
-	case int64:
-		return v
-	case uint8:
-		return int64(v)
-	case uint16:
-		return int64(v)
-	case uint32:
-		return int64(v)
-	case uint64:
-		return int64(v)
-	case bool:
-		if v {
-			return 1
-		}
-		return 0
-	default:
-		return 0
-	}
-}

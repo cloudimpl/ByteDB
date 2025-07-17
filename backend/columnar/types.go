@@ -107,56 +107,6 @@ func GetDataTypeSize(dt DataType) int {
 	}
 }
 
-// EncodeKey encodes a key value based on its data type into a byte slice
-func EncodeKey(key uint64, dt DataType) []byte {
-	size := GetDataTypeSize(dt)
-	buf := make([]byte, size)
-	
-	switch dt {
-	case DataTypeBool, DataTypeInt8:
-		buf[0] = byte(key)
-	case DataTypeUint8:
-		buf[0] = uint8(key)
-	case DataTypeInt16:
-		ByteOrder.PutUint16(buf, uint16(int16(key)))
-	case DataTypeUint16:
-		ByteOrder.PutUint16(buf, uint16(key))
-	case DataTypeInt32:
-		ByteOrder.PutUint32(buf, uint32(int32(key)))
-	case DataTypeUint32, DataTypeFloat32:
-		ByteOrder.PutUint32(buf, uint32(key))
-	case DataTypeInt64:
-		ByteOrder.PutUint64(buf, key)
-	case DataTypeUint64, DataTypeFloat64, DataTypeString, DataTypeBinary:
-		ByteOrder.PutUint64(buf, key)
-	}
-	
-	return buf
-}
-
-// DecodeKey decodes a key from bytes based on its data type
-func DecodeKey(buf []byte, dt DataType) uint64 {
-	switch dt {
-	case DataTypeBool, DataTypeInt8:
-		return uint64(int8(buf[0]))
-	case DataTypeUint8:
-		return uint64(buf[0])
-	case DataTypeInt16:
-		return uint64(int16(ByteOrder.Uint16(buf)))
-	case DataTypeUint16:
-		return uint64(ByteOrder.Uint16(buf))
-	case DataTypeInt32:
-		return uint64(int32(ByteOrder.Uint32(buf)))
-	case DataTypeUint32, DataTypeFloat32:
-		return uint64(ByteOrder.Uint32(buf))
-	case DataTypeInt64:
-		return ByteOrder.Uint64(buf)
-	case DataTypeUint64, DataTypeFloat64, DataTypeString, DataTypeBinary:
-		return ByteOrder.Uint64(buf)
-	default:
-		return 0
-	}
-}
 
 // FileHeader represents the file header structure
 type FileHeader struct {

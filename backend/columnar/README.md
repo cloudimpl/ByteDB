@@ -844,10 +844,30 @@ options := &MergeOptions{
     // Compression for output file
     CompressionOptions: NewCompressionOptions().
         WithPageCompression(CompressionZstd, CompressionLevelBest),
+    
+    // Use memory-efficient streaming merge (recommended for large files)
+    UseStreamingMerge: true,
 }
 
 err := MergeFiles("output.bytedb", inputFiles, options)
 ```
+
+#### Streaming Merge
+
+For large datasets that exceed available memory, enable streaming merge:
+
+```go
+options := &MergeOptions{
+    UseStreamingMerge: true,  // Uses iterators instead of loading all data
+}
+```
+
+Streaming merge:
+- Uses sorted iterators to merge data without loading everything into memory
+- Writes data directly to output file pages in append-only fashion
+- Maintains sort order using a min-heap of iterators
+- Zero memory accumulation - processes one entry at a time
+- Ideal for merging files larger than available RAM
 
 ### Deletion Handling During Merge
 
@@ -920,10 +940,16 @@ options := &MergeOptions{
 
 ### Performance Considerations
 
-- **Memory Efficient**: Merge uses iterators to stream data without loading entire columns
+- **Memory Efficient**: 
+  - Regular merge: Loads all data into memory (limited by RAM)
+  - Streaming merge: Uses iterators to process data in batches (limited only by disk space)
 - **Deleted Row Overhead**: No query-time overhead since deletions aren't checked during normal queries
-- **Merge Performance**: Linear in the size of input files with efficient bitmap operations
-- **Deduplication Cost**: Sorting keys for deduplication adds O(n log n) overhead
+- **Merge Performance**: 
+  - Regular merge: O(n log n) when deduplication enabled due to in-memory sorting
+  - Streaming merge: O(n log k) where k is number of input files (heap-based merge)
+- **Deduplication Cost**: 
+  - Regular merge: Requires sorting all data in memory
+  - Streaming merge: Maintains sort order naturally through heap-based merge
 
 ## Running the Examples
 
@@ -1093,6 +1119,7 @@ For detailed technical specifications, see [BYTEDB_COLUMNAR_FORMAT.md](../../BYT
 - **File Merge Functionality**: Combine multiple files with configurable deletion handling
 - **Global Row Number Support**: Cross-file deletion references for distributed datasets
 - **Multiple Integer Types**: Support for Int8/16/32/64 and Uint8/16/32/64 with compression
+- **Streaming Merge**: Memory-efficient merge using iterators for datasets larger than RAM
 
 ### 🎯 Performance Gains
 - **Storage Efficiency**: 50-89% reduction in B+ tree space usage
