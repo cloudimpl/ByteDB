@@ -3,6 +3,7 @@ package columnar
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 )
 
 // BTreeStreamingBuilder builds a B+ tree in streaming fashion without buffering
@@ -17,20 +18,37 @@ type BTreeStreamingBuilder struct {
 	// Each level stores the first key of each node at that level
 	internalLevels  [][]uint64  // First keys at each level
 	levelPages      [][]uint64  // Page IDs at each level
+	
+	// Compression support
+	tempBuffer      *bytes.Buffer  // For compression estimation
+	hasCompression  bool           // Whether compression is enabled
 }
 
 // NewBTreeStreamingBuilder creates a new streaming builder
 func NewBTreeStreamingBuilder(btree *BPlusTree) *BTreeStreamingBuilder {
+	hasCompression := btree.pageManager.compressionOptions != nil && 
+		btree.pageManager.compressionOptions.LeafPageCompression != CompressionNone
+	
 	return &BTreeStreamingBuilder{
 		btree:          btree,
 		leafBuffer:     new(bytes.Buffer),
 		internalLevels: make([][]uint64, 0),
 		levelPages:     make([][]uint64, 0),
+		tempBuffer:     new(bytes.Buffer),
+		hasCompression: hasCompression,
 	}
 }
 
 // Add adds a key-value pair to the B-tree (must be called with sorted keys)
 func (b *BTreeStreamingBuilder) Add(key uint64, value Value) error {
+	if b.hasCompression {
+		return b.addWithCompression(key, value)
+	}
+	return b.addWithoutCompression(key, value)
+}
+
+// addWithoutCompression is the original non-compressed implementation
+func (b *BTreeStreamingBuilder) addWithoutCompression(key uint64, value Value) error {
 	keySize := GetDataTypeSize(b.btree.dataType)
 	entrySize := keySize + 8 // key + value (8 bytes for Value)
 	
@@ -54,6 +72,57 @@ func (b *BTreeStreamingBuilder) Add(key uint64, value Value) error {
 	}
 	
 	b.entriesInLeaf++
+	return nil
+}
+
+// addWithCompression handles adding entries with compression awareness
+func (b *BTreeStreamingBuilder) addWithCompression(key uint64, value Value) error {
+	// Save current state
+	currentLen := b.leafBuffer.Len()
+	currentEntries := b.entriesInLeaf
+	
+	// Try adding to temp buffer
+	b.tempBuffer.Reset()
+	b.tempBuffer.Write(b.leafBuffer.Bytes()) // Copy current content
+	
+	// Add new entry to temp buffer
+	keyBuf := EncodeKey(key, b.btree.dataType)
+	b.tempBuffer.Write(keyBuf)
+	binary.Write(b.tempBuffer, ByteOrder, value.Data)
+	
+	// Check both uncompressed and compressed size constraints
+	uncompressedSize := b.tempBuffer.Len()
+	compressedSize, _ := b.btree.pageManager.EstimateCompressedSize(PageTypeBTreeLeaf, b.tempBuffer.Bytes())
+	
+	// Both must fit in page
+	pageDataSize := b.btree.pageManager.pageSize - PageHeaderSize
+	if uncompressedSize <= pageDataSize && compressedSize <= pageDataSize {
+		// It fits! Update the real buffer
+		b.leafBuffer.Reset()
+		b.leafBuffer.Write(b.tempBuffer.Bytes())
+		b.entriesInLeaf++
+		return nil
+	}
+	
+	// Doesn't fit - need to flush current page first
+	if currentEntries > 0 {
+		// Restore original state
+		b.leafBuffer.Truncate(currentLen)
+		
+		// Flush current page
+		if err := b.flushLeaf(); err != nil {
+			return err
+		}
+		
+		// Now add the entry to the new page
+		b.leafBuffer.Write(keyBuf)
+		binary.Write(b.leafBuffer, ByteOrder, value.Data)
+		b.entriesInLeaf = 1
+	} else {
+		// First entry is too large even for empty page
+		return fmt.Errorf("entry too large for page even with compression")
+	}
+	
 	return nil
 }
 
@@ -135,6 +204,10 @@ func (b *BTreeStreamingBuilder) flushInternalLevel(level int) error {
 		return nil
 	}
 	
+	// Check if we have compression for internal pages
+	hasInternalCompression := b.btree.pageManager.compressionOptions != nil && 
+		b.btree.pageManager.compressionOptions.InternalPageCompression != CompressionNone
+	
 	// Allocate page for internal node
 	internalPage := b.btree.pageManager.AllocatePage(PageTypeBTreeInternal)
 	pageID := internalPage.Header.PageID
@@ -151,6 +224,19 @@ func (b *BTreeStreamingBuilder) flushInternalLevel(level int) error {
 		keyBuf := EncodeKey(firstKey, b.btree.dataType)
 		if _, err := buf.Write(keyBuf); err != nil {
 			return err
+		}
+	}
+	
+	// Check compression constraints if enabled
+	if hasInternalCompression {
+		uncompressedSize := buf.Len()
+		compressedSize, _ := b.btree.pageManager.EstimateCompressedSize(PageTypeBTreeInternal, buf.Bytes())
+		
+		pageDataSize := b.btree.pageManager.pageSize - PageHeaderSize
+		if uncompressedSize > pageDataSize || compressedSize > pageDataSize {
+			// Data doesn't fit even with compression
+			return fmt.Errorf("internal node data too large even with compression: uncompressed=%d, compressed=%d, max=%d", 
+				uncompressedSize, compressedSize, pageDataSize)
 		}
 	}
 	
