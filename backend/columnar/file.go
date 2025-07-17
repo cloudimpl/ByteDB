@@ -20,6 +20,7 @@ type ColumnarFile struct {
 	compressionOptions *CompressionOptions
 	compressionStats   *CompressionStats
 	readOnly           bool // Whether the file is opened in read-only mode
+	deletedBitmap      *roaring.Bitmap // Bitmap tracking deleted rows
 }
 
 // Column represents a single column with its metadata and indexes
@@ -81,6 +82,7 @@ func CreateFileWithOptions(filename string, options *CompressionOptions) (*Colum
 			PageCompressions: make(map[PageType]int64),
 			ColumnStats:      make(map[string]*ColumnCompressionStats),
 		},
+		deletedBitmap:      roaring.New(),
 	}
 	
 	// Write initial header
@@ -169,6 +171,19 @@ func openFileWithMode(filename string, readOnly bool) (*ColumnarFile, error) {
 	if err := cf.readColumnMetadata(); err != nil {
 		pm.Close()
 		return nil, err
+	}
+	
+	// Load deleted bitmap if it exists
+	cf.deletedBitmap = roaring.New()
+	if cf.header.DeletedBitmapOffset > 0 {
+		bitmapMgr := NewBitmapManager(cf.pageManager)
+		deletedBitmap, err := bitmapMgr.LoadBitmap(cf.header.DeletedBitmapOffset)
+		if err != nil {
+			// Log error but don't fail - deleted bitmap is optional
+			fmt.Printf("Warning: failed to load deleted bitmap: %v\n", err)
+		} else {
+			cf.deletedBitmap = deletedBitmap
+		}
 	}
 	
 	return cf, nil
@@ -1075,6 +1090,19 @@ func (cf *ColumnarFile) Close() error {
 	cf.header.TotalPages = cf.pageManager.GetPageCount()
 	cf.header.RowCount = cf.calculateTotalRows()
 	
+	// Save deleted bitmap if it has any entries
+	if cf.deletedBitmap != nil && cf.deletedBitmap.GetCardinality() > 0 {
+		// Create a bitmap manager to save the deleted bitmap
+		bitmapMgr := NewBitmapManager(cf.pageManager)
+		offset, err := bitmapMgr.StoreBitmap(cf.deletedBitmap)
+		if err != nil {
+			return fmt.Errorf("failed to save deleted bitmap: %w", err)
+		}
+		cf.header.DeletedBitmapOffset = offset
+	} else {
+		cf.header.DeletedBitmapOffset = 0
+	}
+	
 	// Write updated header
 	if err := cf.writeHeader(); err != nil {
 		return err
@@ -1121,6 +1149,7 @@ func (cf *ColumnarFile) writeHeader() error {
 	binary.Write(buf, ByteOrder, cf.header.BitmapCompression)
 	binary.Write(buf, ByteOrder, cf.header.CompressionLevel)
 	binary.Write(buf, ByteOrder, cf.header.CompressionFlags)
+	binary.Write(buf, ByteOrder, cf.header.DeletedBitmapOffset)
 	
 	// Also write column metadata page IDs after the header
 	// For now, we know metadata starts at page 1
@@ -1168,6 +1197,11 @@ func (cf *ColumnarFile) readHeader() error {
 		binary.Read(buf, ByteOrder, &cf.header.BitmapCompression)
 		binary.Read(buf, ByteOrder, &cf.header.CompressionLevel)
 		binary.Read(buf, ByteOrder, &cf.header.CompressionFlags)
+		
+		// Read deleted bitmap offset (may not exist in older files)
+		if buf.Len() >= 8 {
+			binary.Read(buf, ByteOrder, &cf.header.DeletedBitmapOffset)
+		}
 	}
 	
 	// Validate magic number
@@ -1984,3 +2018,67 @@ func (iter *BitmapIterator) Close() error {
 	iter.valid = false
 	return nil
 }
+
+// DeleteRow marks a single row as deleted
+func (cf *ColumnarFile) DeleteRow(rowNum uint64) error {
+	if cf.readOnly {
+		return fmt.Errorf("cannot delete rows from read-only file")
+	}
+	
+	cf.deletedBitmap.Add(uint32(rowNum))
+	return nil
+}
+
+// DeleteRows marks multiple rows as deleted
+func (cf *ColumnarFile) DeleteRows(rows *roaring.Bitmap) error {
+	if cf.readOnly {
+		return fmt.Errorf("cannot delete rows from read-only file")
+	}
+	
+	if rows == nil {
+		return nil
+	}
+	
+	cf.deletedBitmap.Or(rows)
+	return nil
+}
+
+// GetDeletedRows returns the bitmap of deleted rows
+func (cf *ColumnarFile) GetDeletedRows() *roaring.Bitmap {
+	return cf.deletedBitmap.Clone()
+}
+
+// IsRowDeleted checks if a specific row is marked as deleted
+func (cf *ColumnarFile) IsRowDeleted(rowNum uint64) bool {
+	return cf.deletedBitmap.Contains(uint32(rowNum))
+}
+
+// GetDeletedCount returns the number of deleted rows
+func (cf *ColumnarFile) GetDeletedCount() uint64 {
+	return cf.deletedBitmap.GetCardinality()
+}
+
+// UndeleteRow removes a row from the deleted bitmap (restores it)
+func (cf *ColumnarFile) UndeleteRow(rowNum uint64) error {
+	if cf.readOnly {
+		return fmt.Errorf("cannot undelete rows in read-only file")
+	}
+	
+	cf.deletedBitmap.Remove(uint32(rowNum))
+	return nil
+}
+
+// UndeleteRows removes multiple rows from the deleted bitmap (restores them)
+func (cf *ColumnarFile) UndeleteRows(rows *roaring.Bitmap) error {
+	if cf.readOnly {
+		return fmt.Errorf("cannot undelete rows in read-only file")
+	}
+	
+	if rows == nil {
+		return nil
+	}
+	
+	cf.deletedBitmap.AndNot(rows)
+	return nil
+}
+

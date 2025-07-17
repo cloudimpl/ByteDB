@@ -182,6 +182,7 @@ type FileHeader struct {
 	BitmapCompression    uint8
 	CompressionLevel     uint8
 	CompressionFlags     uint16 // For future flags like EnableAdaptiveCompression
+	DeletedBitmapOffset  uint64 // Offset to the deleted rows bitmap
 }
 
 // ColumnMetadata represents metadata for a single column

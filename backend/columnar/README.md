@@ -27,6 +27,8 @@ cf, err := columnar.CreateFile("data.txt")     // Error: must have .bytedb exten
 - **Bitmap Compression**: RoaringBitmap for efficient storage of duplicate values
 - **Unified Bitmap API**: All query operations return bitmaps for optimal performance
 - **Efficient Iterator Interface**: Memory-efficient forward/reverse iteration with range support
+- **Logical Deletion Support**: Mark rows for deletion without modifying immutable data
+- **File Merge Capability**: Consolidate multiple files with automatic deletion cleanup
 - **Immutable Design**: Write-once architecture for simplified concurrency
 - **4KB Page Architecture**: Optimized for modern storage systems
 
@@ -700,6 +702,176 @@ Iterators are available for all data types except float32/float64:
    }
    ```
 
+## Deletion and Merge API
+
+ByteDB Columnar Format supports logical deletion and efficient file merging, enabling cleanup of deleted data during consolidation operations.
+
+### Deletion API
+
+Since columnar files are immutable, deletions are tracked using a bitmap that marks rows as deleted without modifying the actual data:
+
+```go
+// Mark a single row as deleted
+err := cf.DeleteRow(rowNum)
+
+// Mark multiple rows as deleted
+deletedRows := roaring.New()
+deletedRows.Add(10, 20, 30)
+err := cf.DeleteRows(deletedRows)
+
+// Check if a row is deleted
+if cf.IsRowDeleted(rowNum) {
+    // Row is marked for deletion
+}
+
+// Get count of deleted rows
+count := cf.GetDeletedCount()
+
+// Get bitmap of all deleted rows
+deletedBitmap := cf.GetDeletedRows()
+
+// Restore deleted rows
+err := cf.UndeleteRow(rowNum)
+err := cf.UndeleteRows(restoredRows)
+```
+
+### Important Notes on Deletion
+
+- **Immutable Files**: Deletions don't modify existing data - they're tracked in a separate bitmap
+- **Query Performance**: Deleted rows are NOT filtered during queries for performance reasons
+- **Persistence**: The deleted bitmap is saved in the file header and restored on file open
+- **Primary Use Case**: Deletions are primarily used during file merging to exclude rows from new files
+
+### Global Row Numbers
+
+ByteDB Columnar Format uses globally unique row numbers across all files in a dataset. This is essential for the deletion system to work correctly:
+
+- **External Management**: Row number generation is managed externally by the application
+- **Cross-File References**: Deleted row bitmaps in one file can reference rows in other files
+- **Merge Behavior**: During merge, all deleted bitmaps are collected to create a global view
+
+Example with global row numbers:
+```go
+// File 1: Uses global row numbers 1000-1999
+data1 := []columnar.IntData{
+    columnar.NewIntData(100, 1000),
+    columnar.NewIntData(101, 1001),
+    columnar.NewIntData(102, 1002),
+}
+cf1.LoadIntColumn("id", data1)
+
+// File 2: Uses global row numbers 2000-2999
+// Can mark rows from File 1 as deleted
+data2 := []columnar.IntData{
+    columnar.NewIntData(200, 2000),
+    columnar.NewIntData(201, 2001),
+}
+cf2.LoadIntColumn("id", data2)
+cf2.DeleteRow(1001)  // Marks row from File 1 as deleted
+
+// During merge, row 1001 from File 1 will be excluded
+```
+
+### File Merging
+
+The merge functionality combines multiple columnar files into a single consolidated file, with support for handling deleted rows:
+
+```go
+// Basic merge
+err := MergeFiles("output.bytedb", []string{"file1.bytedb", "file2.bytedb"}, nil)
+
+// Merge with options
+options := &MergeOptions{
+    // How to handle deleted rows
+    DeletedRowHandling: ExcludeDeleted,  // Default: exclude deleted rows
+    
+    // Whether to deduplicate keys across files
+    DeduplicateKeys: true,
+    
+    // Compression for output file
+    CompressionOptions: NewCompressionOptions().
+        WithPageCompression(CompressionZstd, CompressionLevelBest),
+}
+
+err := MergeFiles("output.bytedb", inputFiles, options)
+```
+
+### Deletion Handling During Merge
+
+Three strategies are available for handling deleted rows:
+
+1. **ExcludeDeleted** (default): Deleted rows are not written to the merged file
+   ```go
+   options := &MergeOptions{
+       DeletedRowHandling: ExcludeDeleted,
+   }
+   ```
+
+2. **PreserveDeleted**: Deleted rows are copied with their deleted status maintained
+   ```go
+   options := &MergeOptions{
+       DeletedRowHandling: PreserveDeleted,
+   }
+   ```
+
+3. **ConsolidateDeleted**: Merge all deleted bitmaps into the output file
+   ```go
+   options := &MergeOptions{
+       DeletedRowHandling: ConsolidateDeleted,
+   }
+   ```
+
+### Merge Examples
+
+#### Merging with Cleanup
+```go
+// Mark obsolete data for deletion
+cf1.DeleteRows(obsoleteRows)
+cf1.Close()
+
+// During merge, obsolete rows are excluded
+err := MergeFiles("cleaned.bytedb", []string{"cf1.bytedb", "cf2.bytedb"}, 
+    &MergeOptions{
+        DeletedRowHandling: ExcludeDeleted,
+    })
+```
+
+#### Handling Duplicates
+```go
+options := &MergeOptions{
+    // Keep only the latest version of duplicate keys
+    DeduplicateKeys: true,
+}
+
+// When files have overlapping data, later files take precedence
+err := MergeFiles("merged.bytedb", []string{"old.bytedb", "new.bytedb"}, options)
+```
+
+#### Column-Specific Merge Strategies
+```go
+options := &MergeOptions{
+    ColumnStrategies: map[string]ColumnMergeStrategy{
+        "count": {
+            // Custom merge function for aggregation
+            MergeFunc: func(values []interface{}) interface{} {
+                sum := int64(0)
+                for _, v := range values {
+                    sum += v.(int64)
+                }
+                return sum
+            },
+        },
+    },
+}
+```
+
+### Performance Considerations
+
+- **Memory Efficient**: Merge uses iterators to stream data without loading entire columns
+- **Deleted Row Overhead**: No query-time overhead since deletions aren't checked during normal queries
+- **Merge Performance**: Linear in the size of input files with efficient bitmap operations
+- **Deduplication Cost**: Sorting keys for deduplication adds O(n log n) overhead
+
 ## Running the Examples
 
 ### Basic Usage Example
@@ -743,6 +915,32 @@ This demonstrates the iterator functionality:
 - Handling duplicate values with bitmaps
 - Type-safe key access
 - Complex filtering with iterators
+
+### Deletion and Merge Example
+```bash
+cd columnar/example
+go run deletion_merge_example.go
+```
+
+This demonstrates deletion and merge functionality:
+- Marking rows for deletion in immutable files
+- Creating multiple files with related data
+- Merging files while excluding deleted rows
+- Handling duplicate keys during merge
+- Verifying merge results with queries and iterators
+
+### Global Deletion Example
+```bash
+cd columnar/example
+go run global_deletion_example.go
+```
+
+This demonstrates the global row number system:
+- Using globally unique row numbers across multiple files
+- Cross-file deletion where later files mark rows from earlier files as deleted
+- Accumulation of deletion information across time
+- Global deletion handling during merge operations
+- Efficient deletion without modifying immutable files
 
 ## Performance Characteristics
 
@@ -838,6 +1036,8 @@ For detailed technical specifications, see [BYTEDB_COLUMNAR_FORMAT.md](../../BYT
 - **Efficient Iterator Interface**: Memory-efficient streaming iteration with forward/reverse support
 - **Range Iterator Support**: Bounded iteration within specified key ranges
 - **Type-Safe Iteration**: Properly typed key values based on column data type
+- **Logical Deletion Bitmap**: Track deleted rows for cleanup during file consolidation
+- **File Merge Functionality**: Combine multiple files with configurable deletion handling
 
 ### 🎯 Performance Gains
 - **Storage Efficiency**: 50-89% reduction in B+ tree space usage
@@ -853,7 +1053,8 @@ For detailed technical specifications, see [BYTEDB_COLUMNAR_FORMAT.md](../../BYT
 - [ ] Page-level statistics for enhanced filtering
 - [ ] Parallel query execution
 - [ ] Distributed file support
-- [ ] Update/Delete support via versioning
+- [x] Delete support via logical deletion bitmap
+- [ ] Update support via versioning
 - [ ] Column encryption
 - [ ] Adaptive indexing based on query patterns
 - [ ] Advanced bitmap operations (XOR, ANDNOT)
